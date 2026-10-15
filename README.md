@@ -34,7 +34,7 @@ https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
 本仓库提供 build 20 源码与构建工具，持续更新，当前不提供可下载安装包。系统与功能兼容范围见[兼容性与验证说明](VERIFICATION.md)，非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
 
-build 20 将本地「无边记」与联网「无限画布」分别放入侧栏，支持新建、打开及返回已打开的本地画布，兼容已有 `.pdfmasterboard` 文件与存档标题；同时完善页面、批注与画布的复制、剪切、粘贴、全选及常用工具快捷键，让跨标签整理更顺手。验证范围与待验证操作详见验证说明。
+build 20 将本地「无边记」与联网「无限画布」分别放入侧栏，支持新建、打开及返回已打开的本地画布，兼容已有 `.pdfmasterboard` 文件与存档标题；同时完善页面与批注的复制、剪切、粘贴及常用工具快捷键，文字输入保留原生编辑行为。验证范围与待验证操作详见验证说明。
 
 ## 功能与限制
 
@@ -63,7 +63,7 @@ bash scripts/build-app.sh --qpdf /absolute/path/to/qpdf
 
 ### 可选内容编辑运行时
 
-内容编辑研究子集使用包外 Python 3.12 与 PyMuPDF 1.27.2.3，当前适配器要求标准 framework Python 和该用户的 Library/Python 安装位置；不是自包含便携功能。运行时不在此仓库，也不自动下载。PyMuPDF 为 AGPL-3.0 或商业授权；调用外部进程不构成许可豁免。请根据最终使用/分发模式自行确认合规，不能把本目录公开视为商业许可证批准。[PyMuPDF 官方许可](https://pymupdf.io/licensing)。
+PDF 内容编辑功能使用包外 Python 3.12 与 PyMuPDF 1.27.2.3，当前适配器要求标准 framework Python 和该用户的 Library/Python 安装位置；不是自包含便携功能。运行时不在此仓库，也不自动下载。PyMuPDF 为 AGPL-3.0 或商业授权；调用外部进程不构成许可豁免。请根据最终使用/分发模式自行确认合规，不能把本目录公开视为商业许可证批准。[PyMuPDF 官方许可](https://pymupdf.io/licensing)。
 
 内容编辑集成测试只有显式设置 `PDFMASTER_CONTENT_FIXTURE`（自有测试 PDF）、`PDFMASTER_CONTENT_REPLACEMENT`（自有 PNG）且运行时可用才执行；否则按原因 skip。夹具须有测试断言要求的文本/图片结构，不能用私人业务 PDF。其他图像导入测试现场生成合成图片，图标测试使用 Resources 内的正式图标，不依赖开发工作区。
 
