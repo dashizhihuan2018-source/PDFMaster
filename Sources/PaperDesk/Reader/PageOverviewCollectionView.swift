@@ -2,8 +2,18 @@ import AppKit
 import PDFKit
 
 /// Keyboard owner for the selected pages in the overview grid.
-final class PageOverviewCollectionView: NSCollectionView {
+final class PageOverviewCollectionView: NSCollectionView, NSMenuItemValidation {
     var onDeleteSelection: (() -> Void)?
+    var onClipboard: ((ClipboardCommand) -> Void)?
+    var canClipboard: ((ClipboardCommand) -> Bool)?
+    @objc func copy(_ sender: Any?) { onClipboard?(.copy) }
+    @objc func cut(_ sender: Any?) { onClipboard?(.cut) }
+    @objc func paste(_ sender: Any?) { onClipboard?(.paste) }
+    override func selectAll(_ sender: Any?) { onClipboard?(.selectAll) }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard let command = ClipboardCommand(item.action) else { return true }
+        return canClipboard?(command) ?? false
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -23,8 +33,28 @@ final class PageOverviewCollectionView: NSCollectionView {
 }
 
 /// Keeps page deletion local to the thumbnail sidebar's responder chain.
-public final class ReaderPageThumbnailView: PDFThumbnailView {
+public final class ReaderPageThumbnailView: PDFThumbnailView, NSMenuItemValidation {
     public var onDeleteSelection: (() -> Void)?
+    var onClipboard: ((ClipboardCommand) -> Void)?
+    var canClipboard: ((ClipboardCommand) -> Bool)?
+    @objc func copy(_ sender: Any?) { onClipboard?(.copy) }
+    @objc func cut(_ sender: Any?) { onClipboard?(.cut) }
+    @objc func paste(_ sender: Any?) { onClipboard?(.paste) }
+    public override func selectAll(_ sender: Any?) { onClipboard?(.selectAll) }
+    public func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard let command = ClipboardCommand(item.action) else { return true }
+        return canClipboard?(command) ?? false
+    }
+    /// PDFThumbnailView exposes a read-only selection; its embedded native
+    /// collection owns the writable selection. Keep page identity in PDFKit.
+    func selectPages(_ indexes: IndexSet) {
+        func collection(in view: NSView) -> NSCollectionView? {
+            if let collection = view as? NSCollectionView { return collection }
+            return view.subviews.lazy.compactMap { collection(in: $0) }.first
+        }
+        guard let collection = collection(in: self) else { return }
+        collection.selectionIndexPaths = Set(indexes.map { IndexPath(item: $0, section: 0) })
+    }
     private var deleteKeyMonitor: Any?
 
     deinit {

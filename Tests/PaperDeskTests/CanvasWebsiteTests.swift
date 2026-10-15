@@ -15,7 +15,7 @@ final class CanvasWebsiteTests: XCTestCase {
         let shell = shell()
         shell.view.frame = NSRect(x: 0, y: 0, width: 1280, height: 820)
         let dashboard = shell.dashboardController
-        dashboard.select(.canvas)
+        dashboard.select(.onlineCanvas)
         shell.view.layoutSubtreeIfNeeded()
         let web = try XCTUnwrap(webViews(in: dashboard.view).first, "无限画布必须直接展示整个网站，不能只有入口按钮")
         XCTAssertEqual(web.url?.host, "infinitecanvas.maip.top")
@@ -31,13 +31,13 @@ final class CanvasWebsiteTests: XCTestCase {
     @MainActor func testSwitchingHomeAndPDFTabsKeepsSameWebsiteAndNativeBoards() throws {
         let shell = shell()
         _ = shell.view
-        shell.dashboardController.select(.canvas)
+        shell.dashboardController.select(.onlineCanvas)
         let original = try XCTUnwrap(webViews(in: shell.dashboardController.view).first)
         original.stopLoading()
         let native = shell.createCanvas()
         shell.showHome()
         shell.dashboardController.select(.home)
-        shell.dashboardController.select(.canvas)
+        shell.dashboardController.select(.onlineCanvas)
         let restored = try XCTUnwrap(webViews(in: shell.dashboardController.view).first)
         XCTAssertTrue(restored === original, "切换页面不能重建网站或丢失生成面板状态")
         XCTAssertEqual(shell.canvasTabs.count, 1)

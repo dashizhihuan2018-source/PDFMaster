@@ -24,6 +24,8 @@ import PaperCore
     var onBlockedWidget: (() -> Void)?
     var onCopyDenied: (() -> Void)?
     var onDeleteShape: (() -> Void)?
+    var onClipboard: ((ClipboardCommand) -> Bool)?
+    var canClipboard: ((ClipboardCommand) -> Bool)?
     private var gesturePage: PDFPage?
     private var points: [CGPoint] = []
     private var receivedMouseDrag = false
@@ -413,8 +415,13 @@ import PaperCore
         overlay.layer?.render(in:context)
         return bitmap.representation(using:.png,properties:[:])
     }
-    override func copy(_ sender:Any?) { guard isPDFActionAllowed(DocumentMenuSelectors.copy,hasSelection:currentSelection != nil) else { onCopyDenied?(); return }; super.copy(sender) }
-    @objc func cut(_ sender:Any?) { onCopyDenied?() }
+    override func copy(_ sender:Any?) {
+        if onClipboard?(.copy) == true { return }
+        guard isPDFActionAllowed(DocumentMenuSelectors.copy,hasSelection:currentSelection != nil) else { onCopyDenied?(); return }
+        super.copy(sender)
+    }
+    @objc func cut(_ sender:Any?) { if onClipboard?(.cut) != true { onCopyDenied?() } }
+    @objc func paste(_ sender:Any?) { _ = onClipboard?(.paste) }
     override func keyDown(with event:NSEvent) {
         if event.keyCode == 53, cancelPlacementForEscape() { return }
         if [51,117].contains(event.keyCode), selectedAnnotation != nil || selectedInkAnnotation != nil { onDeleteShape?(); return }
@@ -458,7 +465,13 @@ import PaperCore
         inkEnabled=false; placementEnabled=false; contentEditingEnabled=false; shapeTool=nil; cancelGesture(); clearShapeSelection(); onCancelPlacement?(); return true
     }
     func isPDFActionAllowed(_ action:Selector,hasSelection:Bool)->Bool { if action == DocumentMenuSelectors.copy { return allowsCopying && hasSelection }; return action != DocumentMenuSelectors.cut }
-    func validateMenuItem(_ item:NSMenuItem)->Bool { item.action.map { isPDFActionAllowed($0,hasSelection:currentSelection != nil) } ?? true }
+    func validateMenuItem(_ item:NSMenuItem)->Bool {
+        if let command = ClipboardCommand(item.action), command != .selectAll {
+            if canClipboard?(command) == true { return true }
+            if command != .copy { return false }
+        }
+        return item.action.map { isPDFActionAllowed($0,hasSelection:currentSelection != nil) } ?? true
+    }
 }
 
 @MainActor private final class ShapeOverlayView: NSView {

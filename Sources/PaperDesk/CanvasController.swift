@@ -237,8 +237,8 @@ enum CanvasPDFPageSelection: Equatable {
     @objc private func zoomIn() { canvasView.zoom(to:canvasView.viewport.scale*1.25) }
     @objc private func zoomOut() { canvasView.zoom(to:canvasView.viewport.scale/1.25) }
     @objc private func fitContent() { canvasView.fitContent() }
-    @objc private func undoAction() { canvasView.finishTextEditing(); canvasView.cancelGesture(); session.undo() }
-    @objc private func redoAction() { canvasView.finishTextEditing(); canvasView.cancelGesture(); session.redo() }
+    @objc func undoAction() { canvasView.finishTextEditing(); canvasView.cancelGesture(); session.undo() }
+    @objc func redoAction() { canvasView.finishTextEditing(); canvasView.cancelGesture(); session.redo() }
     @objc private func renameBoard() {
         do { try session.mutate { $0.title = titleField.stringValue.isEmpty ? "未命名画布" : titleField.stringValue } } catch { show(error) }
     }

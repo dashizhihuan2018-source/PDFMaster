@@ -114,7 +114,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     var secondaryToolFrame: NSRect { secondaryTools.convert(secondaryTools.bounds, to: view) }
     private var primaryModeButtons: [ModeButton] = []
     private var eraserEnabled = false
-    private var pageClipboardData: Data?
+    var clipboard = DocumentClipboard.shared
     private var paletteHeightConstraint: NSLayoutConstraint?
     private(set) var activeMode: WorkbenchMode?
     private var documentControls: [NSControl] = []
@@ -239,6 +239,12 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             guard let self, !self.isOverviewVisible else { return }
             self.perform { try self.deleteSelectedPages(pages) }
         }
+        pageOverview.collectionView.onClipboard = { [weak self] command in self?.runPageClipboard(command, overview: true) }
+        pageOverview.collectionView.canClipboard = { [weak self] command in self?.canPageClipboard(command, overview: true) ?? false }
+        readerSidebar.thumbnailView.onClipboard = { [weak self] command in self?.runPageClipboard(command, overview: false) }
+        readerSidebar.thumbnailView.canClipboard = { [weak self] command in self?.canPageClipboard(command, overview: false) ?? false }
+        pdfView.onClipboard = { [weak self] command in self?.runAnnotationClipboard(command) ?? false }
+        pdfView.canClipboard = { [weak self] command in self?.canAnnotationClipboard(command) ?? false }
         pdfView.onDropFiles = { [weak self] urls in
             guard let self else { return false }
             return self.queueFileMerge(urls, at: self.currentPageIndex + 1)
@@ -557,6 +563,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         if visible {
             if !readerPresentationNeedsRefresh { pageOverview.setDocument(pdfView.document, selectedPage: currentPageIndex, snapshot: readerSession.documentSnapshot ?? pdfView.presentationDataRepresentation()) }
             pageOverview.refreshLayout(); pageOverview.revealSelection()
+            view.window?.makeFirstResponder(pageOverview.collectionView)
         }
         else if activeMode == .pages { activeMode = nil; annotationPalette.isHidden = true; paletteHeightConstraint?.constant = 0 }
         if !visible, readerPresentationNeedsRefresh { refreshDocument(preservePage: pageOverview.selectedPages.first) }
@@ -581,7 +588,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         secondaryTools.arrangedSubviews.forEach { secondaryTools.removeArrangedSubview($0); $0.removeFromSuperview() }
         for tool in ReferenceToolStrip.tools(for: mode) {
             let button = ToolStripButton(tool: tool, target: self, action: #selector(runSecondaryTool(_:)))
-            if tool.id == "paste-page" { button.isEnabled = pageClipboardData != nil; button.toolTip = "粘贴应用内复制的页面" }
+            if tool.id == "paste-page" { button.isEnabled = clipboard.pages != nil; button.toolTip = "粘贴复制的页面" }
             secondaryTools.addArrangedSubview(button)
         }
         annotationPalette.isHidden = false; paletteHeightConstraint?.constant = 34
@@ -610,9 +617,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         case "strikeout": strikeout()
         case "pen": toggleInkFromPalette()
         case "eraser":
-            cancelPendingPlacement(); pdfView.clearShapeSelection(); pdfView.annotationManipulationEnabled = false
-            pdfView.inkEnabled = false; pdfView.placementEnabled = false; eraserEnabled = true
-            setInteractionStatus("橡皮：点击删除整条手绘笔迹，可撤销；暂不支持局部擦除")
+            selectEraser()
         case "text": addFreeText()
         case "shapes": beginShapeTool(pdfView.shapeTool ?? .rectangle)
         case "note": addPopupNote()
@@ -640,12 +645,13 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         switch id {
         case "rotate": try workspace.rotate(pages: pages, degrees: 90)
         case "copy-page":
-            pageClipboardData = try workspace.copyPages(pages)
+            let data = try workspace.copyPages(pages)
+            guard clipboard.write(data, type: DocumentClipboard.pagesType) else { throw PDFWorkspaceError.writeFailed }
             secondaryTools.arrangedSubviews.compactMap { $0 as? ToolStripButton }.filter { $0.toolID == "paste-page" }.forEach { $0.isEnabled = true }
-            setInteractionStatus("已复制 \(pages.count) 页到应用内页面剪贴板")
+            setInteractionStatus("已复制 \(pages.count) 页，可在 PDF 标签间粘贴")
             return
         case "paste-page":
-            guard let data = pageClipboardData, let incoming = PDFDocument(data: data) else { throw PDFWorkspaceError.invalidSelection }
+            guard let data = clipboard.pages, let incoming = PDFDocument(data: data) else { throw PDFWorkspaceError.invalidSelection }
             let index = pages.last! + 1
             try workspace.pastePages(data, at: index)
             resultingSelection = IndexSet(integersIn: index..<(index + incoming.pageCount))
@@ -658,6 +664,103 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         default: throw PDFWorkspaceError.invalidSelection
         }
         refreshDocument(); pageOverview.restoreSelection(resultingSelection)
+    }
+
+    private func clipboardPages(overview: Bool) -> IndexSet {
+        if overview { return pageOverview.selectedPages }
+        guard let document = pdfView.document else { return [] }
+        return IndexSet((readerSidebar.thumbnailView.selectedPages ?? []).compactMap {
+            let index = document.index(for: $0); return index == NSNotFound ? nil : index
+        })
+    }
+
+    func canPageClipboard(_ command: ClipboardCommand, overview: Bool) -> Bool {
+        guard workspace.document != nil, overview ? isOverviewVisible : (!isOverviewVisible && readerSidebar.mode == .thumbnails) else { return false }
+        let pages = clipboardPages(overview: overview)
+        switch command {
+        case .selectAll: return true
+        case .copy: return !pages.isEmpty && workspace.allowsCopying && workspace.allowsDocumentAssembly
+        case .cut: return !pages.isEmpty && pages.count < (workspace.document?.pageCount ?? 0) && workspace.allowsCopying && workspace.allowsDocumentAssembly
+        case .paste: return workspace.allowsDocumentAssembly && clipboard.hasPages
+        }
+    }
+
+    func runPageClipboard(_ command: ClipboardCommand, overview: Bool) {
+        guard canPageClipboard(command, overview: overview), let document = workspace.document else { return }
+        let pages = clipboardPages(overview: overview)
+        perform {
+            if command == .selectAll {
+                let all = IndexSet(integersIn: 0..<document.pageCount)
+                if overview { pageOverview.restoreSelection(all) }
+                else { readerSidebar.thumbnailView.selectPages(all) }
+                return
+            }
+            if command == .copy || command == .cut {
+                let data = try workspace.copyPages(pages)
+                guard clipboard.write(data, type: DocumentClipboard.pagesType) else { throw PDFWorkspaceError.writeFailed }
+                if command == .copy { setInteractionStatus("已复制 \(pages.count) 页"); return }
+                try deleteSelectedPages(pages)
+            } else {
+                guard let data = clipboard.pages, let incoming = PDFDocument(data: data) else { return }
+                let insertion = (pages.last ?? currentPageIndex) + 1
+                try workspace.pastePages(data, at: insertion)
+                refreshDocument(preservePage: insertion)
+                let added = IndexSet(integersIn: insertion..<(insertion + incoming.pageCount))
+                if overview { pageOverview.restoreSelection(added) }
+                else { readerSidebar.thumbnailView.selectPages(added) }
+                setInteractionStatus("已粘贴 \(incoming.pageCount) 页，可撤销")
+            }
+            view.window?.makeFirstResponder(overview ? pageOverview.collectionView : readerSidebar.thumbnailView)
+        }
+    }
+
+    func canAnnotationClipboard(_ command: ClipboardCommand) -> Bool {
+        guard !isOverviewVisible, workspace.document != nil else { return false }
+        switch command {
+        case .copy: return annotationSelection.current(in: workspace) != nil && workspace.allowsCopying
+        case .cut: return annotationSelection.current(in: workspace) != nil && workspace.allowsCopying && workspace.allowsCommenting
+        case .paste: return workspace.allowsCommenting && (clipboard.hasAnnotation || clipboardText != nil)
+        case .selectAll: return false
+        }
+    }
+
+    @discardableResult func runAnnotationClipboard(_ command: ClipboardCommand) -> Bool {
+        // A selected annotation takes precedence over any stale PDF text selection.
+        let selection = annotationSelection.current(in: workspace)
+        guard command == .paste ? (clipboard.annotation != nil || clipboardText != nil) : selection != nil else { return false }
+        guard canAnnotationClipboard(command) else { return true }
+        perform {
+            if command == .copy || command == .cut, let selection {
+                let data = try workspace.copyAnnotation(page: selection.page, index: selection.index)
+                guard clipboard.write(data, type: DocumentClipboard.annotationType) else { throw PDFWorkspaceError.writeFailed }
+                if command == .cut {
+                    try workspace.removeAnnotation(page: selection.page, index: selection.index)
+                    try synchronizeAnnotationPresentation(pages: IndexSet(integer: selection.page))
+                    annotationSelection.clear(); selectedShape = nil; selectedInk = nil; pdfView.clearShapeSelection()
+                }
+                setInteractionStatus(command == .cut ? "已剪切批注，可撤销" : "已复制批注")
+            } else if command == .paste, let data = clipboard.annotation {
+                let page = currentPageIndex
+                var index: Int?
+                index = try workspace.pasteAnnotation(data, page: page)
+                try synchronizeAnnotationPresentation(pages: IndexSet(integer: page))
+                if let index { selectAnnotation(page: page, index: index) }
+                setInteractionStatus("已粘贴批注，可撤销")
+            } else if command == .paste, let text = clipboardText,
+                      let page = workspace.document?.page(at: currentPageIndex) {
+                let crop = page.bounds(for: .cropBox), pageIndex = currentPageIndex
+                let bounds = CGRect(x: crop.minX + min(24, crop.width / 10), y: crop.midY,
+                                    width: min(260, crop.width * 0.8), height: min(100, crop.height * 0.4))
+                try workspace.addText(text, page: pageIndex, bounds: bounds)
+                try synchronizeAnnotationPresentation(pages: IndexSet(integer: pageIndex))
+                setInteractionStatus("已粘贴为可编辑文字批注，可撤销")
+            }
+        }
+        return true
+    }
+    private var clipboardText: String? {
+        guard let text = clipboard.pasteboard.string(forType: .string), !text.isEmpty, text.utf8.count <= 100_000 else { return nil }
+        return text
     }
 
     /// Deletes the active page selection as one undoable operation.
@@ -703,6 +806,12 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
 
     // Menu actions keep the toolbar readable while exposing the full foundational slice.
     @objc func rotatePage() { mutate { try workspace.rotate(page: currentPageIndex, degrees: 90) } }
+    @objc func rotatePageLeft() { mutate { try workspace.rotate(page: currentPageIndex, degrees: -90) } }
+    @objc func selectEraser() {
+        cancelPendingPlacement(); pdfView.clearShapeSelection(); pdfView.annotationManipulationEnabled = false
+        pdfView.inkEnabled = false; pdfView.placementEnabled = false; eraserEnabled = true
+        setInteractionStatus("橡皮：点击删除整条手绘笔迹，可撤销；暂不支持局部擦除")
+    }
     @objc func insertBlank() { mutate { try workspace.insertBlank(at: currentPageIndex + 1) } }
     @objc func insertPDF() {
         let p = NSOpenPanel()
@@ -1253,11 +1362,11 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         case #selector(printDocument): return hasDocument && workspace.allowsPrinting
         case #selector(saveCopy), #selector(saveFlattenedCopy), #selector(savePasswordProtectedCopy), #selector(extractPages), #selector(exportPlainText), #selector(exportAnnotationSummaryText), #selector(exportAnnotationSummaryMarkdown), #selector(exportAnnotationSummaryHTML):
             return hasDocument && workspace.allowsCopying
-        case #selector(highlight), #selector(underline), #selector(strikeout), #selector(addFreeText), #selector(addSignature), #selector(toggleInk(_:)), #selector(addPopupNote), #selector(addRectangle), #selector(addEllipse), #selector(addLineAnnotation), #selector(addArrow), #selector(addDoubleArrow):
+        case #selector(highlight), #selector(underline), #selector(strikeout), #selector(addFreeText), #selector(addSignature), #selector(toggleInk(_:)), #selector(selectEraser), #selector(addPopupNote), #selector(addRectangle), #selector(addEllipse), #selector(addLineAnnotation), #selector(addArrow), #selector(addDoubleArrow):
             return hasDocument && workspace.allowsCommenting
         case #selector(editSelectedAnnotation), #selector(deleteSelectedAnnotation):
             return hasDocument && workspace.allowsCommenting && annotationSelection.current(in: workspace) != nil
-        case #selector(insertPDF), #selector(rotatePage), #selector(insertBlank), #selector(movePageUp), #selector(deleteCurrentPage), #selector(duplicateCurrentPage), #selector(cropCurrentPage), #selector(addCurrentPageBookmark), #selector(renameTopLevelBookmark), #selector(removeTopLevelBookmark):
+        case #selector(insertPDF), #selector(rotatePage), #selector(rotatePageLeft), #selector(insertBlank), #selector(movePageUp), #selector(deleteCurrentPage), #selector(duplicateCurrentPage), #selector(cropCurrentPage), #selector(addCurrentPageBookmark), #selector(renameTopLevelBookmark), #selector(removeTopLevelBookmark):
             return hasDocument && workspace.allowsDocumentAssembly
         case #selector(showOutline):
             return hasDocument
@@ -1394,13 +1503,13 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         let closeTab = NSMenuItem(title: "关闭当前标签", action: #selector(closeTabAction), keyEquivalent: "w"); closeTab.target = self
         fileMenu.addItem(closeTab)
         fileMenu.addItem(.separator())
-        let newCanvas = NSMenuItem(title: "新建无限画布", action: #selector(newCanvasAction), keyEquivalent: "N"); newCanvas.target = self
+        let newCanvas = NSMenuItem(title: "新建无边记", action: #selector(newCanvasAction), keyEquivalent: "N"); newCanvas.target = self
         fileMenu.addItem(newCanvas)
-        let openCanvas = NSMenuItem(title: "打开画布…", action: #selector(openCanvasAction), keyEquivalent: ""); openCanvas.target = self
+        let openCanvas = NSMenuItem(title: "打开无边记…", action: #selector(openCanvasAction), keyEquivalent: ""); openCanvas.target = self
         fileMenu.addItem(openCanvas)
-        let saveCanvas = NSMenuItem(title: "存储画布…", action: #selector(saveCanvasAction), keyEquivalent: "s"); saveCanvas.target = self
+        let saveCanvas = NSMenuItem(title: "存储…", action: #selector(saveCanvasAction), keyEquivalent: "s"); saveCanvas.target = self
         fileMenu.addItem(saveCanvas)
-        let toCanvas = NSMenuItem(title: "将当前 PDF 复制到新画布", action: #selector(pdfToCanvasAction), keyEquivalent: ""); toCanvas.target = self
+        let toCanvas = NSMenuItem(title: "将当前 PDF 复制到无边记", action: #selector(pdfToCanvasAction), keyEquivalent: ""); toCanvas.target = self
         fileMenu.addItem(toCanvas)
 
         let editItem = NSMenuItem()
@@ -1419,6 +1528,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         ], to: editMenu)
         let inkItem = DocumentCommandMenuItem(title: "手绘模式", action: #selector(runDocumentCommand(_:)), keyEquivalent: "")
         inkItem.documentAction = #selector(WorkbenchController.toggleInk(_:)); inkItem.target = self
+        ExpertShortcuts.apply(to: inkItem, action: #selector(WorkbenchController.toggleInk(_:)))
         editMenu.addItem(inkItem)
         inkMenuItem = inkItem; controller.activeWorkbench?.registerInkMenuItem(inkItem)
         editItem.submenu = editMenu; main.addItem(editItem)
@@ -1432,6 +1542,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             ("直线…", #selector(WorkbenchController.addLineAnnotation), ""),
             ("箭头…", #selector(WorkbenchController.addArrow), ""),
             ("双向箭头…", #selector(WorkbenchController.addDoubleArrow), ""),
+            ("橡皮", #selector(WorkbenchController.selectEraser), ""),
             ("编辑选中批注…", #selector(WorkbenchController.editSelectedAnnotation), ""),
             ("删除选中批注…", #selector(WorkbenchController.deleteSelectedAnnotation), "")
         ], to: annotationMenu)
@@ -1442,6 +1553,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         addItems([
             ("页面预览", #selector(WorkbenchController.togglePageOverview), "4"),
             ("顺时针旋转", #selector(WorkbenchController.rotatePage), ""),
+            ("逆时针旋转", #selector(WorkbenchController.rotatePageLeft), ""),
             ("插入空白页", #selector(WorkbenchController.insertBlank), ""),
             ("复制当前页", #selector(WorkbenchController.duplicateCurrentPage), ""),
             ("裁剪当前页…", #selector(WorkbenchController.cropCurrentPage), ""),
@@ -1485,12 +1597,15 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         }
     }
     @objc private func newCanvasAction() { controller.createCanvas() }
-    @objc private func saveCanvasAction() { _ = controller.activeCanvas?.saveBoard() }
+    @objc private func saveCanvasAction() {
+        if let canvas = controller.activeCanvas { _ = canvas.saveBoard() }
+        else { controller.activeWorkbench?.saveCopy() }
+    }
     @objc private func openCanvasAction() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(exportedAs: "cn.nankong.pdfmaster.board", conformingTo: .data)]
         if panel.runModal() == .OK, let url = panel.url {
             _ = controller.openCanvas(url: url)
-            if let error = controller.lastOpenError { let a = NSAlert(); a.messageText = "无法打开画布"; a.informativeText = error.localizedDescription; a.runModal() }
+            if let error = controller.lastOpenError { let a = NSAlert(); a.messageText = "无法打开无边记"; a.informativeText = error.localizedDescription; a.runModal() }
         }
     }
     @objc private func pdfToCanvasAction() {
@@ -1504,15 +1619,21 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
                 menu.addItem(withTitle: title, action: action, keyEquivalent: key)
             } else {
                 let item = DocumentCommandMenuItem(title: title, action: #selector(runDocumentCommand(_:)), keyEquivalent: key)
+                ExpertShortcuts.apply(to: item, action: action)
                 item.documentAction = action; item.target = self; menu.addItem(item)
             }
         }
     }
     @objc private func runDocumentCommand(_ item: DocumentCommandMenuItem) {
         guard let action = item.documentAction else { return }
+        let isUndo = action == #selector(WorkbenchController.undo), isRedo = action == #selector(WorkbenchController.redo)
+        if isUndo || isRedo {
+            if TextHistoryRouting.perform(in: NSApp.keyWindow, redo: isRedo) { return }
+            guard NSApp.modalWindow == nil, NSApp.keyWindow == nil || NSApp.keyWindow === window else { return }
+        }
         if let canvas = controller.activeCanvas {
-            if action == #selector(WorkbenchController.undo) { canvas.session.undo(); return }
-            if action == #selector(WorkbenchController.redo) { canvas.session.redo(); return }
+            if isUndo { canvas.undoAction(); return }
+            if isRedo { canvas.redoAction(); return }
         }
         if action == #selector(WorkbenchController.openDocument) {
             let panel = NSOpenPanel(); panel.allowedContentTypes = [.pdf]
@@ -1535,9 +1656,13 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             item.title = "关闭当前标签"
             return controller.activeTabID != nil
         }
-        if item.action == #selector(saveCanvasAction) { return controller.activeCanvas != nil }
+        if item.action == #selector(saveCanvasAction) { return controller.activeCanvas != nil || controller.activeWorkbench?.workspace.allowsCopying == true }
         if item.action == #selector(pdfToCanvasAction) { return controller.activeWorkbench?.workspace.allowsCopying == true }
         guard let routed = item as? DocumentCommandMenuItem, let action = routed.documentAction else { return true }
+        if action == #selector(WorkbenchController.undo) || action == #selector(WorkbenchController.redo) {
+            if let allowed = TextHistoryRouting.canPerform(in: NSApp.keyWindow, redo: action == #selector(WorkbenchController.redo)) { return allowed }
+            guard NSApp.modalWindow == nil, NSApp.keyWindow == nil || NSApp.keyWindow === window else { return false }
+        }
         if action == #selector(WorkbenchController.openDocument) || action == #selector(WorkbenchController.newDocument) { return true }
         if let canvas = controller.activeCanvas {
             if action == #selector(WorkbenchController.undo) { return canvas.session.canUndo }

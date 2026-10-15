@@ -199,6 +199,7 @@ public enum DocumentMenuSelectors {
     @MainActor static func addTextEditingItems(to menu: NSMenu) {
         for (title, action, key) in [("复制", copy, "c"), ("剪切", cut, "x"),
                                      ("粘贴", #selector(NSText.paste(_:)), "v"),
+                                     ("粘贴并匹配样式", #selector(NSTextView.pasteAsPlainText(_:)), "V"),
                                      ("全选", #selector(NSText.selectAll(_:)), "a")] {
             // nil target preserves native field-editor and PDF permission routing.
             menu.addItem(withTitle: title, action: action, keyEquivalent: key)

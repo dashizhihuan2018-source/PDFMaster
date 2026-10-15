@@ -7,7 +7,7 @@ import WebKit
 final class CanvasWebsiteController: NSViewController, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     static let startURL = URL(string: "https://infinitecanvas.maip.top/canvas?mode=recent")!
     private(set) var webView: WKWebView!
-    private let status = NSTextField(labelWithString: "正在加载无限画布完整网站…")
+    private let status = NSTextField(labelWithString: "正在加载无限画布 · 在线画布，需联网…")
     private var downloads: [ObjectIdentifier: WKDownload] = [:]
     private var exportPopups: [ObjectIdentifier: WKWebView] = [:]
 
@@ -19,7 +19,7 @@ final class CanvasWebsiteController: NSViewController, WKNavigationDelegate, WKU
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        webView.setAccessibilityLabel("无限画布完整网站工作区")
+        webView.setAccessibilityLabel("无限画布 · 在线画布，需联网")
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let bar = NSStackView(); bar.orientation = .horizontal; bar.spacing = 12
@@ -43,7 +43,7 @@ final class CanvasWebsiteController: NSViewController, WKNavigationDelegate, WKU
         url.scheme == "https" && url.host == startURL.host && (url.port == nil || url.port == 443) && url.user == nil && url.password == nil
     }
     @objc private func reloadWebsite() {
-        status.stringValue = "正在加载无限画布完整网站…"
+        status.stringValue = "正在加载无限画布 · 在线画布，需联网…"
         if let url = webView.url, Self.isWebsiteURL(url) { webView.reload() }
         else { webView.load(URLRequest(url: Self.startURL)) }
     }
@@ -67,7 +67,7 @@ final class CanvasWebsiteController: NSViewController, WKNavigationDelegate, WKU
         decisionHandler(response.canShowMIMEType ? .allow : .download)
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        status.stringValue = "无限画布 · 在线完整界面 · 网站登录独立于本机账户"
+        status.stringValue = "无限画布 · 在线画布，需联网 · 网站登录独立于本机账户 · 与本地无边记分别保存"
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { show(error) }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { show(error) }
@@ -97,18 +97,18 @@ final class CanvasWebsiteController: NSViewController, WKNavigationDelegate, WKU
     }
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
         guard let window = view.window else { completionHandler(); return }
-        let alert = NSAlert(); alert.messageText = "无限画布网站"; alert.informativeText = message; alert.addButton(withTitle: "确定")
+        let alert = NSAlert(); alert.messageText = "在线画布网站"; alert.informativeText = message; alert.addButton(withTitle: "确定")
         alert.beginSheetModal(for: window) { _ in completionHandler() }
     }
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
         guard let window = view.window else { completionHandler(false); return }
-        let alert = NSAlert(); alert.messageText = "无限画布网站确认"; alert.informativeText = message
+        let alert = NSAlert(); alert.messageText = "在线画布网站确认"; alert.informativeText = message
         alert.addButton(withTitle: "确定"); alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn) }
     }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
         guard let window = view.window else { completionHandler(nil); return }
-        let alert = NSAlert(); alert.messageText = "无限画布网站"; alert.informativeText = prompt
+        let alert = NSAlert(); alert.messageText = "在线画布网站"; alert.informativeText = prompt
         let input = NSTextField(string: defaultText ?? ""); input.frame = NSRect(x: 0, y: 0, width: 320, height: 24); alert.accessoryView = input
         alert.addButton(withTitle: "确定"); alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn ? input.stringValue : nil) }

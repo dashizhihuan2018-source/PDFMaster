@@ -962,6 +962,132 @@ public final class PDFWorkspace: ObservableObject {
         }
     }
 
+    /// A bounded, passive, single-annotation PDF carrier. Only explicitly supported
+    /// visual properties are reconstructed; arbitrary dictionaries/actions and
+    /// source-page contents never enter the clipboard.
+    public func copyAnnotation(page: Int, index: Int) throws -> Data {
+        let current = try requireDocument()
+        guard !sourceWasEncrypted else { throw PDFWorkspaceError.permissionDenied }
+        try enforce(.copying, on: current)
+        guard let source = current.page(at: page) else { throw PDFWorkspaceError.invalidPage }
+        guard source.annotations.indices.contains(index) else { throw PDFWorkspaceError.invalidSelection }
+        let annotation = try clipboardAnnotation(source.annotations[index])
+        let carrier = PDFDocument(), carrierPage = PDFPage()
+        let crop = source.bounds(for: .cropBox)
+        guard valid(crop) else { throw PDFWorkspaceError.invalidSelection }
+        carrierPage.setBounds(crop, for: .mediaBox)
+        carrierPage.setBounds(crop, for: .cropBox)
+        carrierPage.addAnnotation(annotation); carrier.insert(carrierPage, at: 0)
+        guard let bytes = carrier.dataRepresentation(), bytes.count <= 8 * 1_024 * 1_024 else {
+            throw PDFWorkspaceError.writeFailed
+        }
+        _ = try annotationClipboardCarrier(bytes)
+        return bytes
+    }
+
+    /// Inserts an independent annotation in one commenting transaction. Position
+    /// is translated into the target crop; oversized objects are rejected rather
+    /// than clipped/rescaled, preserving local ink/line/markup geometry.
+    @discardableResult public func pasteAnnotation(_ data: Data, page: Int) throws -> Int {
+        let carrier = try annotationClipboardCarrier(data)
+        let annotation = try clipboardAnnotation(carrier.page(at: 0)!.annotations[0])
+        var inserted = 0
+        try mutate(requiring: .commenting, annotationPages: annotationPageScope(page)) { candidate in
+            guard let target = candidate.page(at: page) else { throw PDFWorkspaceError.invalidPage }
+            let crop = target.bounds(for: .cropBox), original = annotation.bounds
+            guard valid(crop), original.width <= crop.width, original.height <= crop.height else {
+                throw PDFWorkspaceError.invalidSelection
+            }
+            var bounds = original
+            bounds.origin.x = min(max(original.minX + 12, crop.minX), crop.maxX - original.width)
+            bounds.origin.y = min(max(original.minY - 12, crop.minY), crop.maxY - original.height)
+            annotation.bounds = bounds
+            inserted = target.annotations.count
+            target.addAnnotation(annotation)
+        }
+        return inserted
+    }
+
+    private func annotationClipboardCarrier(_ data: Data) throws -> PDFDocument {
+        guard !data.isEmpty, data.count <= 8 * 1_024 * 1_024 else { throw PDFWorkspaceError.invalidSelection }
+        let carrier = try PassivePDFCopyAdmission.validate(data)
+        guard carrier.pageCount == 1, let page = carrier.page(at: 0) else {
+            throw PDFWorkspaceError.invalidSelection
+        }
+        // PDFKit writes a Text note's companion Popup automatically. It is not
+        // a second user annotation and is never reconstructed on the destination.
+        let roots = page.annotations.filter { $0.type != "Popup" }
+        guard roots.count == 1, let root = roots.first,
+              page.annotations.count <= 2,
+              page.annotations.allSatisfy({ $0 === root || (root.type == "Text" && $0.type == "Popup" && $0.action == nil) }) else {
+            throw PDFWorkspaceError.invalidSelection
+        }
+        // The popup is discarded regardless of its native wrapper identity.
+        // Passive admission above rejects active/unknown entries before this
+        // normalization; only the freshly reconstructed root is ever pasted.
+        for popup in page.annotations where popup !== root { page.removeAnnotation(popup) }
+        _ = try clipboardAnnotation(page.annotations[0])
+        return carrier
+    }
+
+    private func clipboardAnnotation(_ source: PDFAnnotation) throws -> PDFAnnotation {
+        let allowed: Set<String> = ["Square", "Circle", "Line", "Ink", "Text", "FreeText", "Highlight", "Underline", "StrikeOut"]
+        guard let type = source.type, allowed.contains(type), source.action == nil,
+              valid(source.bounds), valid(source.color),
+              source.value(forAnnotationKey: PDFAnnotationKey(rawValue: "/AA")) == nil,
+              source.value(forAnnotationKey: PDFAnnotationKey(rawValue: "/A")) == nil else {
+            throw PDFWorkspaceError.invalidSelection
+        }
+        let annotation = PDFAnnotation(bounds: source.bounds, forType: PDFAnnotationSubtype(rawValue: "/" + type), withProperties: nil)
+        let style = AnnotationStyle(annotation: source)
+        annotation.color = style.strokeColor; annotation.interiorColor = style.fillColor
+        // Several PDFKit annotation writers discard colour alpha. Numeric
+        // carrier-only metadata keeps this visual property lossless; unlike an
+        // arbitrary source dictionary, these two bounded scalar keys are safe.
+        for (key, fill) in [("/PDFMasterStrokeOpacity", false), ("/PDFMasterFillOpacity", true)] {
+            let color = fill ? annotation.interiorColor : annotation.color
+            guard let color else { continue }
+            let alpha = (source.value(forAnnotationKey: PDFAnnotationKey(rawValue: key)) as? NSNumber)?.doubleValue ?? color.alphaComponent
+            guard alpha.isFinite, (0...1).contains(alpha) else { throw PDFWorkspaceError.invalidSelection }
+            if fill { annotation.interiorColor = color.withAlphaComponent(alpha) }
+            else { annotation.color = color.withAlphaComponent(alpha) }
+            annotation.setValue(NSNumber(value: alpha), forAnnotationKey: PDFAnnotationKey(rawValue: key))
+        }
+        annotation.contents = source.contents; annotation.userName = source.userName
+        annotation.shouldDisplay = source.shouldDisplay; annotation.shouldPrint = source.shouldPrint
+        if let border = source.border {
+            guard border.lineWidth.isFinite, (0...1_000).contains(border.lineWidth) else { throw PDFWorkspaceError.invalidSelection }
+            annotation.border = border.copy() as? PDFBorder
+        }
+        if type == "FreeText" {
+            annotation.font = source.font; annotation.fontColor = source.fontColor; annotation.alignment = source.alignment
+        }
+        if type == "Text" { annotation.iconType = source.iconType }
+        if type == "Line" {
+            guard valid(source.startPoint), valid(source.endPoint) else { throw PDFWorkspaceError.invalidSelection }
+            annotation.startPoint = source.startPoint; annotation.endPoint = source.endPoint
+            annotation.startLineStyle = source.startLineStyle; annotation.endLineStyle = source.endLineStyle
+        }
+        if type == "Ink" {
+            guard let paths = source.paths, !paths.isEmpty, paths.count <= 10_000 else { throw PDFWorkspaceError.invalidInk }
+            var elements = 0
+            for path in paths {
+                elements += path.elementCount
+                guard elements <= 100_000, let copied = path.copy() as? NSBezierPath,
+                      valid(path.cgPath.boundingBoxOfPath.insetBy(dx: -0.01, dy: -0.01)) else { throw PDFWorkspaceError.invalidInk }
+                annotation.add(copied)
+            }
+        }
+        if ["Highlight", "Underline", "StrikeOut"].contains(type) {
+            guard let points = source.quadrilateralPoints, !points.isEmpty, points.count <= 40_000,
+                  points.count.isMultiple(of: 4), points.allSatisfy({ valid($0.pointValue) }) else {
+                throw PDFWorkspaceError.invalidSelection
+            }
+            annotation.quadrilateralPoints = points
+        }
+        return annotation
+    }
+
     public func removeAnnotation(page: Int, index: Int) throws {
         try mutate(requiring: .commenting, annotationPages: annotationPageScope(page)) { candidate in
             guard let target = candidate.page(at: page) else { throw PDFWorkspaceError.invalidPage }

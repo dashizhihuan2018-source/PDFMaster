@@ -221,7 +221,7 @@ final class ApplicationShellController: NSViewController {
         controller.perform { try controller.workspace.createBlank(); controller.refreshDocument() }
         let tab = DocumentTab(controller: controller, sourceURL: nil); documentTabs.append(tab); activate(tabID: tab.id); return tab
     }
-    @discardableResult func createCanvas(board: CanvasBoard = CanvasBoard()) -> CanvasTab {
+    @discardableResult func createCanvas(board: CanvasBoard = CanvasBoard(title: "未命名无边记")) -> CanvasTab {
         let controller = CanvasController(session: CanvasSession(board: board))
         let tab = CanvasTab(controller: controller)
         controller.onShowAI = { [weak self, weak controller] in
@@ -262,7 +262,7 @@ final class ApplicationShellController: NSViewController {
         try controller.workspace.createUnsavedPDFCopy(data: data)
         _ = controller.view
         controller.resetDocumentInteractionState(); controller.refreshDocument()
-        controller.setInteractionStatus("来自无限画布的独立 PDF 副本 · 编辑不会修改画布卡片或原文件")
+        controller.setInteractionStatus("来自无边记的独立 PDF 副本 · 编辑不会修改画布卡片或原文件")
         let tab = DocumentTab(controller: controller, sourceURL: nil, generatedTitle: URL(fileURLWithPath: name).lastPathComponent)
         documentTabs.append(tab); activate(tabID: tab.id); return tab
     }
@@ -480,12 +480,12 @@ final class ApplicationShellController: NSViewController {
         for tab in canvasTabs {
             let box = NSStackView(); box.orientation = .horizontal; box.spacing = 4
             box.wantsLayer = true; box.layer?.backgroundColor = (activeTabID == tab.id ? NSColor(calibratedWhite: 0.25, alpha: 1) : ShellPalette.top).cgColor
-            let select = TabButton(title: "∞ \(tab.title)", target: self, action: #selector(selectTab(_:)))
+            let select = TabButton(title: "无边记 · \(tab.title)", target: self, action: #selector(selectTab(_:)))
             select.tabID = tab.id; select.isBordered = false; select.state = activeTabID == tab.id ? .on : .off
             select.font = .systemFont(ofSize: 12); select.contentTintColor = ShellPalette.primary
-            select.setAccessibilityLabel("画布标签 \(tab.title)")
+            select.setAccessibilityLabel("无边记标签 \(tab.title)")
             let close = TabButton(title: "×", target: self, action: #selector(closeTab(_:)))
-            close.tabID = tab.id; close.isBordered = false; close.setAccessibilityLabel("关闭画布 \(tab.title)")
+            close.tabID = tab.id; close.isBordered = false; close.setAccessibilityLabel("关闭无边记 \(tab.title)")
             box.heightAnchor.constraint(equalToConstant: 40).isActive = true
             box.addArrangedSubview(select); box.addArrangedSubview(close); tabBar.addArrangedSubview(box)
         }

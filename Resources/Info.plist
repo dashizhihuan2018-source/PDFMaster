@@ -10,7 +10,7 @@
   <key>CFBundleName</key><string>PDF Master</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>19</string>
+  <key>CFBundleVersion</key><string>20</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleDocumentTypes</key><array><dict>
@@ -19,14 +19,14 @@
     <key>LSHandlerRank</key><string>Alternate</string>
     <key>LSItemContentTypes</key><array><string>com.adobe.pdf</string></array>
   </dict><dict>
-    <key>CFBundleTypeName</key><string>PDF Master 画布</string>
+    <key>CFBundleTypeName</key><string>PDF Master 无边记</string>
     <key>CFBundleTypeRole</key><string>Editor</string>
     <key>LSHandlerRank</key><string>Owner</string>
     <key>LSItemContentTypes</key><array><string>cn.nankong.pdfmaster.board</string></array>
   </dict></array>
   <key>UTExportedTypeDeclarations</key><array><dict>
     <key>UTTypeIdentifier</key><string>cn.nankong.pdfmaster.board</string>
-    <key>UTTypeDescription</key><string>PDF Master 无限画布</string>
+    <key>UTTypeDescription</key><string>PDF Master 无边记</string>
     <key>UTTypeConformsTo</key><array><string>public.data</string></array>
     <key>UTTypeTagSpecification</key><dict>
       <key>public.filename-extension</key><array><string>pdfmasterboard</string></array>

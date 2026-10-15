@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 private final class CanvasDashboardButton: NSButton { var tabID: UUID? }
 
-enum HomeSection: String, CaseIterable { case home = "主界面", tools = "工具", canvas = "无限画布", recent = "最近", favorites = "收藏", account = "账号详情", settings = "设置", support = "获取支持" }
+enum HomeSection: String, CaseIterable { case home = "主界面", tools = "工具", canvas = "无边记", onlineCanvas = "无限画布", recent = "最近", favorites = "收藏", account = "账号详情", settings = "设置", support = "获取支持" }
 
 @MainActor
 final class DashboardViewController: NSViewController {
@@ -72,7 +72,7 @@ final class DashboardViewController: NSViewController {
         }
         root.onResize = { [weak self] in self?.updateColumnsIfNeeded() }
         let sidebar = NSStackView(); sidebar.orientation = .vertical; sidebar.spacing = 0; sidebar.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 18, right: 14); sidebar.wantsLayer = true; sidebar.layer?.backgroundColor = ShellPalette.sidebar.cgColor
-        for item in [HomeSection.home, .tools, .canvas, .recent, .favorites] { sidebar.addArrangedSubview(navButton(item)) }
+        for item in [HomeSection.home, .tools, .canvas, .onlineCanvas, .recent, .favorites] { sidebar.addArrangedSubview(navButton(item)) }
         sidebar.addArrangedSubview(NSView()); for item in [HomeSection.account, .settings, .support] { sidebar.addArrangedSubview(navButton(item)) }
         detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 20
         let host = FlippedDashboardView(); host.translatesAutoresizingMaskIntoConstraints = false; detail.translatesAutoresizingMaskIntoConstraints = false; host.addSubview(detail)
@@ -91,10 +91,10 @@ final class DashboardViewController: NSViewController {
     }
     private func navButton(_ item: HomeSection) -> NSButton {
         let button = NavButton(title: item.rawValue, target: self, action: #selector(selectSection(_:)))
-        let symbols: [HomeSection: String] = [.tools: "square.3.layers.3d", .canvas: "infinity", .recent: "clock.fill", .favorites: "star.fill", .account: "person", .settings: "gearshape", .support: "questionmark.circle"]
+        let symbols: [HomeSection: String] = [.tools: "square.3.layers.3d", .canvas: "infinity", .onlineCanvas: "globe", .recent: "clock.fill", .favorites: "star.fill", .account: "person", .settings: "gearshape", .support: "questionmark.circle"]
         button.image = item == .home ? Self.brandIcon() : NSImage(systemSymbolName: symbols[item]!, accessibilityDescription: item.rawValue)
         button.imagePosition = .imageLeading; button.section = item; button.bezelStyle = .recessed
-        button.toolTip = item.rawValue
+        button.toolTip = item == .onlineCanvas ? "无限画布 · 在线画布，需联网" : item.rawValue
         button.alignment = .left; button.font = .systemFont(ofSize: 14)
         button.heightAnchor.constraint(equalToConstant: 40).isActive = true
         button.widthAnchor.constraint(equalToConstant: 188).isActive = true
@@ -118,9 +118,9 @@ final class DashboardViewController: NSViewController {
         emptyIllustrations.removeAll()
         for (item, button) in navigationButtons { button.state = item == section ? .on : .off; button.contentTintColor = item == section ? ShellPalette.accent : ShellPalette.primary }
         detail.arrangedSubviews.forEach { detail.removeArrangedSubview($0); $0.removeFromSuperview() }
-        sectionScrollView?.isHidden = section == .canvas
-        canvasWebsite?.view.isHidden = section != .canvas
-        if section == .canvas {
+        sectionScrollView?.isHidden = section == .onlineCanvas
+        canvasWebsite?.view.isHidden = section != .onlineCanvas
+        if section == .onlineCanvas {
             if canvasWebsite == nil, let scroll = sectionScrollView {
                 let website = CanvasWebsiteController(); canvasWebsite = website; addChild(website)
                 let hosted = website.view; hosted.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(hosted)
@@ -136,7 +136,8 @@ final class DashboardViewController: NSViewController {
         switch section {
         case .home: renderHome()
         case .tools: toolsHeader(); ToolGroup.allCases.forEach { group in heading(group.rawValue); toolGrid(ToolCatalog.all.filter { $0.group == group }) }
-        case .canvas: break // The website fills the workspace, outside the dashboard's scroll column.
+        case .canvas: renderLocalCanvas()
+        case .onlineCanvas: break // The website fills the workspace, outside the dashboard's scroll column.
         case .recent: title("最近"); if let error = shell.recentStore.lastError { paragraph("最近记录读取失败：\(error.localizedDescription)") }; documentList(shell.recentStore.recents, empty: "尚无最近打开的文档。打开 PDF 后会在这里显示。", clear: true)
         case .favorites: title("收藏"); documentList(shell.recentStore.favorites, empty: "尚无收藏。可在最近文档中标记常用文件。", clear: false)
         case .account:
@@ -162,6 +163,29 @@ final class DashboardViewController: NSViewController {
         let row = NSStackView(); row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 12
         row.addArrangedSubview(label("推荐上手工具", 28, .semibold)); row.addArrangedSubview(NSView())
         row.addArrangedSubview(ToolIconSkinButton(store: iconSkins)); detail.addArrangedSubview(row)
+    }
+    private func renderLocalCanvas() {
+        title("无边记")
+        paragraph("本地无限画布 · 用便笺、文字、连线、手绘、图片与 PDF 整理灵感。")
+        paragraph("保存在这台 Mac，兼容已有 .pdfmasterboard 文件；在线服务请使用侧栏“无限画布”（需联网）。")
+        let actions = NSStackView(); actions.orientation = .horizontal; actions.spacing = 12
+        for button in [DashboardActionButton(title: "新建无边记", style: .bluePill, target: self, action: #selector(newCanvas)),
+                       DashboardActionButton(title: "打开无边记…", style: .neutralPill, target: self, action: #selector(openCanvas))] {
+            button.widthAnchor.constraint(equalToConstant: 120).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            actions.addArrangedSubview(button)
+        }
+        detail.addArrangedSubview(actions)
+        heading("已打开的无边记")
+        if shell.canvasTabs.isEmpty { paragraph("尚未打开无边记。新建一张，或打开以前保存的画布文件。") }
+        for tab in shell.canvasTabs {
+            let button = CanvasDashboardButton(title: tab.title, target: self, action: #selector(activateCanvas(_:)))
+            button.tabID = tab.id; button.alignment = .left; button.bezelStyle = .recessed
+            button.image = NSImage(systemSymbolName: "infinity", accessibilityDescription: "无边记")
+            button.imagePosition = .imageLeading; button.setAccessibilityLabel("打开无边记 \(tab.title)")
+            button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            detail.addArrangedSubview(button)
+        }
     }
     private func renderSettings() {
         title("设置")
@@ -293,7 +317,7 @@ final class DashboardViewController: NSViewController {
         panel.allowedContentTypes = [UTType(filenameExtension: "pdfmasterboard") ?? UTType(exportedAs: "cn.nankong.pdfmaster.board", conformingTo: .data)]
         if panel.runModal() == .OK, let url = panel.url {
             _ = shell.openCanvas(url: url)
-            if let error = shell.lastOpenError { showPersistenceError("无法打开画布", error) }
+            if let error = shell.lastOpenError { showPersistenceError("无法打开无边记", error) }
         }
     }
     @objc private func activateCanvas(_ sender: CanvasDashboardButton) { if let id = sender.tabID { shell.activate(tabID: id) } }
