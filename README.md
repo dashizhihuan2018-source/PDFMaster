@@ -1,10 +1,36 @@
 # PDF Master
 
-专注阅读、自由批注、有序组织。
+**自由创作，灵感无界。**
 
-PDF Master 是面向 macOS 的独立 PDF 工作台，将阅读、批注、页面整理与本地画布连接在同一工作流中。文档在本机管理；需要网络的可选服务具有单独的数据传输与授权边界。
+PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF 工具集、无限画布、无边记** 三种工作方式，将文档、图片、便签与想法连接起来：从专注阅读，到自由批注，再到有序整理，让 PDF 成为思考的起点。
 
-本仓库提供 build 19 R5 源码与构建工具，持续更新，不分发安装包或用户文档。系统与功能兼容范围见 [兼容性与验证说明](VERIFICATION.md)，发布目的、隐私及第三方权利说明见 [使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+[▶ 观看 30 秒介绍视频](https://github.com/dashizhihuan2018-source/PDFMaster/raw/refs/heads/main/docs/media/pdfmaster-demo.mp4) · [查看高清海报](docs/media/pdfmaster-poster.png) · [编译与使用](#编译与打包)
+
+## 一个应用，三重自由
+
+| 工作方式 | 帮你完成什么 | 使用方式 |
+| --- | --- | --- |
+| **PDF 工具集** | 阅读与搜索、高亮与手绘、便签与图形、手写签名、页面整理，以及部分 OCR 与导出操作 | 日常阅读、批注和页面整理在本机进行；部分工具需要可选外部依赖 |
+| **无限画布** | 在更大的在线空间里组合图片、视频与想法，延展创作灵感 | 需要联网；网站账户、服务与数据政策独立 |
+| **无边记** | 在本地画布中自由组织 PDF、图片、便签、连线与手绘，保存为 `.pdfmasterboard`，并导出 PDF 或 PNG | 本地保存，与在线画布分别管理 |
+
+### 产品海报
+
+<p align="center">
+  <a href="docs/media/pdfmaster-poster.png"><img src="docs/media/pdfmaster-poster.png" alt="PDF Master：自由创作，灵感无界——PDF 工具集、无限画布与无边记" width="720"></a>
+</p>
+
+### 30 秒了解 PDF Master
+
+[**▶ 播放产品介绍视频（约 30 秒，2.5 MB）**](https://github.com/dashizhihuan2018-source/PDFMaster/raw/refs/heads/main/docs/media/pdfmaster-demo.mp4)
+
+从阅读与批注，到在线创作与本地整理，快速了解三种工作方式。视频保留原画面与声音，提供适合网页播放的 H.264 / AAC 版本。
+
+海报与视频为产品展示，具体功能及兼容范围以当前源码和[兼容性与验证说明](VERIFICATION.md)为准。手写签名不是数字证书；可选 PDF Copilot 与 AI 创作需授权联网使用，可能产生第三方费用。摄影署名与媒体说明见[展示素材说明](docs/media/README.md)。
+
+## 获取与使用
+
+本仓库提供 build 19 R5 源码与构建工具，持续更新，当前不提供可下载安装包。系统与功能兼容范围见[兼容性与验证说明](VERIFICATION.md)，非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
 
 ## 功能与限制
 
