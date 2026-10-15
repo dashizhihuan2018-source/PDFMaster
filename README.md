@@ -1,5 +1,7 @@
 # PDF Master
 
+> **© 2026 Nankong 版权所有。仅供非商业技术交流；未经书面许可，不得将 Nankong 未另行授权的原创内容用于商业用途。** 第三方内容权利归原权利人所有。详见 [版权与使用条件](COPYRIGHT.md)。
+
 **自由创作，灵感无界。**
 
 PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF 工具集、无限画布、无边记** 三种工作方式，将文档、图片、便签与想法连接起来：从专注阅读，到自由批注，再到有序整理，让 PDF 成为思考的起点。
@@ -75,7 +77,7 @@ AI 功能使用用户自行提供的 DMX Key；Key 置于本机非同步 Keychai
 
 SwiftyDraw 局部平滑路径适配保留 MIT 许可证与固定来源说明，见 `Resources/Licenses/SwiftyDraw/`。品牌与 56 张工具图标的来源说明见 `Resources/ASSETS.md`。系统框架/字体不随仓库复制。qpdf、libjpeg-turbo 和 PyMuPDF 未捆绑在此源码；若另行分发它们或其二进制，请遵守各自许可证并保留完整 notice，不能拿 SwiftyDraw MIT 作为整个产品许可。
 
-© Nankong
+© 2026 Nankong 版权所有。原创部分仅供非商业技术交流，未经书面许可不得商用；已有许可与第三方权利不变。
 
 ## 持续更新
 

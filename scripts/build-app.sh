@@ -29,6 +29,7 @@ install -m 644 "$root/Resources/ContentEdit/engine.py" "$app/Contents/Resources/
 cp -R "$root/Resources/ToolIcons" "$root/Resources/ToolSkins" "$root/Resources/Licenses" "$app/Contents/Resources/"
 install -m 644 "$root/Resources/ASSETS.md" "$app/Contents/Resources/ASSETS.md"
 install -m 644 "$root/DISCLAIMER.md" "$app/Contents/Resources/DISCLAIMER.md"
+install -m 644 "$root/COPYRIGHT.md" "$app/Contents/Resources/COPYRIGHT.md"
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 [[ ! -e "$destination" && ! -L "$destination" ]] || { echo 'Output appeared during build; staged bundle preserved.' >&2; exit 73; }
