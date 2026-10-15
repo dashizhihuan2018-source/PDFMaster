@@ -1,0 +1,13 @@
+.build*/
+.swiftpm/
+dist/
+output/
+work/
+tools/
+.DS_Store
+*.log
+*.backup
+.env
+.env.*
+__pycache__/
+*.pyc
