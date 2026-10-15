@@ -4,7 +4,7 @@
 
 PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF 工具集、无限画布、无边记** 三种工作方式，将文档、图片、便签与想法连接起来：从专注阅读，到自由批注，再到有序整理，让 PDF 成为思考的起点。
 
-[▶ 观看 30 秒介绍视频](https://github.com/dashizhihuan2018-source/PDFMaster/raw/refs/heads/main/docs/media/pdfmaster-demo.mp4) · [查看高清海报](docs/media/pdfmaster-poster.png) · [编译与使用](#编译与打包)
+[30 秒产品介绍](#30-秒了解-pdf-master) · [高清海报](#产品海报) · [编译与使用](#编译与打包)
 
 ## 一个应用，三重自由
 
@@ -22,9 +22,9 @@ PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF �
 
 ### 30 秒了解 PDF Master
 
-[**▶ 播放产品介绍视频（约 30 秒，2.5 MB）**](https://github.com/dashizhihuan2018-source/PDFMaster/raw/refs/heads/main/docs/media/pdfmaster-demo.mp4)
+https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
-从阅读与批注，到在线创作与本地整理，快速了解三种工作方式。视频保留原画面与声音，提供适合网页播放的 H.264 / AAC 版本。
+从阅读与批注，到在线创作与本地整理，快速了解三种工作方式。视频约 30 秒，保留原画面与声音，可直接在本页播放；[下载 MP4](docs/media/pdfmaster-demo.mp4)。
 
 海报与视频为产品展示，具体功能及兼容范围以当前源码和[兼容性与验证说明](VERIFICATION.md)为准。手写签名不是数字证书；可选 PDF Copilot 与 AI 创作需授权联网使用，可能产生第三方费用。摄影署名与媒体说明见[展示素材说明](docs/media/README.md)。
 
