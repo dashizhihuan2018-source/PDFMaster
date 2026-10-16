@@ -97,7 +97,7 @@ public final class ReaderPageThumbnailView: PDFThumbnailView, NSMenuItemValidati
     }
 }
 
-private enum PageSelectionDeleteKey {
+enum PageSelectionDeleteKey {
     static func matches(_ event: NSEvent, in view: NSView) -> Bool {
         guard !view.isHiddenOrHasHiddenAncestor,
               event.type == .keyDown, event.keyCode == 51 || event.keyCode == 117,

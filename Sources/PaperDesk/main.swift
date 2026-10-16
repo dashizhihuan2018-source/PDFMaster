@@ -181,6 +181,12 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
                 self.runSecondaryTool(button)
             }
         }
+        readerSidebar.canDeleteAnnotation = { [weak self] _, _ in self?.workspace.allowsCommenting == true }
+        readerSidebar.onDeleteAnnotation = { [weak self] page, index in
+            guard let self else { return }
+            self.selectAnnotation(page: page, index: index)
+            self.deleteSelectedAnnotation()
+        }
         readerCommands.setSidebarVisible = { [weak self] visible in
             guard let self else { return }
             self.sidebarWidthConstraint?.constant = visible ? self.thumbnailSidebarWidth : 0
@@ -281,15 +287,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             self.mutateAnnotations(pages: IndexSet(integer: page)) { try self.workspace.updateShape(page: page, index: index, bounds: bounds, style: style) }
             self.selectAnnotation(page: page, index: index)
         }
-        pdfView.onDeleteShape = { [weak self] in
-            guard let self else { return }
-            if let s = self.selectedShape, s.revision == self.workspace.revision {
-                self.mutateAnnotations(pages: IndexSet(integer: s.page)) { try self.workspace.removeAnnotation(page:s.page,index:s.index) }
-            } else if let s = self.currentSelectedInk {
-                self.mutateAnnotations(pages: IndexSet(integer: s.page)) { try self.workspace.removeAnnotation(page:s.page,index:s.index) }
-            }
-            self.selectedShape = nil; self.selectedInk = nil; self.pdfView.clearShapeSelection()
-        }
+        pdfView.canDeleteAnnotation = { [weak self] in self?.canDeleteSelectedAnnotation == true }
+        pdfView.onDeleteShape = { [weak self] in self?.deleteSelectedAnnotation() }
         pdfView.onShapeDeselection = { [weak self] in
             guard let self else { return }
             self.selectedShape = nil; self.selectedInk = nil; self.annotationSelection.clear()
@@ -1265,14 +1264,16 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
     }
 
+    private var canDeleteSelectedAnnotation: Bool {
+        workspace.allowsCommenting && annotationSelection.current(in: workspace) != nil
+    }
     @objc func deleteSelectedAnnotation() {
-        guard let selection = annotationSelection.current(in: workspace) else {
-            showError("请先点击选择可删除批注。"); return
-        }
-        let alert = NSAlert(); alert.messageText = "删除选中批注？"; alert.informativeText = "此操作可通过“撤销”恢复。"
-        alert.addButton(withTitle: "删除"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard canDeleteSelectedAnnotation, let selection = annotationSelection.current(in: workspace) else { return }
         mutateAnnotations(pages: IndexSet(integer: selection.page)) { try workspace.removeAnnotation(page: selection.page, index: selection.index) }
+        selectedShape = nil; selectedInk = nil; annotationSelection.clear(); pdfView.clearShapeSelection()
+        shapeStyleBar.isHidden = true
+        if !pdfView.inkEnabled { inkStyleBar.isHidden = true }
+        setInteractionStatus("已删除批注，可通过 ⌘Z 撤销")
     }
 
     @objc @discardableResult func duplicateCurrentPage() -> Bool {
@@ -1697,7 +1698,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         guard let workbench = controller.activeWorkbench else { return false }
         return workbench.validateMenuItem(NSMenuItem(title: item.title, action: action, keyEquivalent: ""))
     }
-    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.0 · © Nankong"; a.runModal() }
+    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.1 · © Nankong"; a.runModal() }
 }
 
 MainActor.assumeIsolated {

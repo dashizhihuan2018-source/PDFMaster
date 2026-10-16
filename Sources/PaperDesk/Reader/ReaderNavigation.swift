@@ -52,6 +52,15 @@ public enum ReaderSidebarMode: Int, CaseIterable { case thumbnails, outline, sea
 
 public enum ReaderAnnotationSort { case page, newestFirst }
 
+/// Delete belongs to this list only while it owns keyboard focus.
+public final class ReaderAnnotationTableView: NSTableView {
+    var onDeleteSelection: (() -> Bool)?
+    public override func keyDown(with event: NSEvent) {
+        if PageSelectionDeleteKey.matches(event, in: self), onDeleteSelection?() == true { return }
+        super.keyDown(with: event)
+    }
+}
+
 public struct ReaderAnnotationItem {
     public let pageIndex: Int
     public let annotationIndex: Int
@@ -86,13 +95,15 @@ public struct ReaderAnnotationItem {
     public let session: ReaderSession
     public private(set) var mode: ReaderSidebarMode = .thumbnails
     public let thumbnailView = ReaderPageThumbnailView()
-    public let table = NSTableView()
+    public let table = ReaderAnnotationTableView()
     public let searchField = NSSearchField()
     public private(set) var outlineRows: [ReaderOutlineItem] = []
     public private(set) var annotationRows: [ReaderAnnotationItem] = []
     public private(set) var selectedAnnotationRow: Int?
     private(set) var annotationToolButtons: [ToolStripButton] = []
     public var onAnnotationSelection: ((Int, Int) -> Void)?
+    public var onDeleteAnnotation: ((Int, Int) -> Void)? { didSet { updateAnnotationDeletion() } }
+    public var canDeleteAnnotation: ((Int, Int) -> Bool)? { didSet { updateAnnotationDeletion() } }
     public var onDeletePages: ((IndexSet) -> Void)?
     public var onAnnotationTool: ((String) -> Void)? { didSet { updateAnnotationTools() } }
     public let annotationEmptyHint = "使用批注和绘画工具标记PDF"
@@ -106,13 +117,17 @@ public struct ReaderAnnotationItem {
     }
     public private(set) var annotationSort: ReaderAnnotationSort = .page
     public func setAnnotationSort(_ sort: ReaderAnnotationSort) { annotationSort = sort; refresh() }
-    @discardableResult public func navigateToAnnotationRow(_ row: Int) -> Bool {
-        guard annotationRows.indices.contains(row), let document = session.pdfView.document else { return false }
+    private func validatedAnnotationRow(_ row: Int) -> ReaderAnnotationItem? {
+        guard annotationRows.indices.contains(row), let document = session.pdfView.document else { return nil }
         let item = annotationRows[row]
         guard ObjectIdentifier(document) == item.documentID,
               let page = document.page(at: item.pageIndex), ObjectIdentifier(page) == item.pageID,
               page.annotations.indices.contains(item.annotationIndex),
-              page.annotations[item.annotationIndex] === item.annotation else { return false }
+              page.annotations[item.annotationIndex] === item.annotation else { return nil }
+        return item
+    }
+    @discardableResult public func navigateToAnnotationRow(_ row: Int) -> Bool {
+        guard let item = validatedAnnotationRow(row), let page = session.pdfView.document?.page(at: item.pageIndex) else { return false }
         selectedAnnotationRow = row
         syncSelection = true
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -124,8 +139,23 @@ public struct ReaderAnnotationItem {
             session.pdfView.go(to: bounds.insetBy(dx: -12, dy: -12), on: page)
         }
         onAnnotationSelection?(item.pageIndex, item.annotationIndex)
+        updateAnnotationDeletion()
         return true
     }
+    private var deletableAnnotation: ReaderAnnotationItem? {
+        guard mode == .annotations, onDeleteAnnotation != nil,
+              let row = selectedAnnotationRow, let item = validatedAnnotationRow(row),
+              canDeleteAnnotation?(item.pageIndex, item.annotationIndex) ?? true else { return nil }
+        return item
+    }
+    private func updateAnnotationDeletion() { annotationDeleteButton.isEnabled = deletableAnnotation != nil }
+    @discardableResult private func deleteSelectedAnnotationRow() -> Bool {
+        guard let item = deletableAnnotation else { updateAnnotationDeletion(); return false }
+        onDeleteAnnotation?(item.pageIndex, item.annotationIndex)
+        refresh()
+        return true
+    }
+    @objc private func deleteAnnotationFromButton(_ sender: NSButton) { deleteSelectedAnnotationRow() }
     private let status = NSTextField(wrappingLabelWithString: "")
     private let scroll = NSScrollView()
     private let modes = NSSegmentedControl(labels: ["缩略图", "大纲", "搜索", "A"], trackingMode: .selectOne, target: nil, action: nil)
@@ -134,6 +164,7 @@ public struct ReaderAnnotationItem {
     private let annotationHeader = NSStackView()
     private let annotationEmptyView = NSView()
     private let annotationOptions = NSButton()
+    private let annotationDeleteButton = NSButton()
     public init(session: ReaderSession) { self.session = session; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
     public override func loadView() {
@@ -164,6 +195,7 @@ public struct ReaderAnnotationItem {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("result")); table.addTableColumn(column)
         table.headerView = nil; table.delegate = self; table.dataSource = self; table.rowHeight = 54
         table.backgroundColor = .clear; table.setAccessibilityLabel("大纲或搜索结果列表")
+        table.onDeleteSelection = { [weak self] in self?.deleteSelectedAnnotationRow() ?? false }
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         column.minWidth = 40
         scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
@@ -199,7 +231,13 @@ public struct ReaderAnnotationItem {
         annotationOptions.action = #selector(showAnnotationOptions(_:))
         annotationOptions.toolTip = "批注排序与复制摘要"
         annotationOptions.setAccessibilityLabel("批注选项")
-        annotationHeader.addArrangedSubview(title); annotationHeader.addArrangedSubview(annotationOptions)
+        annotationDeleteButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "删除所选批注")
+        annotationDeleteButton.isBordered = false; annotationDeleteButton.target = self
+        annotationDeleteButton.action = #selector(deleteAnnotationFromButton(_:))
+        annotationDeleteButton.toolTip = "删除所选批注（Delete），可撤销"
+        annotationDeleteButton.setAccessibilityLabel("删除所选批注")
+        annotationHeader.addArrangedSubview(title); annotationHeader.addArrangedSubview(annotationDeleteButton); annotationHeader.addArrangedSubview(annotationOptions)
+        annotationDeleteButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
         annotationOptions.widthAnchor.constraint(equalToConstant: 24).isActive = true
         annotationHeader.heightAnchor.constraint(equalToConstant: 24).isActive = true
         let content = NSStackView()
@@ -295,6 +333,7 @@ public struct ReaderAnnotationItem {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else { table.deselectAll(nil) }
         syncSelection = false
+        updateAnnotationDeletion()
     }
     public func navigateToOutlineRow(_ row: Int) {
         guard outlineRows.indices.contains(row), let destination = outlineRows[row].destination,
@@ -328,7 +367,7 @@ public struct ReaderAnnotationItem {
         if mode == .outline { navigateToOutlineRow(table.selectedRow) }
         else if mode == .search { session.selectHit(table.selectedRow) }
         else if mode == .annotations {
-            if table.selectedRow < 0 { selectedAnnotationRow = nil }
+            if table.selectedRow < 0 { selectedAnnotationRow = nil; updateAnnotationDeletion() }
             else { navigateToAnnotationRow(table.selectedRow) }
         }
     }

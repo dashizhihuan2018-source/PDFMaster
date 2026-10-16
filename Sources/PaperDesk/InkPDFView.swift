@@ -24,6 +24,7 @@ import PaperCore
     var onBlockedWidget: (() -> Void)?
     var onCopyDenied: (() -> Void)?
     var onDeleteShape: (() -> Void)?
+    var canDeleteAnnotation: (() -> Bool)?
     var onClipboard: ((ClipboardCommand) -> Bool)?
     var canClipboard: ((ClipboardCommand) -> Bool)?
     private var gesturePage: PDFPage?
@@ -424,7 +425,9 @@ import PaperCore
     @objc func paste(_ sender:Any?) { _ = onClipboard?(.paste) }
     override func keyDown(with event:NSEvent) {
         if event.keyCode == 53, cancelPlacementForEscape() { return }
-        if [51,117].contains(event.keyCode), selectedAnnotation != nil || selectedInkAnnotation != nil { onDeleteShape?(); return }
+        if PageSelectionDeleteKey.matches(event, in: self),
+           canDeleteAnnotation?() ?? (selectedAnnotation != nil || selectedInkAnnotation != nil),
+           let onDeleteShape { onDeleteShape(); return }
         let commandModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if commandModifiers.isEmpty, ReaderArrowNavigation.pageDelta(for: event.keyCode) != nil {
             // A selected custom annotation owns arrows before reader navigation.
