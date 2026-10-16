@@ -14,11 +14,11 @@ final class CanvasTab: Identifiable {
 final class DocumentTab: Identifiable {
     let id = UUID()
     let controller: WorkbenchController
-    let sourceURL: URL?
+    var sourceURL: URL? { controller.workspace.sourceURL }
     let generatedTitle: String?
     var title: String { sourceURL?.lastPathComponent ?? generatedTitle ?? "未命名 PDF" }
     init(controller: WorkbenchController, sourceURL: URL?, generatedTitle: String? = nil) {
-        self.controller = controller; self.sourceURL = sourceURL; self.generatedTitle = generatedTitle
+        self.controller = controller; self.generatedTitle = generatedTitle
     }
 }
 
@@ -211,7 +211,7 @@ final class ApplicationShellController: NSViewController {
         try controller.workspace.createUnsavedFileMerge(batch)
         _ = controller.view
         controller.resetDocumentInteractionState(); controller.refreshDocument()
-        controller.setInteractionStatus("\(urls.count) 个文件已合并为独立 PDF · 来源未修改 · 请存储副本")
+        controller.setInteractionStatus("\(urls.count) 个文件已合并为独立 PDF · 来源未修改 · 请选择保存位置")
         let name = urls.count == 1 ? urls[0].deletingPathExtension().lastPathComponent + ".pdf" : "文件合并.pdf"
         let tab = DocumentTab(controller: controller, sourceURL: nil, generatedTitle: name)
         documentTabs.append(tab); activate(tabID: tab.id); return tab
@@ -289,7 +289,7 @@ final class ApplicationShellController: NSViewController {
         try controller.workspace.createUnsavedDocument(data: output.data)
         _ = controller.view
         controller.resetDocumentInteractionState(); controller.refreshDocument()
-        controller.setInteractionStatus("图片已创建独立 PDF · 来源图片未修改 · 请存储副本")
+        controller.setInteractionStatus("图片已创建独立 PDF · 来源图片未修改 · 请选择保存位置")
         let tab = DocumentTab(controller: controller, sourceURL: nil,
             generatedTitle: URL(fileURLWithPath: output.suggestedName).lastPathComponent)
         documentTabs.append(tab); activate(tabID: tab.id)
@@ -364,6 +364,11 @@ final class ApplicationShellController: NSViewController {
         activeWorkbench?.registerInkMenuItem(nil)
         activeTabID = tabID; lastActiveTabID = tabID
         activeWorkbench?.onShowCopilot = { [weak self] in _ = self?.showCopilot() }
+        activeWorkbench?.onDocumentSave = { [weak self] in
+            guard let self else { return }
+            if let url = self.activeWorkbench?.workspace.sourceURL { try? self.recentStore.recordSuccessfulOpen(url) }
+            self.rebuildTabs()
+        }
         activeWorkbench?.onDocumentRevisionChange = { [weak self] in self?.copilotController?.invalidateContext() }
         activeWorkbench?.readerCommands.externalCommand = { [weak self] command in self?.runReaderTabCommand(command) ?? false }
         activeWorkbench?.readerCommands.canExternalCommand = { [weak self] command in

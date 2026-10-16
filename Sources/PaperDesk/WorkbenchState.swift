@@ -37,6 +37,7 @@ public enum WorkbenchMessage {
         case .invalidPageRange: return "页面范围无效，例如可输入 1-3,5。"
         case .cannotDeleteLastPage: return "不能删除文档的最后一页。"
         case .cannotOverwriteSource: return "为保护原文件，请选择其他位置保存副本。"
+        case .sourceChanged: return "文件已在其他位置被修改、移动或替换。为保留双方更改，请另存为新文件，或重新打开原文件后继续。"
         case .invalidRotation: return "旋转角度无效。"
         case .invalidSelection: return "请先选择有效文字或页面区域。"
         case .invalidInk: return "手绘笔迹无效，请重新绘制。"

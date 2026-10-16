@@ -26,6 +26,7 @@ public enum PDFWorkspaceError: Error, Equatable {
     case invalidPageRange
     case cannotDeleteLastPage
     case cannotOverwriteSource
+    case sourceChanged
     case invalidRotation
     case invalidSelection
     case invalidInk
@@ -315,7 +316,7 @@ public final class PDFWorkspace: ObservableObject {
 
     private struct Snapshot {
         let data: Data
-        let isDirty: Bool
+        var isDirty: Bool
         let sequence: UInt64
         let presentationChange: PDFHistoryPresentationChange
     }
@@ -353,6 +354,7 @@ public final class PDFWorkspace: ObservableObject {
     private var nextSnapshotSequence: UInt64 = 0
     private var protectedSourceURL: URL?
     private var protectedSourceIdentifier: AnyHashable?
+    private var savedSourceDigest: Data?
     private var permissions = PermissionState.unrestricted
     private var sourceWasEncrypted = false
     private var admittedContentInputs: [Data] = []
@@ -416,6 +418,7 @@ public final class PDFWorkspace: ObservableObject {
         sourceURL = normalized
         protectedSourceURL = normalized.resolvingSymlinksInPath()
         protectedSourceIdentifier = resourceIdentifier(for: normalized)
+        savedSourceDigest = Self.engineDigest(rawSource)
         permissions = PermissionState(
             assembly: wasEncrypted ? false : loaded.allowsDocumentAssembly,
             commenting: loaded.allowsCommenting,
@@ -515,6 +518,44 @@ public final class PDFWorkspace: ObservableObject {
         } catch {
             throw PDFWorkspaceError.writeFailed
         }
+        isDirty = false
+    }
+
+    /// Save the working document and retain its destination for subsequent saves.
+    /// Exporting a separate copy remains available through saveCopy(to:).
+    public func save(to url: URL) throws {
+        let current = try requireDocument()
+        try enforce(.copying, on: current)
+        guard !sourceWasEncrypted else { throw PDFWorkspaceError.permissionDenied }
+        guard url.isFileURL else { throw PDFWorkspaceError.writeFailed }
+        let destination = url.standardizedFileURL
+        let replacingCurrent = destination == sourceURL
+        if !replacingCurrent { try validateOutputURL(destination) }
+        guard let bytes = try serializedDocument(current) else { throw PDFWorkspaceError.writeFailed }
+        var coordinationError: NSError?
+        var writeError: Error?
+        NSFileCoordinator().coordinate(writingItemAt: destination, options: .forReplacing, error: &coordinationError) { target in
+            do {
+                if replacingCurrent {
+                    guard target.resolvingSymlinksInPath() == protectedSourceURL,
+                          resourceIdentifier(for: target) == protectedSourceIdentifier,
+                          let digest = savedSourceDigest,
+                          Self.engineDigest(try Data(contentsOf: target)) == digest else {
+                        throw PDFWorkspaceError.sourceChanged
+                    }
+                    guard FileManager.default.isWritableFile(atPath: target.path) else { throw PDFWorkspaceError.writeFailed }
+                }
+                try bytes.write(to: target, options: .atomic)
+            } catch { writeError = error }
+        }
+        if let error = writeError as? PDFWorkspaceError { throw error }
+        guard coordinationError == nil, writeError == nil else { throw PDFWorkspaceError.writeFailed }
+        sourceURL = destination
+        protectedSourceURL = destination.resolvingSymlinksInPath()
+        protectedSourceIdentifier = resourceIdentifier(for: destination)
+        savedSourceDigest = Self.engineDigest(bytes)
+        for index in undoSnapshots.indices { undoSnapshots[index].isDirty = true }
+        for index in redoSnapshots.indices { redoSnapshots[index].isDirty = true }
         isDirty = false
     }
 
@@ -1413,7 +1454,9 @@ public final class PDFWorkspace: ObservableObject {
     }
 
     private func resourceIdentifier(for url: URL) -> AnyHashable? {
-        guard let values = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]),
+        // Atomic replacement changes the inode; never reuse URL resource caches.
+        let freshURL = URL(fileURLWithPath: url.path)
+        guard let values = try? freshURL.resourceValues(forKeys: [.fileResourceIdentifierKey]),
               let identifier = values.fileResourceIdentifier as? AnyHashable else { return nil }
         return identifier
     }

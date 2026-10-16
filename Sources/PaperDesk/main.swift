@@ -65,6 +65,7 @@ private extension WorkbenchMode {
 final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearchFieldDelegate, NSMenuItemValidation {
     let workspace = PDFWorkspace()
     var onShowCopilot: (() -> Void)?
+    var onDocumentSave: (() -> Void)?
     var onDocumentRevisionChange: (() -> Void)?
     private var lastCopilotRevision: Int?
     private func invalidateCopilotIfChanged() {
@@ -433,6 +434,30 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
     }
     @objc func saveCopy() { _ = saveCopyInteractively() }
+    @objc func saveDocument() { _ = saveDocumentInteractively() }
+    @objc func saveAsDocument() { _ = saveDocumentInteractively(forceChooseDestination: true) }
+    @discardableResult func saveDocumentInteractively(forceChooseDestination: Bool = false, chooseDestination: (() -> URL?)? = nil) -> Bool {
+        var destination = forceChooseDestination ? nil : workspace.sourceURL
+        if destination == nil {
+            if let chooseDestination { destination = chooseDestination() }
+            else {
+                let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]
+                panel.nameFieldStringValue = workspace.sourceURL?.lastPathComponent ?? "未命名.pdf"
+                panel.directoryURL = workspace.sourceURL?.deletingLastPathComponent()
+                guard panel.runModal() == .OK else { return false }
+                destination = panel.url
+            }
+        }
+        guard let destination else { return false }
+        do {
+            try workspace.save(to: destination)
+            captureAdmittedSource(destination)
+            refreshDocument(); onDocumentSave?()
+            setInteractionStatus("已保存 · \(destination.lastPathComponent)")
+            return true
+        } catch let error as PDFWorkspaceError { showError(WorkbenchMessage.error(error)); return false }
+        catch { showError("保存失败：\(error.localizedDescription)"); return false }
+    }
     private func saveCopyInteractively() -> Bool {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]; panel.nameFieldStringValue = "文档副本.pdf"
         guard panel.runModal() == .OK, let url = panel.url else { return false }
@@ -443,7 +468,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         } catch let error as PDFWorkspaceError { showError(WorkbenchMessage.error(error)); return false }
         catch { showError("操作失败：\(error.localizedDescription)"); return false }
     }
-    func guardDirty() -> Bool { guard workspace.isDirty else { return true }; let alert = NSAlert(); alert.messageText = "文档有未保存的更改"; alert.informativeText = "先存储副本，或放弃本次更改。"; alert.addButton(withTitle: "存储副本"); alert.addButton(withTitle: "放弃更改"); alert.addButton(withTitle: "取消"); switch alert.runModal() { case .alertFirstButtonReturn: return saveCopyInteractively(); case .alertSecondButtonReturn: return true; default: return false } }
+    func guardDirty() -> Bool { guard workspace.isDirty else { return true }; let alert = NSAlert(); alert.messageText = "保存文档更改？"; alert.informativeText = "关闭前保存更改，或放弃本次修改。"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "不保存"); alert.addButton(withTitle: "取消"); switch alert.runModal() { case .alertFirstButtonReturn: return saveDocumentInteractively(); case .alertSecondButtonReturn: return true; default: return false } }
 
     func refreshDocument(preservePage: Int? = nil, scale: CGFloat? = nil) {
         invalidateCopilotIfChanged()
@@ -523,7 +548,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             let inserted = (self.workspace.document?.pageCount ?? before) - before
             self.refreshDocument(preservePage: index, scale: self.pdfView.scaleFactor)
             if inserted > 0 { self.pageOverview.restoreSelection(IndexSet(integersIn: index..<(index + inserted))) }
-            self.setInteractionStatus("已插入 \(urls.count) 份 PDF，共 \(inserted) 页；存储副本可导出合并文件。")
+            self.setInteractionStatus("已插入 \(urls.count) 份 PDF，共 \(inserted) 页；保存后即可保留更改。")
         }
     }
     private var currentPageIndex: Int { guard let doc = pdfView.document, let page = pdfView.currentPage else { return 0 }; let i = doc.index(for: page); return i == NSNotFound ? 0 : i }
@@ -629,7 +654,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         case "copy-page": perform { try performOverviewAction("copy-page") }
         case "extract": extractPages()
         case "delete-page": deleteCurrentPage()
-        case "save": saveCopy()
+        case "save": saveDocument()
         case "password": savePasswordProtectedCopy()
         case "export-text": exportPlainText()
         default: setInteractionStatus("暂不支持此工具，文档未修改")
@@ -1360,7 +1385,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         case #selector(undo): return workspace.canUndo
         case #selector(redo): return workspace.canRedo
         case #selector(printDocument): return hasDocument && workspace.allowsPrinting
-        case #selector(saveCopy), #selector(saveFlattenedCopy), #selector(savePasswordProtectedCopy), #selector(extractPages), #selector(exportPlainText), #selector(exportAnnotationSummaryText), #selector(exportAnnotationSummaryMarkdown), #selector(exportAnnotationSummaryHTML):
+        case #selector(saveDocument), #selector(saveAsDocument), #selector(saveCopy), #selector(saveFlattenedCopy), #selector(savePasswordProtectedCopy), #selector(extractPages), #selector(exportPlainText), #selector(exportAnnotationSummaryText), #selector(exportAnnotationSummaryMarkdown), #selector(exportAnnotationSummaryHTML):
             return hasDocument && workspace.allowsCopying
         case #selector(highlight), #selector(underline), #selector(strikeout), #selector(addFreeText), #selector(addSignature), #selector(toggleInk(_:)), #selector(selectEraser), #selector(addPopupNote), #selector(addRectangle), #selector(addEllipse), #selector(addLineAnnotation), #selector(addArrow), #selector(addDoubleArrow):
             return hasDocument && workspace.allowsCommenting
@@ -1486,7 +1511,8 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         addItems([
             ("打开…", #selector(WorkbenchController.openDocument), "o"),
             ("新建", #selector(WorkbenchController.newDocument), "n"),
-            ("存储副本…", #selector(WorkbenchController.saveCopy), "S"),
+            ("另存为…", #selector(WorkbenchController.saveAsDocument), "S"),
+            ("存储副本…", #selector(WorkbenchController.saveCopy), ""),
             ("存储打平副本…", #selector(WorkbenchController.saveFlattenedCopy), ""),
             ("存储密码保护副本…", #selector(WorkbenchController.savePasswordProtectedCopy), ""),
             ("导出纯文本…", #selector(WorkbenchController.exportPlainText), ""),
@@ -1507,7 +1533,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         fileMenu.addItem(newCanvas)
         let openCanvas = NSMenuItem(title: "打开无边记…", action: #selector(openCanvasAction), keyEquivalent: ""); openCanvas.target = self
         fileMenu.addItem(openCanvas)
-        let saveCanvas = NSMenuItem(title: "存储…", action: #selector(saveCanvasAction), keyEquivalent: "s"); saveCanvas.target = self
+        let saveCanvas = NSMenuItem(title: "保存", action: #selector(saveCanvasAction), keyEquivalent: "s"); saveCanvas.target = self
         fileMenu.addItem(saveCanvas)
         let toCanvas = NSMenuItem(title: "将当前 PDF 复制到无边记", action: #selector(pdfToCanvasAction), keyEquivalent: ""); toCanvas.target = self
         fileMenu.addItem(toCanvas)
@@ -1599,7 +1625,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
     @objc private func newCanvasAction() { controller.createCanvas() }
     @objc private func saveCanvasAction() {
         if let canvas = controller.activeCanvas { _ = canvas.saveBoard() }
-        else { controller.activeWorkbench?.saveCopy() }
+        else { controller.activeWorkbench?.saveDocument() }
     }
     @objc private func openCanvasAction() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(exportedAs: "cn.nankong.pdfmaster.board", conformingTo: .data)]
