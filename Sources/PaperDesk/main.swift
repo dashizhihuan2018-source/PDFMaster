@@ -1414,6 +1414,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         case #selector(undo): return workspace.canUndo
         case #selector(redo): return workspace.canRedo
         case #selector(printDocument): return hasDocument && workspace.allowsPrinting
+        case #selector(reduceFileSize(_:)):
+            return hasDocument && workspace.allowsCopying && workspace.allowsDocumentAssembly && !workspace.isEncryptedSource && !isLocalToolRunning
         case #selector(saveDocument), #selector(saveAsDocument), #selector(saveCopy), #selector(saveFlattenedCopy), #selector(savePasswordProtectedCopy), #selector(extractPages), #selector(exportPlainText), #selector(exportAnnotationSummaryText), #selector(exportAnnotationSummaryMarkdown), #selector(exportAnnotationSummaryHTML):
             return hasDocument && workspace.allowsCopying
         case #selector(highlight), #selector(underline), #selector(strikeout), #selector(addFreeText), #selector(addSignature), #selector(toggleInk(_:)), #selector(selectEraser), #selector(addPopupNote), #selector(addRectangle), #selector(addEllipse), #selector(addLineAnnotation), #selector(addArrow), #selector(addDoubleArrow):
@@ -1475,7 +1477,9 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     var window: NSWindow!
     let controller: ApplicationShellController
-    private var pendingOpen: URL?
+    private var pendingOpen: [URL] = []
+    private var externalOpenReady = false
+    var onExternalOpenFailure: ((Error) -> Void)?
     private var terminationPending = false
     private weak var inkMenuItem: NSMenuItem?
     override init() {
@@ -1489,6 +1493,10 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         controller = ApplicationShellController(recentStore: RecentDocumentStore(url: profile.appendingPathComponent("recent-documents.json")), accountStore: validationAccount)
         super.init()
     }
+    init(controller: ApplicationShellController) {
+        self.controller = controller
+        super.init()
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true; window.isMovableByWindowBackground = true
@@ -1499,14 +1507,51 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             if let item = self?.inkMenuItem { workbench?.registerInkMenuItem(item); if workbench == nil { item.state = .off } }
             self?.updateReaderMenus()
         }
-        installMenus(); if let pendingOpen { controller.open(url: pendingOpen) }
+        installMenus(); finishExternalOpenStartup()
     }
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-        let url = URL(fileURLWithPath: filename)
-        if window == nil { pendingOpen = url; return true }
-        let opened = controller.open(url: url)
-        window.makeKeyAndOrderFront(nil)
-        return opened
+        let url = filename.lowercased().hasPrefix("file:") ? URL(string: filename) : URL(fileURLWithPath: filename)
+        guard let url else { reportExternalOpenError(CocoaError(.fileReadInvalidFileName)); return false }
+        return receiveExternalDocuments([url])
+    }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        _ = receiveExternalDocuments(urls)
+    }
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        var succeeded = true
+        for filename in filenames { if !self.application(sender, openFile: filename) { succeeded = false } }
+        sender.reply(toOpenOrPrint: succeeded ? .success : .failure)
+    }
+    func finishExternalOpenStartup() {
+        externalOpenReady = true
+        let queued = pendingOpen; pendingOpen.removeAll()
+        _ = receiveExternalDocuments(queued)
+    }
+    @discardableResult private func receiveExternalDocuments(_ urls: [URL]) -> Bool {
+        var succeeded = true
+        for url in urls {
+            guard url.isFileURL else { reportExternalOpenError(CocoaError(.fileReadUnsupportedScheme)); succeeded = false; continue }
+            guard externalOpenReady else {
+                if !pendingOpen.contains(where: { $0.standardizedFileURL == url.standardizedFileURL }) { pendingOpen.append(url) }
+                continue
+            }
+            let scoped = url.startAccessingSecurityScopedResource()
+            let opened = controller.open(url: url)
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            if !opened, let error = controller.lastOpenError { reportExternalOpenError(error) }
+            if !opened { succeeded = false }
+        }
+        if externalOpenReady, !urls.isEmpty { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+        return succeeded
+    }
+    private func reportExternalOpenError(_ error: Error) {
+        if let onExternalOpenFailure { onExternalOpenFailure(error); return }
+        let alert = NSAlert()
+        alert.messageText = "无法打开文件"
+        alert.informativeText = "\(error.localizedDescription)\n请确认文件已下载完成且仍在原位置；也可先保存到本机，再使用 PDF Master 打开。"
+        alert.addButton(withTitle: "好")
+        if let window, window.attachedSheet == nil { alert.beginSheetModal(for: window) }
+        else { alert.runModal() }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window?.makeKeyAndOrderFront(nil)
@@ -1544,6 +1589,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             ("存储副本…", #selector(WorkbenchController.saveCopy), ""),
             ("存储打平副本…", #selector(WorkbenchController.saveFlattenedCopy), ""),
             ("存储密码保护副本…", #selector(WorkbenchController.savePasswordProtectedCopy), ""),
+            ("压缩文件大小…", #selector(WorkbenchController.reduceFileSize(_:)), ""),
             ("导出纯文本…", #selector(WorkbenchController.exportPlainText), ""),
             ("导出批注摘要 TXT…", #selector(WorkbenchController.exportAnnotationSummaryText), ""),
             ("导出批注摘要 Markdown…", #selector(WorkbenchController.exportAnnotationSummaryMarkdown), ""),
@@ -1726,7 +1772,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         guard let workbench = controller.activeWorkbench else { return false }
         return workbench.validateMenuItem(NSMenuItem(title: item.title, action: action, keyEquivalent: ""))
     }
-    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.2 · © Nankong"; a.runModal() }
+    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.3 · © Nankong"; a.runModal() }
 }
 
 MainActor.assumeIsolated {

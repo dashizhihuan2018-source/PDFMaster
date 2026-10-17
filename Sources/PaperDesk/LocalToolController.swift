@@ -53,9 +53,11 @@ enum LocalOrganizeOperation {
 
     func presentLocalTool(_ id: String) {
         guard let window = view.window, !isLocalToolRunning else { return }
-        guard let qpdf = ExternalToolDiscovery.qpdf() else {
-            setInteractionStatus("未找到外部 qpdf；请设置 PDFMASTER_QPDF 或 PATH。文档未修改。"); return
+        guard let qpdf = Bundle.main.resourceURL?.appendingPathComponent("Engines/qpdf/bin/qpdf"),
+              FileManager.default.isExecutableFile(atPath: qpdf.path) else {
+            setInteractionStatus("缺少随 App 打包的本地处理引擎，未修改文档"); return
         }
+        if id == "compress" { presentCompressionOptions(qpdf: qpdf, window: window); return }
         let alert = NSAlert()
         alert.addButton(withTitle: "开始"); alert.addButton(withTitle: "取消")
         var operation = LocalOrganizeOperation.compress
@@ -74,9 +76,6 @@ enum LocalOrganizeOperation {
         case "ocr":
             operation = .ocr; alert.messageText = "文字识别 · 简体中文 / 英文"
             alert.informativeText = "在本机识别清晰的水平扫描页，跳过已有文字的页面。暂不支持旋转或裁剪页；识别结果支持本机检索，导出后在其他阅读器中的文字提取效果可能不同。请核对识别结果。"
-        case "compress":
-            alert.messageText = "无损压缩 PDF"
-            alert.informativeText = "仅优化对象与数据流，不降低图片质量。已优化的 PDF 可能无法进一步缩小；不提供高、中、低有损压缩档位。"
         default: return
         }
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -108,7 +107,7 @@ enum LocalOrganizeOperation {
         }
     }
 
-    private static func localToolError(_ error: Error) -> String {
+    static func localToolError(_ error: Error) -> String {
         if let error = error as? PDFWorkspaceError { return WorkbenchMessage.error(error) }
         switch error as? OrganizeError {
         case .cancelled: return "已取消处理 · 文档未修改"

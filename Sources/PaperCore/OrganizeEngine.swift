@@ -23,6 +23,25 @@ public struct PageLabel {
     public var first: Int; public var style: Style; public var start: Int; public var prefix: String
     public init(first: Int, style: Style, start: Int = 1, prefix: String = "") { self.first = first; self.style = style; self.start = start; self.prefix = prefix }
 }
+public enum PDFCompressionPreset: CaseIterable {
+    case lossless, highQuality, balanced, smallSize
+    public var title: String {
+        switch self {
+        case .lossless: return "无损优化"
+        case .highQuality: return "高清晰度"
+        case .balanced: return "均衡压缩"
+        case .smallSize: return "更小文件"
+        }
+    }
+    public var jpegQuality: Int? {
+        switch self {
+        case .lossless: return nil
+        case .highQuality: return 85
+        case .balanced: return 65
+        case .smallSize: return 40
+        }
+    }
+}
 public struct CompressionResult { public let before: Int; public let after: Int; public var reduced: Bool { after < before } }
 public struct OCRPage { public let page: Int; public let lines: [String]; public let skipped: Bool }
 public struct PageDifference { public let page: Int; public let textChanged: Bool; public let changedPixelFraction: Double; public let missingSide: String? }
@@ -94,13 +113,23 @@ public final class OrganizeEngine {
         try publish(candidate, to: output, job: job, cancelled: cancelled)
     }
 
-    /// Lossless object/stream optimization only. If it grows, publish the unchanged source.
-    public func compress(_ input: URL, output: URL, cancelled: () -> Bool = { false }) throws -> CompressionResult {
+    /// Checks the admitted source bytes before any PDFKit serialization can discard signature fields.
+    public func validateCompressionInput(_ input: URL, cancelled: () -> Bool = { false }) throws {
+        try checkCancellation(cancelled); _ = try document(input)
+        let job = try jobDirectory(); defer { try? FileManager.default.removeItem(at: job) }
+        _ = try inspect(input, job: job, assembly: false, cancelled: cancelled)
+    }
+
+    /// Optimizes PDF objects and, when requested, eligible images without rasterizing pages.
+    /// If the result grows, the unchanged source is published instead.
+    public func compress(_ input: URL, output: URL, preset: PDFCompressionPreset = .lossless, cancelled: () -> Bool = { false }) throws -> CompressionResult {
         try checkCancellation(cancelled); try ensureNew(output); _ = try document(input)
         let job = try jobDirectory(); defer { try? FileManager.default.removeItem(at: job) }
         _ = try inspect(input, job: job, assembly: false, cancelled: cancelled)
         let candidate = job.appendingPathComponent("compact.pdf")
-        _ = try run([input.path, "--object-streams=generate", "--compress-streams=y", "--recompress-flate", "--compression-level=9", candidate.path], job: job, cancelled: cancelled)
+        var arguments = [input.path, "--object-streams=generate", "--compress-streams=y", "--recompress-flate", "--compression-level=9"]
+        if let quality = preset.jpegQuality { arguments += ["--optimize-images", "--jpeg-quality=\(quality)"] }
+        _ = try run(arguments + [candidate.path], job: job, cancelled: cancelled)
         let before = try fileSize(input), optimized = try fileSize(candidate)
         try publish(optimized < before ? candidate : input, to: output, job: job, cancelled: cancelled)
         return CompressionResult(before: before, after: min(before, optimized))
