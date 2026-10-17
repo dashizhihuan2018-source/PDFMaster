@@ -125,6 +125,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private weak var inkMenuItem: NSMenuItem?
     private let annotationSelection = AnnotationSelectionTracker()
     private var pendingPlacement: PendingPlacement?
+    private var activeMarkup: (kind: PDFAnnotationSubtype, color: NSColor)?
     let shapeStyleBar = ShapeStyleBarView()
     /// A separate instance keeps pen width/color independent of shape defaults.
     let inkStyleBar = ShapeStyleBarView()
@@ -280,6 +281,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             self?.commitInk(points: points, page: page, style: style)
         }
         pdfView.onPlacement = { [weak self] start, end, page in self?.applyPlacement(from: start, to: end, page: page) }
+        pdfView.onTextSelectionCompleted = { [weak self] selection in
+            guard let self, let tool = self.activeMarkup else { return }
+            self.applyMarkup(selection, kind: tool.kind, color: tool.color)
+        }
         pdfView.onAnnotationSelection = { [weak self] page, index in self?.selectAnnotation(page: page, index: index) }
         pdfView.onShapeTransform = { [weak self] page, index, bounds in
             guard let self, let a = self.workspace.document?.page(at: page)?.annotations[safe: index] else { return }
@@ -883,11 +888,25 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc func highlight() { addMarkup(.highlight, color: NSColor.systemYellow.withAlphaComponent(0.45)) }; @objc func underline() { addMarkup(.underline, color: .systemIndigo) }; @objc func strikeout() { addMarkup(.strikeOut, color: .systemRed) }
     private func addMarkup(_ kind: PDFAnnotationSubtype, color: NSColor) {
-        guard let selection = pdfView.currentSelection,
-              let presentation = pdfView.document,
-              let workingDocument = workspace.document else {
-            showError("请先在文档中选择文字。"); return
+        guard workspace.document != nil, workspace.allowsCommenting else { return }
+        let selection = pdfView.currentSelection
+        if activeMarkup?.kind == kind, selection == nil {
+            resetDocumentInteractionState(); return
         }
+        resetDocumentInteractionState(); eraserEnabled = false
+        activeMarkup = (kind, color); pdfView.markupSelectionEnabled = true
+        let id = kind == .highlight ? "highlight" : (kind == .underline ? "underline" : "strikeout")
+        let title = kind == .highlight ? "高亮" : (kind == .underline ? "下划线" : "删除线")
+        secondaryTools.arrangedSubviews.compactMap { $0 as? ToolStripButton }.forEach { $0.state = $0.toolID == id ? .on : .off }
+        pdfView.setAccessibilityLabel("PDF 文档视图，\(title)模式，拖选文字后应用批注；Esc 退出")
+        setInteractionStatus("\(title) · 拖选文字后松开鼠标应用 · 可连续标记 · Esc 退出")
+        if let selection, selection.string?.contains(where: { !$0.isWhitespace }) == true {
+            applyMarkup(selection, kind: kind, color: color)
+        }
+    }
+    private func applyMarkup(_ selection: PDFSelection, kind: PDFAnnotationSubtype, color: NSColor) {
+        guard workspace.allowsCommenting, let presentation = pdfView.document,
+              let workingDocument = workspace.document else { return }
         let mapped = PDFSelection(document: workingDocument)
         for fragment in selection.selectionsByLine() {
             guard let sourcePage = fragment.pages.first else { continue }
@@ -897,7 +916,13 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             mapped.add(targetSelection)
         }
         let pages = IndexSet(mapped.pages.map { workingDocument.index(for: $0) }.filter { $0 != NSNotFound })
+        guard !pages.isEmpty else { return }
         mutateAnnotations(pages: pages) { try workspace.addMarkup(selection: mapped, kind: kind, color: color) }
+        pdfView.setCurrentSelection(nil, animate: false)
+    }
+    private func clearMarkupTool() {
+        activeMarkup = nil; pdfView.markupSelectionEnabled = false
+        for button in secondaryTools.arrangedSubviews.compactMap({ $0 as? ToolStripButton }) where ["highlight", "underline", "strikeout"].contains(button.toolID) { button.state = .off }
     }
     @objc func toggleInk(_ sender: NSMenuItem) {
         cancelPendingPlacement(); pdfView.clearShapeSelection(); pdfView.annotationManipulationEnabled = false
@@ -1101,6 +1126,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
 
     func beginPlacement(_ placement: PendingPlacement, accessibilityName: String) {
         guard workspace.document != nil, workspace.allowsCommenting else { return }
+        clearMarkupTool()
         selectedInk = nil
         inkStyleBar.isHidden = true
         pdfView.shapeTool = nil; shapeStyleBar.isHidden = true; selectedShape = nil; pdfView.clearShapeSelection()
@@ -1115,6 +1141,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
 
     private func cancelPendingPlacement() {
+        clearMarkupTool()
         inkStyleBar.widthSlider.cancelShapeTracking()
         selectedInk = nil
         inkStyleBar.isHidden = true
@@ -1128,6 +1155,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
 
     func resetDocumentInteractionState() {
+        clearMarkupTool()
         inkStyleBar.widthSlider.cancelShapeTracking()
         selectedInk = nil
         inkStyleBar.isHidden = true
@@ -1698,7 +1726,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         guard let workbench = controller.activeWorkbench else { return false }
         return workbench.validateMenuItem(NSMenuItem(title: item.title, action: action, keyEquivalent: ""))
     }
-    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.1 · © Nankong"; a.runModal() }
+    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.2 · © Nankong"; a.runModal() }
 }
 
 MainActor.assumeIsolated {

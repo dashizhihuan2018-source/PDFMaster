@@ -7,7 +7,10 @@ import PaperCore
     var inkEnabled = false { didSet { if oldValue != inkEnabled { cancelGesture() } } }
     var placementEnabled = false { didSet { if oldValue != placementEnabled { cancelGesture() } } }
     var contentEditingEnabled = false { didSet { if oldValue != contentEditingEnabled { cancelGesture() } } }
-    override var document: PDFDocument? { didSet { if oldValue !== document { restoreNativeInkRendering(); clearShapeSelection() } } }
+    var markupSelectionEnabled = false { didSet { if oldValue != markupSelectionEnabled { markupStart = nil; setCurrentSelection(nil, animate: false) } } }
+    var onTextSelectionCompleted: ((PDFSelection) -> Void)?
+    private var markupStart: (page: PDFPage, point: CGPoint, document: PDFDocument)?
+    override var document: PDFDocument? { didSet { if oldValue !== document { markupStart = nil; restoreNativeInkRendering(); clearShapeSelection() } } }
     var allowsCopying = true
     var shapeTool: ShapeToolKind?
     var shapeStyle = AnnotationStyle(strokeColor: .systemRed, fillColor: nil, lineWidth: 2)
@@ -293,6 +296,18 @@ import PaperCore
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let v = convert(event.locationInWindow, from:nil)
+        if markupSelectionEnabled {
+            markupStart = nil; setCurrentSelection(nil, animate: false)
+            guard let document, let page = page(for: v, nearest: false) else { return }
+            let point = convert(v, to: page)
+            // Starting in empty space must not snap to an unrelated text block.
+            let character = page.characterIndex(at: point)
+            guard character != NSNotFound, character >= 0, character < page.numberOfCharacters,
+                  page.characterBounds(at: character).insetBy(dx: -3, dy: -3).contains(point),
+                  page.selection(for: NSRange(location: character, length: 1))?.string?.contains(where: { !$0.isWhitespace }) == true else { return }
+            markupStart = (page, point, document)
+            return
+        }
         // Selected handles win over drawing, making the just-created shape immediately editable.
         let isPlacingContent = placementEnabled && shapeTool == nil
         if annotationManipulationEnabled, !isPlacingContent, !inkEnabled, !contentEditingEnabled, let s = selectedShape, let a = selectedAnnotation, let page = document?.page(at:s.page) {
@@ -331,14 +346,35 @@ import PaperCore
         beginGesture(on:page,at:p)
     }
     override func mouseDragged(with event: NSEvent) {
+        if markupSelectionEnabled { updateMarkupSelection(with: event); return }
         guard let page = gesturePage else { super.mouseDragged(with:event); return }
         receivedMouseDrag = true
         updateGesture(to: convert(convert(event.locationInWindow,from:nil),to:page))
     }
     override func mouseUp(with event: NSEvent) {
+        if markupSelectionEnabled {
+            updateMarkupSelection(with: event)
+            guard let start = markupStart else { return }
+            markupStart = nil
+            let a = convert(start.point, from: start.page), z = convert(event.locationInWindow, from: nil)
+            guard hypot(z.x - a.x, z.y - a.y) >= 3,
+                  let selection = currentSelection,
+                  selection.string?.contains(where: { !$0.isWhitespace }) == true else {
+                setCurrentSelection(nil, animate: false); return
+            }
+            onTextSelectionCompleted?(selection)
+            return
+        }
         guard let page = gesturePage else { super.mouseUp(with:event); return }
         if transform != nil, !receivedMouseDrag { cancelGesture(); return }
         updateGesture(to: convert(convert(event.locationInWindow,from:nil),to:page)); finishGesture()
+    }
+    private func updateMarkupSelection(with event: NSEvent) {
+        guard let start = markupStart, let document, document === start.document,
+              let endPage = page(for: convert(event.locationInWindow, from: nil), nearest: true) else { return }
+        let end = convert(convert(event.locationInWindow, from: nil), to: endPage)
+        let selection = document.selection(from: start.page, at: start.point, to: endPage, at: end)
+        setCurrentSelection(selection, animate: false)
     }
     @objc private func redrawOverlay() {
         CATransaction.begin()
@@ -464,8 +500,8 @@ import PaperCore
         super.keyDown(with:event)
     }
     @discardableResult func cancelPlacementForEscape()->Bool {
-        guard inkEnabled || placementEnabled || contentEditingEnabled || gesturePage != nil || selectedShape != nil || selectedInk != nil else { return false }
-        inkEnabled=false; placementEnabled=false; contentEditingEnabled=false; shapeTool=nil; cancelGesture(); clearShapeSelection(); onCancelPlacement?(); return true
+        guard markupSelectionEnabled || inkEnabled || placementEnabled || contentEditingEnabled || gesturePage != nil || selectedShape != nil || selectedInk != nil else { return false }
+        markupSelectionEnabled=false; inkEnabled=false; placementEnabled=false; contentEditingEnabled=false; shapeTool=nil; cancelGesture(); clearShapeSelection(); onCancelPlacement?(); return true
     }
     func isPDFActionAllowed(_ action:Selector,hasSelection:Bool)->Bool { if action == DocumentMenuSelectors.copy { return allowsCopying && hasSelection }; return action != DocumentMenuSelectors.cut }
     func validateMenuItem(_ item:NSMenuItem)->Bool {
