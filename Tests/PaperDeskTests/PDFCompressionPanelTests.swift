@@ -13,18 +13,18 @@ import PaperCore
         XCTAssertTrue(source.contains("PDFCompressionPanelController"))
     }
 
-    func testInitialCardsHaveNoInventedSizeAndExportIsDisabled() throws {
+    func testInitialQualitiesHaveNoInventedSizeAndExportIsDisabled() throws {
         let input = try input()
         let session = PDFCompressionSession(input: input, worker: { _ in PDFCompressionPreview(input: input, data: input.data) })
         XCTAssertEqual(session.selectedPreset, .balanced)
         XCTAssertFalse(session.canExport)
-        for preset in PDFCompressionSession.cardPresets {
+        for preset in PDFCompressionSession.qualityPresets {
             XCTAssertEqual(session.status(for: preset).label, "等待计算")
         }
-        XCTAssertEqual(PDFCompressionSession.cardPresets.map(\.imageDPI), [300, 150, 72])
+        XCTAssertEqual(PDFCompressionSession.qualityPresets.map(\.imageDPI), [72, 150, 300])
     }
 
-    func testAllCardsCalculateSeriallyAndSelectionUsesItsOwnRealBytes() async throws {
+    func testAllQualitiesCalculateSeriallyAndSelectionUsesItsOwnRealBytes() async throws {
         let input = try input(), gate = CompressionWorkerGate()
         let session = PDFCompressionSession(input: input, worker: gate.run)
         session.start()
@@ -113,7 +113,7 @@ import PaperCore
         firstGate.succeed(input, count: 100); secondGate.succeed(input, count: 100)
     }
 
-    func testCustomPanelContainsThreeCardsAndActualPDFKitDocumentWithoutBlockingParent() throws {
+    func testCompactPanelUsesSingleNativeQualitySelectorWithoutCardsOrPDFView() throws {
         _ = NSApplication.shared
         let workbench = WorkbenchController(); _ = workbench.view
         try workbench.workspace.createBlank()
@@ -123,20 +123,48 @@ import PaperCore
         XCTAssertTrue(panel.window is NSPanel)
         XCTAssertNil(parent.attachedSheet)
         XCTAssertNil(panel.window?.sheetParent)
+        let window = try XCTUnwrap(panel.window)
+        XCTAssertLessThanOrEqual(window.frame.width, 600)
+        XCTAssertLessThanOrEqual(window.frame.height, 450)
+        XCTAssertEqual(window.contentView?.frame.size, NSSize(width: 520, height: 360))
+        XCTAssertFalse(window.styleMask.contains(.resizable))
         let views = descendants(try XCTUnwrap(panel.window?.contentView))
-        let cardIDs = views.compactMap { $0.identifier?.rawValue }.filter { $0.hasPrefix("ReduceFileSizeQualityButton-") }
-        XCTAssertEqual(Set(cardIDs), Set(["ReduceFileSizeQualityButton-300", "ReduceFileSizeQualityButton-150", "ReduceFileSizeQualityButton-72"]))
-        let preview = try XCTUnwrap(views.first { $0.identifier?.rawValue == "CompressionPDFPreview" } as? PDFView)
-        XCTAssertEqual(preview.document?.pageCount, 1)
+        XCTAssertFalse(views.contains { $0 is PDFView })
+        XCTAssertFalse(views.contains { String(describing: type(of: $0)).contains("CompressionPresetCard") })
+        let selector = try XCTUnwrap(views.first { $0.identifier?.rawValue == "CompressionQualitySelector" } as? NSSegmentedControl)
+        XCTAssertEqual(selector.segmentCount, 3)
+        XCTAssertEqual((0..<3).compactMap { selector.label(forSegment: $0) }, ["紧凑 · 72 DPI", "均衡 · 150 DPI", "高清 · 300 DPI"])
+        XCTAssertEqual(selector.selectedSegment, 1)
         let save = try XCTUnwrap(views.first { $0.identifier?.rawValue == "CompressionSaveAs" } as? NSButton)
         XCTAssertFalse(save.isEnabled)
+        let result = try XCTUnwrap(views.first { $0.identifier?.rawValue == "CompressionSizeResult" } as? NSTextField)
+        XCTAssertTrue(result.stringValue.contains("→ 等待计算"))
+        XCTAssertFalse(result.stringValue.contains("%"))
         panel.window?.contentView?.layoutSubtreeIfNeeded()
-        for card in views where card.identifier?.rawValue.hasPrefix("ReduceFileSizeQualityButton-") == true {
-            XCTAssertEqual(card.frame.height, 96, accuracy: 0.5)
-            XCTAssertEqual(card.frame.width, 330, accuracy: 0.5)
-        }
         panel.close()
-        XCTAssertNil(preview.document)
+    }
+
+    func testCompactSelectorMapsQualityAndLosslessControlsToSessionWithoutOverlappingJobs() async throws {
+        _ = NSApplication.shared
+        let workbench = WorkbenchController(); _ = workbench.view; try workbench.workspace.createBlank()
+        let parent = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        let panel = try PDFCompressionPanelController(workbench: workbench, parent: parent, qpdf: URL(fileURLWithPath: "/unused-qpdf"))
+        let views = descendants(try XCTUnwrap(panel.window?.contentView))
+        let selector = try XCTUnwrap(views.first { $0.identifier?.rawValue == "CompressionQualitySelector" } as? NSSegmentedControl)
+        let lossless = try XCTUnwrap(views.first { $0.identifier?.rawValue == "CompressionLossless" } as? NSButton)
+        selector.selectedSegment = 0
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(selector.action), to: selector.target, from: selector))
+        XCTAssertEqual(panel.session.selectedPreset, .smallSize)
+        lossless.state = .on
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(lossless.action), to: lossless.target, from: lossless))
+        XCTAssertEqual(panel.session.selectedPreset, .lossless)
+        selector.selectedSegment = 2
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(selector.action), to: selector.target, from: selector))
+        XCTAssertEqual(panel.session.selectedPreset, .highQuality)
+        XCTAssertEqual(lossless.state, .off)
+        panel.close()
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertFalse(panel.session.canExport)
     }
 
     func testDocumentMutationMarksActualPanelStaleWithoutReplacingOriginalSnapshot() async throws {
@@ -184,6 +212,9 @@ import PaperCore
         })
         XCTAssertFalse(session.exportFailed)
         XCTAssertEqual(writtenCount, 1)
+        session.select(.highQuality)
+        XCTAssertNil(session.exportFeedback, "Changing quality must not label the new result as already saved")
+        XCTAssertFalse(session.exportFailed)
         session.close(); gate.succeed(input, count: 150)
         XCTAssertFalse(session.saveCopy(to: target) { _, _ in XCTFail("Closed sessions must never write") })
     }

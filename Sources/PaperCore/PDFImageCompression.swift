@@ -7,7 +7,10 @@ import UniformTypeIdentifiers
 /// Unknown graphics/resource constructions conservatively disable image rewriting.
 enum PDFImageCompression {
     static let maximumImagePixels = 32_000_000
-    static let maximumTotalPixels = 100_000_000
+    // Cumulative work, not simultaneous allocation: each image is released before the next.
+    static let maximumTotalPixels = 1_000_000_000
+    static let maximumPageOperations = 100_000
+    static let maximumDocumentOperations = 5_000_000
     static let maximumStreamBytes = 128 * 1024 * 1024
 
     static func prepare(input: URL, inspection: [String: Any], job: URL, dpi: Int, quality: Int,
@@ -38,6 +41,8 @@ enum PDFImageCompression {
                   let page = document.page(at: index + 1) else { return nil }
             let stream = CGPDFContentStreamCreateWithPage(page)
             defer { CGPDFContentStreamRelease(stream) }
+            // Nested Forms share this page's budget. Only a new root page resets it.
+            usage.pageOperations = 0
             usage.scan(stream: stream, resources: resources, matrix: .identity, path: [])
             if usage.failed { break }
         }
@@ -155,6 +160,7 @@ private final class ImageUsage {
     var sizes: [String: (width: Double, height: Double)] = [:]
     var excludedImages: Set<String> = []
     var operations = 0
+    var pageOperations = 0
     let table: CGPDFOperatorTableRef?
     init(objects: [String: Any], cancelled: @escaping () -> Bool) {
         self.objects = objects; self.cancelled = cancelled
@@ -243,7 +249,9 @@ private final class ScanContext {
     func stop(_ scanner: CGPDFScannerRef) { owner.failed = true; CGPDFScannerStop(scanner) }
     func tick(_ scanner: CGPDFScannerRef) -> Bool {
         owner.operations += 1
-        if owner.failed || owner.cancelled() || owner.operations > 100_000 { stop(scanner); return false }
+        owner.pageOperations += 1
+        if owner.failed || owner.cancelled() || owner.pageOperations > PDFImageCompression.maximumPageOperations ||
+           owner.operations > PDFImageCompression.maximumDocumentOperations { stop(scanner); return false }
         return true
     }
     func save(_ scanner: CGPDFScannerRef) {

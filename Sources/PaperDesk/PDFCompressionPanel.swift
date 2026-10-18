@@ -1,10 +1,9 @@
 import AppKit
 import Combine
-import PDFKit
 import PaperCore
 import UniformTypeIdentifiers
 
-/// One document snapshot, one serial worker. Card labels only use completed engine results.
+/// One document snapshot, one serial worker. Sizes only use completed engine results.
 @MainActor final class PDFCompressionSession {
     enum Status {
         case waiting, processing, ready(PDFCompressionPreview), failed(String)
@@ -21,7 +20,7 @@ import UniformTypeIdentifiers
             }
         }
     }
-    static let cardPresets: [PDFCompressionPreset] = [.highQuality, .balanced, .smallSize]
+    static let qualityPresets: [PDFCompressionPreset] = [.smallSize, .balanced, .highQuality]
     let input: PDFEngineInput
     private(set) var selectedPreset: PDFCompressionPreset = .balanced
     private(set) var isClosed = false
@@ -58,6 +57,7 @@ import UniformTypeIdentifiers
     }
     func select(_ preset: PDFCompressionPreset) {
         guard !isClosed, !isStale else { return }
+        if selectedPreset != preset { exportFeedback = nil; exportFailed = false }
         selectedPreset = preset
         if case .waiting = status(for: preset), active != preset {
             queue.removeAll { $0 == preset }; queue.insert(preset, at: 0)
@@ -93,7 +93,7 @@ import UniformTypeIdentifiers
     private func invalidate() {
         guard !isStale, !isClosed else { return }
         isStale = true; generation += 1; queue.removeAll(); statuses.removeAll()
-        message = "文档已变化，此预览已过期。请关闭后重新打开压缩面板。"
+        message = "文档已变化，压缩结果已过期。请关闭后重新打开压缩面板。"
         if active != nil { cancelWorker(); task?.cancel() }
         onChange?()
     }
@@ -132,20 +132,16 @@ import UniformTypeIdentifiers
     private weak var parent: NSWindow?
     private let sourceName: String
     private let sourceURL: URL?
-    private let pdfView = PDFView()
-    private let previewMode = NSSegmentedControl(labels: ["原始", "压缩后"], trackingMode: .selectOne, target: nil, action: nil)
+    private let qualitySelector = NSSegmentedControl(labels: ["紧凑 · 72 DPI", "均衡 · 150 DPI", "高清 · 300 DPI"], trackingMode: .selectOne, target: nil, action: nil)
     private let progress = NSProgressIndicator()
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
-    private let previewLabel = NSTextField(labelWithString: "原始预览")
+    private let resultLabel = NSTextField(labelWithString: "")
     private let exportButton = NSButton(title: "另存为压缩副本…", target: nil, action: nil)
     private let retryButton = NSButton(title: "重试此档", target: nil, action: nil)
-    private let losslessButton = NSButton(radioButtonWithTitle: "无损优化 · 不降低图片画质", target: nil, action: nil)
-    private let losslessResult = NSTextField(labelWithString: "选择后计算实际大小")
-    private var cards: [PDFCompressionPreset: CompressionPresetCard] = [:]
+    private let losslessButton = NSButton(checkboxWithTitle: "仅无损优化（不降低画质）", target: nil, action: nil)
     private var observations = Set<AnyCancellable>()
     private var parentCloseObserver: NSObjectProtocol?
     private var savePanel: NSSavePanel?
-    private var displayedData: Data?
     private var didFinish = false
 
     init(workbench: WorkbenchController, parent: NSWindow, qpdf: URL) throws {
@@ -160,9 +156,9 @@ import UniformTypeIdentifiers
             guard let workbench else { throw OrganizeError.cancelled }
             try workbench.workspace.validateEngineInput(input)
         })
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 1020, height: 700),
-                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        panel.title = "压缩文件大小"; panel.minSize = NSSize(width: 960, height: 650)
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
+                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        panel.title = "压缩文件大小"
         panel.isReleasedWhenClosed = false; panel.hidesOnDeactivate = false
         super.init(window: panel)
         panel.delegate = self
@@ -196,110 +192,91 @@ import UniformTypeIdentifiers
         session.close(); observations.removeAll()
         if let token = parentCloseObserver { NotificationCenter.default.removeObserver(token); parentCloseObserver = nil }
         if let savePanel, let window, savePanel.sheetParent === window { window.endSheet(savePanel, returnCode: .cancel) }
-        savePanel = nil; pdfView.document = nil; displayedData = nil
+        savePanel = nil
         let completion = onClose; onClose = nil; completion?()
     }
 
     private func buildInterface() {
         guard let content = window?.contentView else { return }
-        let title = label("压缩文件大小", size: 23, weight: .semibold)
-        let subtitle = label("\(sourceName)  ·  原始 \(bytes(session.input.data.count))", size: 12, color: .secondaryLabelColor)
+        let title = label("压缩文件大小", size: 18, weight: .semibold)
+        let subtitle = label(sourceName, size: 12, color: .secondaryLabelColor)
         subtitle.lineBreakMode = .byTruncatingMiddle
-        let left = NSStackView(); left.orientation = .vertical; left.alignment = .leading; left.spacing = 12
-        left.addArrangedSubview(label("选择图片质量", size: 14, weight: .semibold))
-        for preset in PDFCompressionSession.cardPresets {
-            let card = CompressionPresetCard(preset: preset, target: self, action: #selector(selectCard(_:)))
-            card.widthAnchor.constraint(equalToConstant: 330).isActive = true
-            card.heightAnchor.constraint(equalToConstant: 96).isActive = true
-            cards[preset] = card; left.addArrangedSubview(card)
-        }
+        subtitle.identifier = NSUserInterfaceItemIdentifier("CompressionSourceName")
+        let qualityLabel = label("文档质量", size: 12, weight: .medium)
+        qualitySelector.selectedSegment = 1
+        qualitySelector.target = self; qualitySelector.action = #selector(selectQuality)
+        qualitySelector.identifier = NSUserInterfaceItemIdentifier("CompressionQualitySelector")
+        qualitySelector.setAccessibilityLabel("文档质量")
+        qualitySelector.segmentStyle = .rounded
+        for index in 0..<qualitySelector.segmentCount { qualitySelector.setWidth(156, forSegment: index) }
         losslessButton.target = self; losslessButton.action = #selector(selectLossless)
+        losslessButton.font = .systemFont(ofSize: 11)
         losslessButton.identifier = NSUserInterfaceItemIdentifier("CompressionLossless")
-        left.addArrangedSubview(losslessButton)
-        losslessResult.font = .systemFont(ofSize: 11); losslessResult.textColor = .secondaryLabelColor
-        left.addArrangedSubview(losslessResult)
-        let hint = NSTextField(wrappingLabelWithString: "仅在本机处理，不上传文件。原件与当前编辑保持不变。\n\n仅优化适合处理的图片，保留文字、矢量与批注结构；复杂色彩、透明度、遮罩等图片采用保守处理，实际收益可能有限。")
-        hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
-        hint.widthAnchor.constraint(equalToConstant: 330).isActive = true; left.addArrangedSubview(hint)
-
-        previewMode.selectedSegment = 0; previewMode.target = self; previewMode.action = #selector(changePreview)
-        previewMode.identifier = NSUserInterfaceItemIdentifier("CompressionPreviewMode")
-        let minus = NSButton(title: "−", target: self, action: #selector(zoomOut))
-        minus.setAccessibilityLabel("缩小预览")
-        let plus = NSButton(title: "+", target: self, action: #selector(zoomIn))
-        plus.setAccessibilityLabel("放大预览")
-        let fit = NSButton(title: "适合页面", target: self, action: #selector(fitPreview))
-        let toolbar = NSStackView(views: [previewMode, NSView(), minus, plus, fit]); toolbar.spacing = 8
-        pdfView.displayMode = .singlePageContinuous; pdfView.autoScales = true; pdfView.backgroundColor = .underPageBackgroundColor
-        pdfView.minScaleFactor = 0.1; pdfView.maxScaleFactor = 5
-        pdfView.identifier = NSUserInterfaceItemIdentifier("CompressionPDFPreview")
-        previewLabel.font = .systemFont(ofSize: 11); previewLabel.textColor = .secondaryLabelColor
-        let right = NSStackView(views: [toolbar, pdfView, previewLabel]); right.orientation = .vertical; right.alignment = .leading; right.spacing = 10
-        toolbar.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true
-        pdfView.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true
-        pdfView.heightAnchor.constraint(greaterThanOrEqualToConstant: 360).isActive = true
-        let columns = NSStackView(views: [left, right]); columns.alignment = .top; columns.spacing = 24
-        left.widthAnchor.constraint(equalToConstant: 330).isActive = true
-        right.heightAnchor.constraint(equalTo: columns.heightAnchor).isActive = true
-
+        resultLabel.font = .monospacedDigitSystemFont(ofSize: 16, weight: .medium)
+        resultLabel.identifier = NSUserInterfaceItemIdentifier("CompressionSizeResult")
+        resultLabel.setAccessibilityLabel("实际文件大小")
         progress.style = .spinning; progress.isIndeterminate = true; progress.controlSize = .small
         progress.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        progress.heightAnchor.constraint(equalToConstant: 18).isActive = true
         statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.identifier = NSUserInterfaceItemIdentifier("CompressionStatus")
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         retryButton.target = self; retryButton.action = #selector(retry)
+        retryButton.identifier = NSUserInterfaceItemIdentifier("CompressionRetry")
         let statusRow = NSStackView(views: [progress, statusLabel, retryButton]); statusRow.spacing = 10
+        let hint = NSTextField(wrappingLabelWithString: "仅本机处理，原件与当前编辑保持不变。复杂色彩、透明度和遮罩图片保守处理，实际收益可能有限。")
+        hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         exportButton.target = self; exportButton.action = #selector(saveCopy); exportButton.keyEquivalent = "\r"
         exportButton.bezelStyle = .rounded; exportButton.identifier = NSUserInterfaceItemIdentifier("CompressionSaveAs")
-        let footer = NSStackView(views: [label("保留原文件 · 仅另存为新副本", size: 11, color: .secondaryLabelColor), NSView(), cancel, exportButton]); footer.spacing = 12
-        let root = NSStackView(views: [title, subtitle, columns, statusRow, footer]); root.orientation = .vertical; root.alignment = .leading; root.spacing = 12
-        root.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(root)
-        for row in [columns, statusRow, footer] { row.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true }
-        NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24), root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24), root.topAnchor.constraint(equalTo: content.topAnchor, constant: 22), root.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)])
+        let footer = NSStackView(views: [NSView(), cancel, exportButton]); footer.spacing = 10
+        for view in [title, subtitle, qualityLabel, qualitySelector, losslessButton, resultLabel, statusRow, hint, footer] {
+            view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view)
+            view.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24).isActive = true
+            view.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: content.topAnchor, constant: 22), title.heightAnchor.constraint(equalToConstant: 22),
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6), subtitle.heightAnchor.constraint(equalToConstant: 16),
+            qualityLabel.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 18), qualityLabel.heightAnchor.constraint(equalToConstant: 16),
+            qualitySelector.topAnchor.constraint(equalTo: qualityLabel.bottomAnchor, constant: 8), qualitySelector.heightAnchor.constraint(equalToConstant: 28),
+            losslessButton.topAnchor.constraint(equalTo: qualitySelector.bottomAnchor, constant: 8), losslessButton.heightAnchor.constraint(equalToConstant: 18),
+            resultLabel.topAnchor.constraint(equalTo: losslessButton.bottomAnchor, constant: 16), resultLabel.heightAnchor.constraint(equalToConstant: 24),
+            statusRow.topAnchor.constraint(equalTo: resultLabel.bottomAnchor, constant: 6), statusRow.heightAnchor.constraint(equalToConstant: 36),
+            hint.topAnchor.constraint(equalTo: statusRow.bottomAnchor, constant: 8), hint.heightAnchor.constraint(equalToConstant: 30),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18), footer.heightAnchor.constraint(equalToConstant: 32)
+        ])
     }
     private func render() {
         guard !didFinish else { return }
-        for (preset, card) in cards {
-            card.update(selected: session.selectedPreset == preset, status: session.status(for: preset), originalBytes: session.input.data.count)
-            card.isEnabled = !session.isStale
+        if let index = PDFCompressionSession.qualityPresets.firstIndex(of: session.selectedPreset) {
+            qualitySelector.selectedSegment = index
         }
+        qualitySelector.isEnabled = !session.isStale
         losslessButton.state = session.selectedPreset == .lossless ? .on : .off
         losslessButton.isEnabled = !session.isStale
-        losslessResult.stringValue = session.status(for: .lossless).label
         let selected = session.status(for: session.selectedPreset)
+        let original = bytes(session.input.data.count)
+        resultLabel.stringValue = original + " → " + (session.isStale ? "结果已过期" : selected.label)
         if session.isStale { statusLabel.stringValue = session.message }
         else if let feedback = session.exportFeedback { statusLabel.stringValue = feedback }
         else if case .failed(let error) = selected { statusLabel.stringValue = error }
-        else if let preview = session.selectedPreview { statusLabel.stringValue = preview.summary }
-        else { statusLabel.stringValue = session.message }
+        else if let preview = session.selectedPreview { statusLabel.stringValue = preview.reduced ? "实际大小已计算，可另存为新副本。" : "此档未能进一步缩小文件，原件保持不变。" }
+        else { statusLabel.stringValue = "正在本机计算所选质量的实际大小，请稍候。" }
         statusLabel.textColor = session.isStale || session.exportFailed || selected.isFailure ? .systemRed : .secondaryLabelColor
         retryButton.isHidden = !selected.isFailure || session.isStale
         exportButton.isEnabled = session.canExport && savePanel == nil
         if session.isProcessing { progress.startAnimation(nil); progress.isHidden = false }
         else { progress.stopAnimation(nil); progress.isHidden = true }
-        previewMode.setEnabled(session.selectedPreview != nil, forSegment: 1)
-        updatePreview()
     }
-    private func updatePreview() {
-        let compressed = previewMode.selectedSegment == 1
-        let data = compressed ? session.selectedPreview?.data : session.input.data
-        if displayedData != data {
-            let page = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) } ?? 0
-            let scale = pdfView.scaleFactor, auto = pdfView.autoScales
-            pdfView.document = data.flatMap(PDFDocument.init(data:)); displayedData = data
-            if let document = pdfView.document, let target = document.page(at: min(page, max(0, document.pageCount - 1))) { pdfView.go(to: target) }
-            pdfView.autoScales = auto; if !auto { pdfView.scaleFactor = scale }
-        }
-        previewLabel.stringValue = compressed
-            ? (session.selectedPreview.map { "压缩预览 · \(bytes($0.after)) · \(pdfView.document?.pageCount ?? 0) 页" } ?? "此档尚无可用结果；请等待计算或重试。")
-            : "原始快照 · \(bytes(session.input.data.count)) · \(pdfView.document?.pageCount ?? 0) 页"
+    @objc private func selectQuality() {
+        guard PDFCompressionSession.qualityPresets.indices.contains(qualitySelector.selectedSegment) else { return }
+        session.select(PDFCompressionSession.qualityPresets[qualitySelector.selectedSegment])
     }
-    @objc private func selectCard(_ sender: CompressionPresetCard) { session.select(sender.preset) }
-    @objc private func selectLossless() { session.select(.lossless) }
-    @objc private func changePreview() { session.checkFreshness(); updatePreview() }
-    @objc private func zoomIn() { pdfView.autoScales = false; pdfView.zoomIn(nil) }
-    @objc private func zoomOut() { pdfView.autoScales = false; pdfView.zoomOut(nil) }
-    @objc private func fitPreview() { pdfView.autoScales = true }
+    @objc private func selectLossless() {
+        if losslessButton.state == .on { session.select(.lossless) }
+        else { selectQuality() }
+    }
     @objc private func retry() { session.retrySelected() }
     @objc private func cancel() { close() }
     @objc private func saveCopy() {
@@ -326,40 +303,4 @@ import UniformTypeIdentifiers
         let field = NSTextField(labelWithString: text); field.font = .systemFont(ofSize: size, weight: weight); field.textColor = color; return field
     }
     private func bytes(_ count: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file) }
-}
-
-@MainActor private final class CompressionPresetCard: NSButton {
-    let preset: PDFCompressionPreset
-    private let name = NSTextField(labelWithString: "")
-    private let detail = NSTextField(labelWithString: "")
-    private let result = NSTextField(labelWithString: "等待计算")
-    private let spinner = NSProgressIndicator()
-    init(preset: PDFCompressionPreset, target: AnyObject, action: Selector) {
-        self.preset = preset
-        super.init(frame: .zero)
-        self.target = target; self.action = action; title = ""; isBordered = false
-        wantsLayer = true; layer?.cornerRadius = 10; layer?.borderWidth = 1.5
-        identifier = NSUserInterfaceItemIdentifier("ReduceFileSizeQualityButton-\(preset.imageDPI ?? 0)")
-        let names: [PDFCompressionPreset: String] = [.highQuality: "高清", .balanced: "均衡", .smallSize: "紧凑"]
-        name.stringValue = "\(names[preset] ?? preset.title)  ·  \(preset.imageDPI ?? 0) DPI"
-        name.font = .systemFont(ofSize: 14, weight: .semibold)
-        detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
-        result.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        spinner.style = .spinning; spinner.controlSize = .small; spinner.isIndeterminate = true
-        for view in [name, detail, result, spinner] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
-        NSLayoutConstraint.activate([name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15), name.topAnchor.constraint(equalTo: topAnchor, constant: 12), detail.leadingAnchor.constraint(equalTo: name.leadingAnchor), detail.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 7), result.leadingAnchor.constraint(equalTo: name.leadingAnchor), result.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 7), spinner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), spinner.centerYAnchor.constraint(equalTo: centerYAnchor), spinner.widthAnchor.constraint(equalToConstant: 16), spinner.heightAnchor.constraint(equalToConstant: 16), result.trailingAnchor.constraint(lessThanOrEqualTo: spinner.leadingAnchor, constant: -8)])
-        setAccessibilityLabel(name.stringValue)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func update(selected: Bool, status: PDFCompressionSession.Status, originalBytes: Int) {
-        state = selected ? .on : .off
-        layer?.borderColor = (selected ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
-        layer?.backgroundColor = (selected ? NSColor.controlAccentColor.withAlphaComponent(0.08) : NSColor.controlBackgroundColor).cgColor
-        detail.stringValue = "原始 " + ByteCountFormatter.string(fromByteCount: Int64(originalBytes), countStyle: .file)
-        result.stringValue = status.label; result.textColor = status.isFailure ? .systemRed : .labelColor
-        if case .processing = status { spinner.isHidden = false; spinner.startAnimation(nil) }
-        else { spinner.isHidden = true; spinner.stopAnimation(nil) }
-        setAccessibilityValue((selected ? "已选择；" : "") + status.label)
-    }
-    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
 }

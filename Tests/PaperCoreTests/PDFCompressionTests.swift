@@ -56,6 +56,80 @@ final class PDFCompressionTests: XCTestCase {
         XCTAssertEqual(PDFCompressionPreset.allCases.map(\.imageDPI), [nil, 300, 150, 72])
     }
 
+    func testNormalPagesCanExceedOneHundredThousandOperationsInTotal() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appendingPathComponent("many-pages.pdf")
+        // 12 * 9,000 ordinary path operators: normal pages, >100k document work.
+        try fixture(jpeg: true, width: 1200, height: 800,
+            drawing: String(repeating: "n\n", count: 9_000) + "q 144 0 0 96 0 0 cm /Im0 Do Q",
+            repeatedPages: 12).write(to: input)
+        for (preset, expectedWidth) in [(PDFCompressionPreset.highQuality, 600), (.balanced, 300), (.smallSize, 144)] {
+            let output = root.appendingPathComponent("\(preset).pdf")
+            _ = try OrganizeEngine(qpdf: qpdf, scratch: root).compress(input, output: output, preset: preset)
+            XCTAssertEqual(try imageDimensions(output).width, expectedWidth)
+            XCTAssertEqual(PDFDocument(url: output)?.pageCount, 12)
+        }
+    }
+
+    func testSinglePageAndWholeDocumentOperationLimitsStillSkipBeforeImageExtraction() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        for (pages, operations) in [(1, 100_001), (501, 10_000)] {
+            let input = root.appendingPathComponent("limit-\(pages).pdf")
+            try fixture(jpeg: true, drawing: String(repeating: "n\n", count: operations) + "q 72 0 0 72 0 0 cm /Im0 Do Q",
+                        repeatedPages: pages).write(to: input)
+            var extractions = 0
+            let result = try PDFImageCompression.prepare(input: input, inspection: inspect(input), job: root,
+                dpi: 72, quality: 40, cancelled: { false }, run: { _, _, _ in extractions += 1; return Data() })
+            XCTAssertNil(result)
+            XCTAssertEqual(extractions, 0)
+        }
+    }
+
+    func testNestedFormsShareTheirRootPageOperationBudget() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appendingPathComponent("repeated-form.pdf")
+        // Two invocations individually fit 100k; together the root page does not.
+        try fixture(jpeg: true, nestedSecondPage: true, secondPageRepeats: 2, innerFormOperations: 50_001).write(to: input)
+        var extractions = 0
+        let update = try PDFImageCompression.prepare(input: input, inspection: inspect(input), job: root,
+            dpi: 72, quality: 40, cancelled: { false }, run: { _, _, _ in extractions += 1; return Data() })
+        XCTAssertNil(update)
+        XCTAssertEqual(extractions, 0)
+    }
+
+    func testSequentialImageWorkCanExceedOneHundredMegapixelsWithoutDecodingOverlargeImages() throws {
+        XCTAssertEqual(try admittedImageExtractions(copies: 5), 5,
+            "A cumulative processing budget is not the peak single-image allocation limit")
+    }
+
+    func testOneGigapixelCumulativeImageWorkLimitStillSkipsFurtherImages() throws {
+        XCTAssertEqual(try admittedImageExtractions(copies: 41), 40)
+    }
+
+    private func admittedImageExtractions(copies: Int) throws -> Int {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appendingPathComponent("image-work.pdf")
+        try fixture(jpeg: true, imageCopies: copies).write(to: input)
+        var inspection = try inspect(input)
+        var entries = try XCTUnwrap(inspection["qpdf"] as? [Any])
+        var objects = try XCTUnwrap(entries[1] as? [String: Any])
+        for key in Array(objects.keys) {
+            guard var object = objects[key] as? [String: Any], var stream = object["stream"] as? [String: Any],
+                  var dictionary = stream["dict"] as? [String: Any], dictionary["/Subtype"] as? String == "/Image" else { continue }
+            dictionary["/Width"] = 5_000; dictionary["/Height"] = 5_000 // 25MP each; no pixels allocated by this admission test.
+            stream["dict"] = dictionary; object["stream"] = stream; objects[key] = object
+        }
+        entries[1] = objects; inspection["qpdf"] = entries
+        var extractions = 0
+        _ = try PDFImageCompression.prepare(input: input, inspection: inspection, job: root, dpi: 72, quality: 40,
+            cancelled: { false }, run: { _, output, _ in
+                extractions += 1
+                if let output { XCTAssertTrue(FileManager.default.createFile(atPath: output.path, contents: Data())) }
+                return Data()
+            })
+        return extractions
+    }
+
     func testSharedImageUsesLargestDrawingAcrossRotatedPagesAndNestedForms() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let input = root.appendingPathComponent("shared.pdf"), output = root.appendingPathComponent("result.pdf")
@@ -369,7 +443,9 @@ final class PDFCompressionTests: XCTestCase {
     private func fixture(signed: Bool = false, jpeg: Bool = false, width: Int = 1024, height: Int = 768,
                          drawing: String? = nil, nestedSecondPage: Bool = false, cyclicForm: Bool = false,
                          appearanceImage: Bool? = nil, extraImageEntries: String = "", gray: Bool = false,
-                         pageColorEntries: String = "", formColorEntries: String = "", jpegColorSpace: CGColorSpace? = nil) throws -> Data {
+                         pageColorEntries: String = "", formColorEntries: String = "", jpegColorSpace: CGColorSpace? = nil,
+                         repeatedPages: Int = 1, imageCopies: Int = 1,
+                         secondPageRepeats: Int = 1, innerFormOperations: Int = 0) throws -> Data {
         let channels = gray ? 1 : 3
         var pixels = Data(count: width * height * channels)
         pixels.withUnsafeMutableBytes { raw in
@@ -411,14 +487,18 @@ final class PDFCompressionTests: XCTestCase {
         }
         var objects: [Data] = [
             Data("<< /Type /Catalog /Pages 2 0 R >>".utf8),
-            Data("<< /Type /Pages /Kids [3 0 R \(nestedSecondPage ? "9 0 R" : "")] /Count \(nestedSecondPage ? 2 : 1) >>".utf8),
-            Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Rotate 90 /Resources << /XObject << /Im0 5 0 R >> /Font << /F1 6 0 R >> \(pageColorEntries) >> /Contents 4 0 R /Annots [7 0 R 8 0 R] >>".utf8),
-            stream("", Data("\(drawing ?? "q 540 0 0 280 30 20 cm /Im0 Do Q")\nBT /F1 18 Tf 30 350 Td (SEARCHABLE COMPRESSION TEST) Tj ET".utf8)),
+            Data("<< /Type /Pages /Kids [3 0 R \((1..<repeatedPages).map { "\(8+$0) 0 R" }.joined(separator: " ")) \(nestedSecondPage ? "9 0 R" : "")] /Count \(nestedSecondPage ? 2 : repeatedPages) >>".utf8),
+            Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Rotate 90 /Resources << /XObject << /Im0 5 0 R \((1..<imageCopies).map { "/Im\($0) \(8+$0) 0 R" }.joined(separator: " ")) >> /Font << /F1 6 0 R >> \(pageColorEntries) >> /Contents 4 0 R /Annots [7 0 R 8 0 R] >>".utf8),
+            stream("", Data("\(drawing ?? "q 540 0 0 280 30 20 cm /Im0 Do Q")\n\((1..<imageCopies).map { "q 72 0 0 72 0 0 cm /Im\($0) Do Q" }.joined(separator: "\n"))\nBT /F1 18 Tf 30 350 Td (SEARCHABLE COMPRESSION TEST) Tj ET".utf8)),
             stream("/Type /XObject /Subtype /Image /Width \(width) /Height \(height) /ColorSpace \(gray ? "/DeviceGray" : "/DeviceRGB") /BitsPerComponent 8 /Filter \(jpeg ? "/DCTDecode" : "/FlateDecode") \(extraImageEntries)", image),
             Data("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".utf8),
             Data("<< /Type /Annot /Subtype /Link /Rect [30 310 200 330] /A << /S /URI /URI (https://example.com/pdf) >> >>".utf8),
             Data("<< /Type /Annot /Subtype /Highlight /Rect [30 345 250 365] /QuadPoints [30 365 250 365 30 345 250 345] /C [1 1 0] /Contents (Keep this comment) \(appearanceImage == nil ? "" : "/AP << /N 9 0 R >>") >>".utf8)
         ]
+        for _ in 1..<repeatedPages { objects.append(objects[2]) }
+        for _ in 1..<imageCopies {
+            objects.append(stream("/Type /XObject /Subtype /Image /Width \(width) /Height \(height) /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", image))
+        }
         if let appearanceImage {
             objects.append(stream("/Type /XObject /Subtype /Form /BBox [0 0 220 20] /Resources << /XObject << \(appearanceImage ? "/Im0 5 0 R" : "") >> >>",
                 Data((appearanceImage ? "220 0 0 20 0 0 cm /Im0 Do" : "1 1 0 rg 0 0 220 20 re f").utf8)))
@@ -426,9 +506,9 @@ final class PDFCompressionTests: XCTestCase {
         if nestedSecondPage {
             objects += [
                 Data("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Rotate 270 /Resources << /XObject << /Outer 11 0 R >> >> /Contents 10 0 R >>".utf8),
-                stream("", Data("q 108 0 0 72 0 0 cm /Outer Do Q".utf8)),
+                stream("", Data(String(repeating: "q 108 0 0 72 0 0 cm /Outer Do Q\n", count: secondPageRepeats).utf8)),
                 stream("/Type /XObject /Subtype /Form /BBox [0 0 3 3] /Matrix [0 1 -1 0 0 0] /Resources << /XObject << /Inner 12 0 R >> \(formColorEntries) >>", Data("/Inner Do".utf8)),
-                stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Matrix [2 0 0 3 0 0] /Resources << /XObject << \(cyclicForm ? "/Loop 11 0 R" : "/Im0 5 0 R") >> >>", Data((cyclicForm ? "/Loop Do" : "/Im0 Do").utf8))
+                stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Matrix [2 0 0 3 0 0] /Resources << /XObject << \(cyclicForm ? "/Loop 11 0 R" : "/Im0 5 0 R") >> >>", Data((String(repeating: "n\n", count: innerFormOperations) + (cyclicForm ? "/Loop Do" : "/Im0 Do")).utf8))
             ]
         }
         if signed { objects.append(Data("<< /FT /Sig /Type /Sig /ByteRange [0 1 2 3] >>".utf8)) }
