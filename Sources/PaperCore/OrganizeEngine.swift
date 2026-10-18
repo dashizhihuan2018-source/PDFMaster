@@ -41,6 +41,15 @@ public enum PDFCompressionPreset: CaseIterable {
         case .smallSize: return 40
         }
     }
+    /// Target sampling density, separate from the JPEG encoder quality.
+    public var imageDPI: Int? {
+        switch self {
+        case .lossless: return nil
+        case .highQuality: return 300
+        case .balanced: return 150
+        case .smallSize: return 72
+        }
+    }
 }
 public struct CompressionResult { public let before: Int; public let after: Int; public var reduced: Bool { after < before } }
 public struct OCRPage { public let page: Int; public let lines: [String]; public let skipped: Bool }
@@ -125,10 +134,18 @@ public final class OrganizeEngine {
     public func compress(_ input: URL, output: URL, preset: PDFCompressionPreset = .lossless, cancelled: () -> Bool = { false }) throws -> CompressionResult {
         try checkCancellation(cancelled); try ensureNew(output); _ = try document(input)
         let job = try jobDirectory(); defer { try? FileManager.default.removeItem(at: job) }
-        _ = try inspect(input, job: job, assembly: false, cancelled: cancelled)
+        let inspection = try inspect(input, job: job, assembly: false, cancelled: cancelled)
         let candidate = job.appendingPathComponent("compact.pdf")
         var arguments = [input.path, "--object-streams=generate", "--compress-streams=y", "--recompress-flate", "--compression-level=9"]
-        if let quality = preset.jpegQuality { arguments += ["--optimize-images", "--jpeg-quality=\(quality)"] }
+        if let dpi = preset.imageDPI, let quality = preset.jpegQuality,
+           let update = try PDFImageCompression.prepare(input: input, inspection: inspection, job: job,
+                dpi: dpi, quality: quality, cancelled: cancelled,
+                run: { args, destination, limit in
+                    try self.run(args, job: job, cancelled: cancelled, stdout: destination, byteLimit: limit)
+                }) {
+            // Images have already been encoded once. Do not run --optimize-images again.
+            arguments += ["--update-from-json=\(update.path)"]
+        }
         _ = try run(arguments + [candidate.path], job: job, cancelled: cancelled)
         let before = try fileSize(input), optimized = try fileSize(candidate)
         try publish(optimized < before ? candidate : input, to: output, job: job, cancelled: cancelled)
@@ -227,33 +244,46 @@ public final class OrganizeEngine {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return dir
     }
-    private func run(_ args: [String], job: URL, cancelled: () -> Bool = { false }) throws -> Data {
+    private func run(_ args: [String], job: URL, cancelled: () -> Bool = { false }, stdout: URL? = nil, byteLimit: Int = 32 * 1024 * 1024) throws -> Data {
         try checkCancellation(cancelled)
         let log = job.appendingPathComponent(UUID().uuidString + ".log")
         FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600])
         let handle = try FileHandle(forWritingTo: log); defer { try? handle.close() }
+        var outputHandle: FileHandle?
+        if let stdout {
+            guard FileManager.default.createFile(atPath: stdout.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw OrganizeError.invalidInput }
+            outputHandle = try FileHandle(forWritingTo: stdout)
+        }
+        defer { try? outputHandle?.close() }
         let process = Process(); process.executableURL = qpdf; process.arguments = args
-        process.standardOutput = handle; process.standardError = handle
+        process.standardOutput = outputHandle ?? handle; process.standardError = handle
         try process.run(); let deadline = Date().addingTimeInterval(120)
         while process.isRunning {
-            if cancelled() || Date() > deadline {
+            let logSize = (try? fileSize(log)) ?? 0
+            let outputSize = stdout.flatMap { try? fileSize($0) } ?? 0
+            if cancelled() || Date() > deadline || logSize > byteLimit || outputSize > byteLimit {
                 process.terminate()
                 let stop = Date().addingTimeInterval(1)
                 while process.isRunning && Date() < stop { Thread.sleep(forTimeInterval: 0.01) }
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
                 process.waitUntilExit()
                 if cancelled() { throw OrganizeError.cancelled }
-                throw OrganizeError.processFailed("qpdf timeout")
+                throw OrganizeError.processFailed("qpdf timeout or output budget exceeded")
             }
             Thread.sleep(forTimeInterval: 0.01)
         }
         process.waitUntilExit(); try handle.synchronize()
+        try outputHandle?.synchronize()
+        let outputSize = try stdout.map { try fileSize($0) } ?? 0
+        guard try fileSize(log) <= byteLimit, outputSize <= byteLimit else {
+            throw OrganizeError.processFailed("qpdf output budget exceeded")
+        }
         let data = try Data(contentsOf: log)
         guard process.terminationStatus == 0 else { throw OrganizeError.processFailed(String(decoding: data.prefix(4000), as: UTF8.self)) }
         return data
     }
     private func inspect(_ input: URL, job: URL, assembly: Bool, cancelled: () -> Bool = { false }) throws -> [String: Any] {
-        let data = try run(["--json", "--json-key=encrypt", "--json-key=qpdf", "--json-stream-data=none", input.path], job: job, cancelled: cancelled)
+        let data = try run(["--json", "--json-key=encrypt", "--json-key=qpdf", "--json-key=pages", "--json-stream-data=none", input.path], job: job, cancelled: cancelled)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any], let encryption = json["encrypt"] as? [String: Any], let encrypted = encryption["encrypted"] as? Bool else { throw OrganizeError.invalidInput }
         if encrypted { throw OrganizeError.encrypted }
         func inspectValue(_ value: Any) throws {

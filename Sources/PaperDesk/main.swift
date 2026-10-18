@@ -81,6 +81,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc private func openCopilot() { onShowCopilot?() }
     var localToolCancellation: LocalToolCancellation?
+    var compressionPanelController: PDFCompressionPanelController?
     var isLocalToolRunning: Bool { localToolCancellation != nil }
     var contentToolID: String?
     let pdfView = InkPDFView()
@@ -1772,7 +1773,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         guard let workbench = controller.activeWorkbench else { return false }
         return workbench.validateMenuItem(NSMenuItem(title: item.title, action: action, keyEquivalent: ""))
     }
-    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.3 · © Nankong"; a.runModal() }
+    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.4 · © Nankong"; a.runModal() }
 }
 
 MainActor.assumeIsolated {
