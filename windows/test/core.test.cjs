@@ -1,9 +1,98 @@
-const {test}=require('node:test'),assert=require('node:assert/strict');const core=require('../core.cjs');const {PDFDocument,PDFName,PDFArray}=require('pdf-lib');
-test('blank PDF round-trip',async()=>assert.equal((await core.load(await core.blank())).getPageCount(),1));
-test('annotations save and reopen as standard objects',async()=>{for(const kind of ['Square','Circle','Highlight','Ink','Text']){const b=await core.modify(await core.blank(),'annotate',{page:0,kind,rect:[10,10,100,100],text:'Comment',points:[[10,10],[100,100]]});const d=await core.load(b);assert.equal(d.getPage(0).node.lookup(PDFName.of('Annots'),PDFArray).size(),1);}});
-test('delete annotation by object reference preserves document',async()=>{let b=await core.modify(await core.blank(),'annotate',{page:0,kind:'Square',rect:[10,10,100,100]});const d=await core.load(b),ref=d.getPage(0).node.lookup(PDFName.of('Annots'),PDFArray).get(0);await assert.rejects(core.modify(b,'deleteAnnotation',{page:0,ref:'999999R'}));b=await core.modify(b,'deleteAnnotation',{page:0,ref:ref.objectNumber+'R'+(ref.generationNumber||'')});assert.equal((await core.load(b)).getPage(0).node.lookup(PDFName.of('Annots'),PDFArray).size(),0);});
-test('merge reorder remove extract duplicate',async()=>{const a=await core.blank();let b=await core.merge([a,a]);assert.equal((await core.load(b)).getPageCount(),2);b=await core.modify(b,'reorder',{pages:[1,0]});b=await core.modify(b,'duplicate',{pages:[0]});assert.equal((await core.load(b)).getPageCount(),3);b=await core.modify(b,'remove',{pages:[2]});b=await core.modify(b,'extract',{pages:[0]});assert.equal((await core.load(b)).getPageCount(),1);});
-test('rotate and number pages',async()=>{const b=await core.modify(await core.blank(),'rotate',{pages:[0]});assert.equal((await core.load(b)).getPage(0).getRotation().angle,90);assert.ok((await core.modify(b,'pageNumbers')).length>0);});
-test('bad ranges and delete-all fail closed',async()=>{const b=await core.blank();await assert.rejects(core.modify(b,'remove',{pages:[0]}));await assert.rejects(core.modify(b,'reorder',{pages:[2]}));await assert.rejects(core.modify(b,'annotate',{page:0,kind:'Square',rect:[0,0,Infinity,5]}));await assert.rejects(core.modify(b,'not-implemented'));});
-test('structural page rewriting refuses document-level forms and outlines',async()=>{const d=await core.load(await core.blank());d.catalog.set(PDFName.of('Outlines'),d.context.obj({Type:'Outlines',Count:0}));const b=await d.save();await assert.rejects(core.modify(b,'reorder',{pages:[0]}));await assert.rejects(core.merge([b,b]));});
-test('unsorted multiple duplication preserves each page adjacency',async()=>{const d=await PDFDocument.create();for(const w of [100,200,300])d.addPage([w,400]);const out=await core.load(await core.modify(await d.save(),'duplicate',{pages:[2,0,1]}));assert.deepEqual(out.getPages().map(p=>p.getWidth()),[100,100,200,200,300,300]);});
+const { test } = require("node:test"),
+  assert = require("node:assert/strict");
+const core = require("../core.cjs");
+const { PDFDocument, PDFName, PDFArray } = require("pdf-lib");
+test("blank PDF round-trip", async () =>
+  assert.equal((await core.load(await core.blank())).getPageCount(), 1));
+test("annotations save and reopen as standard objects", async () => {
+  for (const kind of ["Square", "Circle", "Highlight", "Ink", "Text"]) {
+    const b = await core.modify(await core.blank(), "annotate", {
+      page: 0,
+      kind,
+      rect: [10, 10, 100, 100],
+      text: "Comment",
+      points: [
+        [10, 10],
+        [100, 100],
+      ],
+    });
+    const d = await core.load(b);
+    assert.equal(
+      d.getPage(0).node.lookup(PDFName.of("Annots"), PDFArray).size(),
+      1,
+    );
+  }
+});
+test("delete annotation by object reference preserves document", async () => {
+  let b = await core.modify(await core.blank(), "annotate", {
+    page: 0,
+    kind: "Square",
+    rect: [10, 10, 100, 100],
+  });
+  const d = await core.load(b),
+    ref = d.getPage(0).node.lookup(PDFName.of("Annots"), PDFArray).get(0);
+  await assert.rejects(
+    core.modify(b, "deleteAnnotation", { page: 0, ref: "999999R" }),
+  );
+  b = await core.modify(b, "deleteAnnotation", {
+    page: 0,
+    ref: ref.objectNumber + "R" + (ref.generationNumber || ""),
+  });
+  assert.equal(
+    (await core.load(b))
+      .getPage(0)
+      .node.lookup(PDFName.of("Annots"), PDFArray)
+      .size(),
+    0,
+  );
+});
+test("merge reorder remove extract duplicate", async () => {
+  const a = await core.blank();
+  let b = await core.merge([a, a]);
+  assert.equal((await core.load(b)).getPageCount(), 2);
+  b = await core.modify(b, "reorder", { pages: [1, 0] });
+  b = await core.modify(b, "duplicate", { pages: [0] });
+  assert.equal((await core.load(b)).getPageCount(), 3);
+  b = await core.modify(b, "remove", { pages: [2] });
+  b = await core.modify(b, "extract", { pages: [0] });
+  assert.equal((await core.load(b)).getPageCount(), 1);
+});
+test("rotate and number pages", async () => {
+  const b = await core.modify(await core.blank(), "rotate", { pages: [0] });
+  assert.equal((await core.load(b)).getPage(0).getRotation().angle, 90);
+  assert.ok((await core.modify(b, "pageNumbers")).length > 0);
+});
+test("bad ranges and delete-all fail closed", async () => {
+  const b = await core.blank();
+  await assert.rejects(core.modify(b, "remove", { pages: [0] }));
+  await assert.rejects(core.modify(b, "reorder", { pages: [2] }));
+  await assert.rejects(
+    core.modify(b, "annotate", {
+      page: 0,
+      kind: "Square",
+      rect: [0, 0, Infinity, 5],
+    }),
+  );
+  await assert.rejects(core.modify(b, "not-implemented"));
+});
+test("structural page rewriting refuses document-level forms and outlines", async () => {
+  const d = await core.load(await core.blank());
+  d.catalog.set(
+    PDFName.of("Outlines"),
+    d.context.obj({ Type: "Outlines", Count: 0 }),
+  );
+  const b = await d.save();
+  await assert.rejects(core.modify(b, "reorder", { pages: [0] }));
+  await assert.rejects(core.merge([b, b]));
+});
+test("unsorted multiple duplication preserves each page adjacency", async () => {
+  const d = await PDFDocument.create();
+  for (const w of [100, 200, 300]) d.addPage([w, 400]);
+  const out = await core.load(
+    await core.modify(await d.save(), "duplicate", { pages: [2, 0, 1] }),
+  );
+  assert.deepEqual(
+    out.getPages().map((p) => p.getWidth()),
+    [100, 100, 200, 200, 300, 300],
+  );
+});

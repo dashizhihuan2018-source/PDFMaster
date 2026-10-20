@@ -41,10 +41,19 @@ jobs:
         run: |
           $env:SMOKE_OUTPUT = Join-Path $pwd 'qa'
           New-Item -ItemType Directory -Force $env:SMOKE_OUTPUT | Out-Null
-          $p = Start-Process -FilePath (Join-Path $pwd 'release/win-unpacked/PDFMaster.exe') -ArgumentList '--smoke-test' -PassThru -RedirectStandardOutput 'qa/stdout.log' -RedirectStandardError 'qa/stderr.log'
+          $install = Join-Path $env:RUNNER_TEMP 'PDFMaster-preview-install'
+          $setup = Start-Process -FilePath (Join-Path $pwd 'release/PDFMaster-V0.1.5-win-preview1-x64.exe') -ArgumentList '/S',("/D=$install") -PassThru
+          if (-not $setup.WaitForExit(120000)) { $setup.Kill(); throw 'Installer timeout' }
+          if ($setup.ExitCode -ne 0 -or -not (Test-Path (Join-Path $install 'PDFMaster.exe'))) { throw 'Silent install failed' }
+          $p = Start-Process -FilePath (Join-Path $install 'PDFMaster.exe') -ArgumentList '--smoke-test' -PassThru -RedirectStandardOutput 'qa/stdout.log' -RedirectStandardError 'qa/stderr.log'
           if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'Application smoke timeout' }
           if ($p.ExitCode -ne 0) { throw "Application smoke failed: $($p.ExitCode)" }
           if (-not (Test-Path 'qa/pdfmaster-smoke.json')) { throw 'Missing PDF render evidence' }
+          $uninstaller = Get-ChildItem $install -Filter '*Uninstall*.exe' | Select-Object -First 1
+          if (-not $uninstaller) { throw 'Missing uninstaller' }
+          $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -PassThru
+          if (-not $uninstall.WaitForExit(120000) -or $uninstall.ExitCode -ne 0) { throw 'Silent uninstall failed' }
+          @{status='automated-native-only';os=[Environment]::OSVersion.VersionString;install=$true;startAndRender=$true;uninstall=$true;humanReview='pending'} | ConvertTo-Json | Set-Content 'qa/installer-smoke.json'
       - name: SHA-256 manifests
         run: |
           $names = @('PDFMaster-V0.1.5-win-preview1-x64.exe','PDFMaster-V0.1.5-win-preview1-x64.zip')
@@ -62,6 +71,19 @@ jobs:
             windows/release/SHA256SUMS.txt
             windows/qa/pdfmaster-smoke.json
             windows/qa/pdfmaster-smoke.png
+            windows/qa/installer-smoke.json
+            windows/WINDOWS-STATUS.md
+      - name: Small QA evidence for independent review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: PDFMaster-Windows-QA
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            windows/qa/pdfmaster-smoke.json
+            windows/qa/pdfmaster-smoke.png
+            windows/qa/installer-smoke.json
+            windows/release/SHA256SUMS.txt
             windows/WINDOWS-STATUS.md
       - name: Preserve startup diagnostics even on failure
         if: always()

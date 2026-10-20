@@ -1,6 +1,101 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' file:; font-src 'self' data:"><title>PDF Master</title><link rel="stylesheet" href="style.css"></head><body>
-<aside><h2>PDF Master</h2><button data-nav="home">主界面</button><button data-nav="tools">工具</button><button data-action="pending">无边记 · 适配中</button><button data-action="onlineCanvas">无限画布 ↗</button><button data-action="pending">最近 / 收藏 · 适配中</button><footer><button data-action="about">设置与适配状态</button><p>© Nankong</p></footer></aside>
-<main><section id="home"><h1>开启你的 PDF 工作空间</h1><p>阅读、批注与整理文档，让想法井然有序。</p><div id="dropzone"><strong>拖入 PDF，或选择文件</strong><p>文件仅在本机处理，不自动上传</p><button class="primary" data-action="open">打开文件</button><button data-action="new">新建空白 PDF</button></div><h2>推荐上手工具</h2><div id="tools"></div><p class="notice">Windows 移植预览。尚未完成的 Mac 功能会明确提示，不能视为无损对等版。</p></section>
-<section id="reader" hidden><header><button data-action="home">← 主界面</button><strong id="filename"></strong><span id="dirty"></span><button data-action="save">保存 / 另存为</button></header><nav id="toolbar"><button data-action="previous">上一页</button><input id="page" type="number" min="1" value="1" aria-label="页码"><span id="count"></span><button data-action="next">下一页</button><select id="scale" aria-label="缩放"><option value="0.75">75%</option><option value="1">100%</option><option selected value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select><select id="tool" aria-label="批注工具"><option value="">浏览</option><option value="Square">矩形</option><option value="Circle">椭圆</option><option value="Highlight">区域高亮</option><option value="Ink">手绘 / 签名</option><option value="Text">便笺评论</option></select><button data-action="undo">撤销</button><button data-action="redo">重做</button><button data-action="rotate">旋转</button><button data-action="pages">管理页面</button><button data-action="exportImage">导出图片</button><input id="find" placeholder="查找文本" aria-label="查找文本"><button data-action="find">查找</button></nav><div id="paperhost"><div id="paper"><canvas id="pdf"></canvas><canvas id="overlay"></canvas></div></div><div id="annotations"></div></section><p id="status" role="status"></p></main>
-<dialog id="input-dialog"><form method="dialog"><p id="input-label"></p><input id="input-value" autocomplete="off"><div><button value="cancel">取消</button><button value="ok" class="primary">确定</button></div></form></dialog>
-<script type="module" src="app.mjs"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' file:; font-src 'self' data:"
+    />
+    <title>PDF Master</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside>
+      <h2>PDF Master</h2>
+      <button data-nav="home">主界面</button
+      ><button data-nav="tools">工具</button
+      ><button data-action="pending">无边记 · 适配中</button
+      ><button data-action="onlineCanvas">无限画布 ↗</button
+      ><button data-action="pending">最近 / 收藏 · 适配中</button>
+      <footer>
+        <button data-action="about">设置与适配状态</button>
+        <p>© Nankong</p>
+      </footer>
+    </aside>
+    <main>
+      <section id="home">
+        <h1>开启你的 PDF 工作空间</h1>
+        <p>阅读、批注与整理文档，让想法井然有序。</p>
+        <div id="dropzone">
+          <strong>拖入 PDF，或选择文件</strong>
+          <p>文件仅在本机处理，不自动上传</p>
+          <button class="primary" data-action="open">打开文件</button
+          ><button data-action="new">新建空白 PDF</button>
+        </div>
+        <h2>推荐上手工具</h2>
+        <div id="tools"></div>
+        <p class="notice">
+          Windows 移植预览。尚未完成的 Mac 功能会明确提示，不能视为无损对等版。
+        </p>
+      </section>
+      <section id="reader" hidden>
+        <header>
+          <button data-action="home">← 主界面</button
+          ><strong id="filename"></strong><span id="dirty"></span
+          ><button data-action="save">保存 / 另存为</button>
+        </header>
+        <nav id="toolbar">
+          <button data-action="previous">上一页</button
+          ><input
+            id="page"
+            type="number"
+            min="1"
+            value="1"
+            aria-label="页码"
+          /><span id="count"></span><button data-action="next">下一页</button
+          ><select id="scale" aria-label="缩放">
+            <option value="0.75">75%</option>
+            <option value="1">100%</option>
+            <option selected value="1.25">125%</option>
+            <option value="1.5">150%</option>
+            <option value="2">200%</option></select
+          ><select id="tool" aria-label="批注工具">
+            <option value="">浏览</option>
+            <option value="Square">矩形</option>
+            <option value="Circle">椭圆</option>
+            <option value="Highlight">区域高亮</option>
+            <option value="Ink">手绘 / 签名</option>
+            <option value="Text">便笺评论</option></select
+          ><button data-action="undo">撤销</button
+          ><button data-action="redo">重做</button
+          ><button data-action="rotate">旋转</button
+          ><button data-action="pages">管理页面</button
+          ><button data-action="exportImage">导出图片</button
+          ><input
+            id="find"
+            placeholder="查找文本"
+            aria-label="查找文本"
+          /><button data-action="find">查找</button>
+        </nav>
+        <div id="paperhost">
+          <div id="paper">
+            <canvas id="pdf"></canvas><canvas id="overlay"></canvas>
+          </div>
+        </div>
+        <div id="annotations"></div>
+      </section>
+      <p id="status" role="status"></p>
+    </main>
+    <dialog id="input-dialog">
+      <form method="dialog">
+        <p id="input-label"></p>
+        <input id="input-value" autocomplete="off" />
+        <div>
+          <button value="cancel">取消</button
+          ><button value="ok" class="primary">确定</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="app.mjs"></script>
+  </body>
+</html>

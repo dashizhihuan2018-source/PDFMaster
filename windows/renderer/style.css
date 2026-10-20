@@ -1,1 +1,222 @@
-:root{font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:#26334d;background:#f6f7fa;font-size:14px}*{box-sizing:border-box}body{margin:0;display:flex;height:100vh}button,select,input{font:inherit}button{border:1px solid #e0e5ed;background:white;border-radius:7px;padding:9px 15px;cursor:pointer;color:inherit}button:hover{background:#edf3ff;border-color:#a7bee8}.primary{background:#2375ed;color:white;border-color:transparent}aside{width:216px;flex-shrink:0;background:#edf0f5;padding:22px 14px;display:flex;flex-direction:column;gap:9px}aside h2{font-size:21px;margin:4px 12px 30px}aside button{text-align:left;border:0;background:transparent}footer{margin-top:auto;font-size:12px;color:#788396}main{flex:1;min-width:0;display:flex;flex-direction:column}#home{max-width:960px;width:100%;margin:42px auto;padding:0 36px;overflow:auto}h1{font-size:29px;letter-spacing:-.6px}h2{font-size:19px}p{color:#7b869a;line-height:1.7}#dropzone{border:2px dashed #bfcee5;border-radius:13px;padding:38px;text-align:center;margin:28px 0 36px;background:#fff}#dropzone strong{font-size:20px}#dropzone button{margin:8px}#tools{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:14px}#tools button{height:99px;font-weight:600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}#tools img{width:34px;height:34px;object-fit:contain}.notice{font-size:12px;margin-top:26px}#reader{height:calc(100vh - 40px);display:flex;flex-direction:column}#reader[hidden]{display:none}header{height:57px;display:flex;align-items:center;padding:10px 16px;gap:15px;background:white;border-bottom:1px solid #e1e6ee}#filename{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}nav{display:flex;gap:5px;align-items:center;flex-wrap:wrap;padding:10px;background:#f4f5f7}nav button{padding:6px 9px;font-size:12px}nav select{padding:5px}nav input{width:65px;padding:5px;border:1px solid #ddd}#find{width:130px}#paperhost{overflow:auto;flex:1;background:#dce0e6;padding:28px}#paper{position:relative;margin:auto;background:white;box-shadow:0 3px 16px #0002;width:fit-content}canvas{display:block}#overlay{position:absolute;left:0;top:0}#annotations{max-height:110px;overflow:auto;display:flex;gap:10px;padding:8px;background:white}#annotations button{font-size:12px}#status{font-size:12px;margin:0;padding:10px 22px;min-height:40px;color:#526176}dialog{border:1px solid #d7ddeb;border-radius:10px;width:420px;padding:24px}dialog input{width:100%;padding:10px;margin-bottom:20px;border:1px solid #cbd4e3}dialog form div{display:flex;justify-content:flex-end;gap:10px}
+:root {
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #26334d;
+  background: #f6f7fa;
+  font-size: 14px;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  display: flex;
+  height: 100vh;
+}
+button,
+select,
+input {
+  font: inherit;
+}
+button {
+  border: 1px solid #e0e5ed;
+  background: white;
+  border-radius: 7px;
+  padding: 9px 15px;
+  cursor: pointer;
+  color: inherit;
+}
+button:hover {
+  background: #edf3ff;
+  border-color: #a7bee8;
+}
+.primary {
+  background: #2375ed;
+  color: white;
+  border-color: transparent;
+}
+aside {
+  width: 216px;
+  flex-shrink: 0;
+  background: #edf0f5;
+  padding: 22px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+aside h2 {
+  font-size: 21px;
+  margin: 4px 12px 30px;
+}
+aside button {
+  text-align: left;
+  border: 0;
+  background: transparent;
+}
+footer {
+  margin-top: auto;
+  font-size: 12px;
+  color: #788396;
+}
+main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+#home {
+  max-width: 960px;
+  width: 100%;
+  margin: 42px auto;
+  padding: 0 36px;
+  overflow: auto;
+}
+h1 {
+  font-size: 29px;
+  letter-spacing: -0.6px;
+}
+h2 {
+  font-size: 19px;
+}
+p {
+  color: #7b869a;
+  line-height: 1.7;
+}
+#dropzone {
+  border: 2px dashed #bfcee5;
+  border-radius: 13px;
+  padding: 38px;
+  text-align: center;
+  margin: 28px 0 36px;
+  background: #fff;
+}
+#dropzone strong {
+  font-size: 20px;
+}
+#dropzone button {
+  margin: 8px;
+}
+#tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 14px;
+}
+#tools button {
+  height: 99px;
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+#tools img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+.notice {
+  font-size: 12px;
+  margin-top: 26px;
+}
+#reader {
+  height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+}
+#reader[hidden] {
+  display: none;
+}
+header {
+  height: 57px;
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  gap: 15px;
+  background: white;
+  border-bottom: 1px solid #e1e6ee;
+}
+#filename {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+nav {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px;
+  background: #f4f5f7;
+}
+nav button {
+  padding: 6px 9px;
+  font-size: 12px;
+}
+nav select {
+  padding: 5px;
+}
+nav input {
+  width: 65px;
+  padding: 5px;
+  border: 1px solid #ddd;
+}
+#find {
+  width: 130px;
+}
+#paperhost {
+  overflow: auto;
+  flex: 1;
+  background: #dce0e6;
+  padding: 28px;
+}
+#paper {
+  position: relative;
+  margin: auto;
+  background: white;
+  box-shadow: 0 3px 16px #0002;
+  width: fit-content;
+}
+canvas {
+  display: block;
+}
+#overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+#annotations {
+  max-height: 110px;
+  overflow: auto;
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  background: white;
+}
+#annotations button {
+  font-size: 12px;
+}
+#status {
+  font-size: 12px;
+  margin: 0;
+  padding: 10px 22px;
+  min-height: 40px;
+  color: #526176;
+}
+dialog {
+  border: 1px solid #d7ddeb;
+  border-radius: 10px;
+  width: 420px;
+  padding: 24px;
+}
+dialog input {
+  width: 100%;
+  padding: 10px;
+  margin-bottom: 20px;
+  border: 1px solid #cbd4e3;
+}
+dialog form div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}

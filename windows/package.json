@@ -15,7 +15,7 @@
     "directories": {"output": "release"},
     "files": ["main.cjs", "preload.cjs", "core.cjs", "qpdf.cjs", "renderer/**", "node_modules/**", "package.json", "WINDOWS-STATUS.md", {"from":"../Resources/ToolIcons","to":"renderer/icons"}],
     "extraResources": [{"from": "../Resources/Branding/PDFMaster.png", "to": "brand.png"}, {"from":"runtime/qpdf","to":"qpdf"}],
-    "win": {"target": ["nsis", "zip"], "icon": "../Resources/Branding/PDFMaster.png", "signAndEditExecutable": false},
+    "win": {"target": ["nsis", "zip"], "icon": "../Resources/Branding/PDFMaster.png", "signExecutable": false},
     "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "deleteAppDataOnUninstall": false, "runAfterFinish": false}
   }
 }
