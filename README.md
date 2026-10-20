@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
 ## 获取与使用
 
-当前源码版本 **V0.1.7**（build 28）。本次同步源码与构建工具，不更新既有 Release 附件；[Releases](https://github.com/dashizhihuan2018-source/PDFMaster/releases) 中旧安装包不等同于本次源码版本。系统与功能兼容范围见[兼容性与验证说明](VERIFICATION.md)，非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+当前版本 **V0.1.7**（build 28）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.7/PDFMaster-V0.1.7-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.7)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；Windows 仍为旧独立预览，不包含本轮新画布适配。系统与功能兼容范围见[兼容性与验证说明](VERIFICATION.md)，非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
 
 V0.1.7 将无限画布随应用打包，从固定本地源加载，不再加载或跳转画布网站。无需网站或本机账户登录，点击“DMX Key 设置…”输入自己的 Key，Key 仅在本机钥匙串保存，不交给 JS、配置 JSON 或画布 ZIP。首次生成需原生会话授权；费用由自己的 DMX 账户承担。[完整使用教程](docs/无限画布使用教程.md)。支持页仅保留邮箱 `archseuyang@163.com`。同时保留关闭窗口后再次打开 PDF / Dock 重开时的窗口生命周期修复。
 
