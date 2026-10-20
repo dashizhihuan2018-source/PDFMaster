@@ -16,6 +16,8 @@ fi
 cd "$root"
 destination="$root/dist/PDF Master.app"
 [[ ! -e "$destination" && ! -L "$destination" ]] || { echo 'Output exists; choose another clean checkout or move it explicitly.' >&2; exit 73; }
+command -v npm >/dev/null || { echo 'Node.js/npm are required to build the bundled canvas.' >&2; exit 69; }
+(cd CanvasWeb && npm ci --ignore-scripts && npm run typecheck && npm run build)
 swift build -c release --product PaperDesk
 bin_dir="$(swift build -c release --show-bin-path)"
 mkdir -p "$root/dist"
@@ -27,6 +29,7 @@ install -m 644 "$root/Resources/Info.plist" "$app/Contents/Info.plist"
 install -m 644 "$root/Resources/PDFMaster.icns" "$app/Contents/Resources/PDFMaster.icns"
 install -m 644 "$root/Resources/ContentEdit/engine.py" "$app/Contents/Resources/Engines/content-edit/engine.py"
 cp -R "$root/Resources/ToolIcons" "$root/Resources/ToolSkins" "$root/Resources/Licenses" "$app/Contents/Resources/"
+cp -R "$root/Resources/CanvasWeb" "$app/Contents/Resources/CanvasWeb"
 install -m 644 "$root/Resources/ASSETS.md" "$app/Contents/Resources/ASSETS.md"
 install -m 644 "$root/DISCLAIMER.md" "$app/Contents/Resources/DISCLAIMER.md"
 install -m 644 "$root/COPYRIGHT.md" "$app/Contents/Resources/COPYRIGHT.md"

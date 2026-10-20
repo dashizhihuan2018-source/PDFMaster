@@ -28,7 +28,7 @@ import XCTest
         XCTAssertEqual(HomeSection.canvas.rawValue, "无边记")
         XCTAssertNotNil(buttons(dashboard.view).first { $0.title == "无边记" })
         let online = try XCTUnwrap(buttons(dashboard.view).first { $0.title == "无限画布" })
-        XCTAssertTrue(online.toolTip?.contains("需联网") == true)
+        XCTAssertTrue(online.toolTip?.contains("内置") == true)
         XCTAssertFalse(descendants(dashboard.view).contains { $0 is WKWebView }, "本地无边记不能由在线网站顶替")
         XCTAssertEqual(shell.canvasTabs.count, 0, "进入画布库不应自动创建空白存档")
     }
@@ -94,7 +94,7 @@ import XCTest
         dashboard.select(online)
         defer { stopWebViews(dashboard.view) }
         let web = try XCTUnwrap(descendants(dashboard.view).compactMap { $0 as? WKWebView }.first)
-        XCTAssertEqual(web.url?.host, "infinitecanvas.maip.top")
+        XCTAssertEqual(web.url?.scheme, "pdfmaster-canvas")
         web.stopLoading()
         dashboard.select(.canvas)
         XCTAssertTrue(web.isHidden || web.superview?.isHidden == true)

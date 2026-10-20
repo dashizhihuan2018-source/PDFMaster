@@ -94,7 +94,7 @@ final class DashboardViewController: NSViewController {
         let symbols: [HomeSection: String] = [.tools: "square.3.layers.3d", .canvas: "infinity", .onlineCanvas: "globe", .recent: "clock.fill", .favorites: "star.fill", .account: "person", .settings: "gearshape", .support: "questionmark.circle"]
         button.image = item == .home ? Self.brandIcon() : NSImage(systemSymbolName: symbols[item]!, accessibilityDescription: item.rawValue)
         button.imagePosition = .imageLeading; button.section = item; button.bezelStyle = .recessed
-        button.toolTip = item == .onlineCanvas ? "无限画布 · 在线画布，需联网" : item.rawValue
+        button.toolTip = item == .onlineCanvas ? "无限画布 · 软件内置，离线编辑，AI 生成联网" : item.rawValue
         button.alignment = .left; button.font = .systemFont(ofSize: 14)
         button.heightAnchor.constraint(equalToConstant: 40).isActive = true
         button.widthAnchor.constraint(equalToConstant: 188).isActive = true
@@ -146,7 +146,14 @@ final class DashboardViewController: NSViewController {
             paragraph("账户仅用于此 Mac，不是云端账户。打开文档不会自动上传；AI 需要另行确认发送范围与可能的计费。")
             detail.addArrangedSubview(NSButton(title: "管理本机账户…", target: self, action: #selector(openAccountSettings)))
         case .settings: renderSettings()
-        case .support: title("获取支持"); paragraph("需要帮助？请提供操作步骤、文件类型和错误提示。请勿发送密码、API Key 或敏感文档；应用不会自动上传文件。")
+        case .support:
+            title("获取支持")
+            let email = NSTextField(wrappingLabelWithString: "邮箱：archseuyang@163.com")
+            email.font = .systemFont(ofSize: 16)
+            email.textColor = ShellPalette.primary
+            email.isSelectable = true
+            detail.addArrangedSubview(email)
+            paragraph("需要帮助？请通过邮箱提供操作步骤、文件类型和错误提示。请勿发送密码、API Key 或敏感文档；应用不会自动上传文件。")
         }
         for child in detail.arrangedSubviews where !(child is NSGridView) {
             child.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true
@@ -167,7 +174,7 @@ final class DashboardViewController: NSViewController {
     private func renderLocalCanvas() {
         title("无边记")
         paragraph("本地无限画布 · 用便笺、文字、连线、手绘、图片与 PDF 整理灵感。")
-        paragraph("保存在这台 Mac，兼容已有 .pdfmasterboard 文件；在线服务请使用侧栏“无限画布”（需联网）。")
+        paragraph("保存在这台 Mac，兼容已有 .pdfmasterboard 文件；AI 节点工作区请使用侧栏内置“无限画布”。")
         let actions = NSStackView(); actions.orientation = .horizontal; actions.spacing = 12
         for button in [DashboardActionButton(title: "新建无边记", style: .bluePill, target: self, action: #selector(newCanvas)),
                        DashboardActionButton(title: "打开无边记…", style: .neutralPill, target: self, action: #selector(openCanvas))] {

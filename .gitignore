@@ -11,3 +11,6 @@ tools/
 .env.*
 __pycache__/
 *.pyc
+CanvasWeb/node_modules/
+CanvasWeb/*.tsbuildinfo
+Resources/CanvasWeb/

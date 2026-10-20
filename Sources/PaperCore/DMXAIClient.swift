@@ -12,7 +12,7 @@ public enum DMXAIError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidInput: return "请检查提示词、模型名称或任务 ID。"
-        case .invalidKey: return "请先在本机账户设置中保存有效的 DMX Key。"
+        case .invalidKey: return "请先在 DMX Key 设置中保存有效的 Key。"
         case .network: return "网络请求未完成；未自动重试。若已提交视频，请使用保存的任务 ID 查询。"
         case .http(let status): return "DMX 请求失败（HTTP \(status)）；未自动重试。请检查账户额度与模型权限。"
         case .invalidResponse: return "服务返回了无法验证的内容。"
@@ -91,6 +91,24 @@ public final class DMXAIClient: @unchecked Sendable {
         let bytes = try await DMXBoundedTransport(configuration: configuration, limit: 96 * 1024 * 1024).run(request)
         guard bytes.count >= 12, bytes.subdata(in: 4..<8) == Data("ftyp".utf8) else { throw DMXAIError.invalidResponse }
         return bytes
+    }
+    /// Desktop canvas transport. Only fixed DMX routes; no caller-controlled host or headers.
+    public func canvasRequest(path: String, body: Data, contentType: String, key: String) async throws -> Data {
+        guard ["images/generations", "images/edits", "chat/completions", "responses", "audio/speech"].contains(path),
+              body.count <= 48 * 1024 * 1024, !contentType.contains("\r"), !contentType.contains("\n"),
+              contentType == "application/json" || contentType.hasPrefix("multipart/form-data; boundary=") else { throw DMXAIError.invalidInput }
+        guard !key.isEmpty, key.count <= 1024, !key.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains($0) }) else { throw DMXAIError.invalidKey }
+        var request = URLRequest(url: URL(string: "https://www.dmxapi.cn/v1/" + path)!)
+        request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 300
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        return try await DMXBoundedTransport(configuration: configuration, limit: 96 * 1024 * 1024).run(request)
+    }
+    /// Only used for media URLs obtained from the fixed upstream, never receives an API Key.
+    public func downloadCanvasMedia(url: URL) async throws -> Data {
+        guard Self.validMediaURL(url) else { throw DMXAIError.invalidInput }
+        var request = URLRequest(url: url); request.timeoutInterval = 300
+        return try await DMXBoundedTransport(configuration: configuration, limit: 96 * 1024 * 1024).run(request)
     }
     public static func validTaskID(_ id: String) -> Bool {
         !id.isEmpty && id.count <= 256 && id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil

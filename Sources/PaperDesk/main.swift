@@ -1500,6 +1500,9 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        // AppDelegate owns and reuses this window for warm file opens and Dock
+        // reopens. AppKit's default release-on-close over-releases it under ARC.
+        window.isReleasedWhenClosed = false
         window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true; window.isMovableByWindowBackground = true
         window.title = "PDF Master"; window.contentViewController = controller; window.contentMinSize = NSSize(width: 1180, height: 700); window.setContentSize(NSSize(width: 1280, height: 820)); window.minSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size; window.delegate = self; window.center(); window.makeKeyAndOrderFront(nil)
         window.appearance = NSAppearance(named: .darkAqua)
@@ -1773,7 +1776,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         guard let workbench = controller.activeWorkbench else { return false }
         return workbench.validateMenuItem(NSMenuItem(title: item.title, action: action, keyEquivalent: ""))
     }
-    @objc private func showAbout(){ let a=NSAlert(); a.messageText="PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V0.1.5 · © Nankong"; a.runModal() }
+    @objc private func showAbout(){ let a=NSAlert(); a.messageText=Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "PDF Master"; a.informativeText="阅读、批注、页面整理与无限画布。\n文档在本机处理，AI 功能由你确认后连接服务。\n版本 V\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.7") · © Nankong"; a.runModal() }
 }
 
 MainActor.assumeIsolated {

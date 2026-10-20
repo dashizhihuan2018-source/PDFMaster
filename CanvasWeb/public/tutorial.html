@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>内置无限画布 · 使用教程</title>
+<style>:root{color-scheme:light dark}body{font:16px/1.8 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;max-width:780px;margin:48px auto;padding:0 28px}h1{font-size:30px}h2{font-size:20px;margin-top:32px}code{font-size:13px}small{opacity:.7}li{margin:8px 0}</style>
+<h1>无限画布，打开就能用</h1><p>PDF Master 软件内置工作区 · 离线编辑 · 仅 AI 生成联网</p><p>正式版与独立测试版的画布和 Key 分开保存，不自动迁移；安装更新不会删除原有文档、账户和设置。</p>
+<h2>① 准备自己的 DMX Key</h2><p>在浏览器自行打开 <code>www.dmxapi.cn</code>，登录后进入“工作台 → API 令牌 → + 创建 API 密钥”。建议为 PDF Master 单独创建有额度限制的 Key，确认模型权限后复制。不要使用管理用的系统访问令牌。</p><p>官方教程地址：<code>https://doc.dmxapi.cn/lingpai.html</code>。软件不代注册、充值或购买额度；接口地址已内置，不需要填写 Base URL。</p>
+<h2>② 填入软件，不用网站登录</h2><ol><li>点击上方“DMX Key 设置…”。</li><li>粘贴自己的 Key，点击“保存到钥匙串”。</li><li>Key 仅存本机钥匙串，输入框随后清空，不进入画布、配置导出或网页存储。</li></ol><p>无需创建本机账户。此 Key 与旧“账户与 AI 设置”的账户 Key 独立，不自动迁移或共享。重新输入可替换，“移除 Key”不会删除画布。</p>
+<h2>③ 编辑与生成</h2><p>点击上方“返回画布”，使用节点、网格、文字、图片、连线、手绘、素材和提示词整理灵感。存档自动保存在这台 Mac。</p><p>在节点或生成面板填写提示词，选择模型、尺寸和数量，再点击生成。首次发送会由软件确认本次画布会话授权；取消则不提交。提示词和所选参考素材会发送到 DMX，可能计费。当前 PDF 不会自动上传。</p><p>先用 1 张图片测试，例如：“木质湖畔小屋，清晨自然光，建筑摄影，无文字”。模型是否可用取决于你的 DMX 权限、余额及服务状态。</p><p>视频支持 Seedance 2.5 文字生成或单张首帧图；多参考图、尾帧、参考视频/音频暂不支持。提交后按任务 ID 查询，不自动重提。取消本机等待不会取消远端任务，也不保证免计费。</p>
+<h2>④ 保存与迁移</h2><p>画布与素材保存在 PDF Master 本机 WebKit 存储。请定期通过画布菜单导出 ZIP 备份；恢复时从画布库导入 ZIP。网站项目不会自动迁移，可在旧网站手动导出后导入。</p><p>旧“无边记”的 <code>.pdfmasterboard</code> 原样保留，与无限画布 ZIP 是两种格式。不要随意点击“清除本地数据”。</p>
+<h2>遇到问题</h2><ul><li>缺少 Key：点击上方设置，不要去网站登录或在配置 JSON 中填 Key。</li><li>401 / 403：检查令牌有效期与模型权限；429 / 5xx：检查限流、拥塞和任务记录，避免重复提交视频。</li><li>钥匙串不可用：检查 macOS 钥匙串权限；不会降级成明文保存。</li><li>离线时可以继续编辑，但生成需要联网。外部素材请先下载后导入。</li></ul>
+<p>独立服务端 Agent、外部渠道、远程插件安装、云同步和公网素材托管没有打包。基础画布离线可用不代表所有第三方服务已验收。</p><small>V0.1.7 / build 28 · © Nankong · InfiniteCanvas 使用 MIT 许可。未使用真实 Key 进行付费生成验收。</small></html>

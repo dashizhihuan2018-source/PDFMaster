@@ -13,8 +13,8 @@ PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF �
 | 工作方式 | 帮你完成什么 | 使用方式 |
 | --- | --- | --- |
 | **PDF 工具集** | 阅读与搜索、高亮与手绘、便签与图形、手写签名、页面整理，以及部分 OCR 与导出操作 | 日常阅读、批注和页面整理在本机进行；部分工具需要可选外部依赖 |
-| **无限画布** | 在更大的在线空间里组合图片、视频与想法，延展创作灵感 | 需要联网；网站账户、服务与数据政策独立 |
-| **无边记** | 在本地画布中自由组织 PDF、图片、便签、连线与手绘，保存为 `.pdfmasterboard`，并导出 PDF 或 PNG | 本地保存，与在线画布分别管理 |
+| **无限画布** | 在软件内置的节点工作区组合文字、图片、视频与想法 | 离线编辑、本机保存；AI 生成使用自己的 DMX Key 并联网计费，无网站登录或跳转 |
+| **无边记** | 在本地画布中自由组织 PDF、图片、便签、连线与手绘，保存为 `.pdfmasterboard`，并导出 PDF 或 PNG | 本地保存，与内置 AI 节点画布分别管理 |
 
 ### 产品海报
 
@@ -32,7 +32,11 @@ https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
 ## 获取与使用
 
-当前源码版本 **V0.1.5**。版本统一采用 `VX.X.X` 格式，构建号仅用于内部追踪。本仓库提供源码与构建工具，持续更新，当前不提供可下载安装包。系统与功能兼容范围见[兼容性与验证说明](VERIFICATION.md)，非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+当前源码版本 **V0.1.7**（build 28）。本次同步源码与构建工具，不更新既有 Release 附件；[Releases](https://github.com/dashizhihuan2018-source/PDFMaster/releases) 中旧安装包不等同于本次源码版本。系统与功能兼容范围见[兼容性与验证说明](VERIFICATION.md)，非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+
+V0.1.7 将无限画布随应用打包，从固定本地源加载，不再加载或跳转画布网站。无需网站或本机账户登录，点击“DMX Key 设置…”输入自己的 Key，Key 仅在本机钥匙串保存，不交给 JS、配置 JSON 或画布 ZIP。首次生成需原生会话授权；费用由自己的 DMX 账户承担。[完整使用教程](docs/无限画布使用教程.md)。支持页仅保留邮箱 `archseuyang@163.com`。同时保留关闭窗口后再次打开 PDF / Dock 重开时的窗口生命周期修复。
+
+视频支持 Seedance 2.5 文字或单首帧，不含多参考图、尾帧、参考视频/音频托管。独立网站服务端 Agent、云同步、外部渠道与远程插件安装未打包。未使用真实 Key 做付费生成验收。公开树不附画布上游项目演示图片/视频或第三方提示词快照，保留仓库既有产品宣传素材；用户可以自行导入有权使用的素材。
 
 V0.1.5 简化“文件 → 压缩文件大小…”：紧凑面板用一行原生控件选择 72、150 或 300 DPI，显示真实大小与减少比例，支持无损优化和另存副本。修复长文档分析预算过早耗尽、导致各档均退回无损优化的问题。按图片在页面上的实际使用尺寸降采样，不将整页转成图片，保留文字、矢量、链接与批注结构。复杂色彩、遮罩及无法可靠判断的图片保守跳过；不承诺固定缩小比例，不覆盖原件，无收益不生成副本，签名与加密来源不执行压缩。已实测原生面板切换质量和保存压缩副本；应用运行中默认打开的用户故障报告尚未闭环，见验证说明。
 
@@ -48,19 +52,19 @@ V0.1.0 完善文档保存体验：⌘S 直接保存当前 PDF，新文档首次�
 
 支持基础阅读、搜索/大纲/缩略图、批注与手绘/签名、基本页面操作、图片与文字类文件导入、PNG/JPEG 导出，以及自包含 `.pdfmasterboard` 本地画布。复杂 PDF、表单、加密/签名与主动内容有保守拒绝边界。内容编辑、OCR 与格式转换只覆盖明确子集，不承诺任意 Office 原版式转换、完整 OCR 互操作或全功能兼容。请使用自有测试副本并存储副本后独立核对。
 
-原生本地画布与首页嵌入的在线画布网站是不同系统；在线网站需要网络，其登录、服务和数据政策独立，不是本应用离线能力或开源资源。
+无边记的 `.pdfmasterboard` 与内置无限画布的 ZIP 是两种不同格式，不自动互转；原网站项目也不会自动迁移。内置画布离线编辑不代表 AI 模型生成可离线运行。
 
 ## 编译与打包
 
-需要 macOS 14+ 和支持 Swift tools 6 的 Xcode/Command Line Tools。内部 Swift target 名保留 PaperDesk/PaperCore。
+需要 macOS 14+、支持 Swift tools 6 的 Xcode/Command Line Tools，以及 Node.js 22.12+ / npm。内部 Swift target 名保留 PaperDesk/PaperCore。先构建画布资源，再运行原生测试：
 
 ```sh
-swift build
+(cd CanvasWeb && npm ci --ignore-scripts && npm run typecheck && npm run build)
 swift test
 bash scripts/build-app.sh
 ```
 
-打包结果为 `dist/PDF Master.app`。脚本只编译并创建新 bundle，不安装、不运行、不清理旧版本；已有目标会拒绝覆盖。使用 macOS 本地 ad-hoc 签名，不改变系统安全策略。
+打包结果为 `dist/PDF Master.app`。脚本从锁文件安装前端依赖、构建本地画布与原生程序并创建新 bundle，不安装、不运行、不清理旧版本；已有目标会拒绝覆盖。使用 macOS 本地 ad-hoc 签名，不改变系统安全策略。
 
 qpdf 不捆绑进此源码目录或默认 App bundle。页码、无损优化等依赖外部 qpdf，应用通过 `PDFMASTER_QPDF` 的绝对可执行路径或当前 PATH 发现它。打包时可传 `--qpdf /absolute/path/to/qpdf` 仅检查该可选依赖，不复制二进制或依赖库；图形启动环境 PATH 可能不同，可直接运行 `dist/PDF Master.app/Contents/MacOS/PaperDesk` 并显式设置环境。没有 qpdf 时相关操作明确拒绝，部分测试明确 skip。
 
@@ -88,6 +92,8 @@ AI 功能使用用户自行提供的 DMX Key；Key 置于本机非同步 Keychai
 此源码目前仅公开供查看；权利人尚未指定项目开源许可证，因此不应推定获得使用、修改、复制或再分发授权。此声明不改变第三方组件各自已授予的许可，也不声称拥有第三方或生成内容的排他权利。请先取得权利人明确授权再作其他用途。
 
 SwiftyDraw 局部平滑路径适配保留 MIT 许可证与固定来源说明，见 `Resources/Licenses/SwiftyDraw/`。品牌与 56 张工具图标的来源说明见 `Resources/ASSETS.md`。系统框架/字体不随仓库复制。qpdf、libjpeg-turbo 和 PyMuPDF 未捆绑在此源码；若另行分发它们或其二进制，请遵守各自许可证并保留完整 notice，不能拿 SwiftyDraw MIT 作为整个产品许可。
+
+内置画布前端基于 basketikun 的 InfiniteCanvas（MIT）改编，许可证和改编说明见 `CanvasWeb/LICENSE` 与 `Resources/Licenses/InfiniteCanvas/`。该部分不受本项目原创内容的额外非商业限制；npm 依赖各自遵循其许可证。
 
 © 2026 Nankong 版权所有。原创部分仅供非商业技术交流，未经书面许可不得商用；已有许可与第三方权利不变。
 

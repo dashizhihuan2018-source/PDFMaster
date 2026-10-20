@@ -8,12 +8,15 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-EXCLUDED = {"dist", "output", "work", "tools", ".git", ".swiftpm", "__pycache__"}
+REVIEWED_UI = json.loads((ROOT / "scripts" / "reviewed-ui-literals.json").read_text())
+EXCLUDED = {"dist", "output", "work", "tools", ".git", ".swiftpm", "__pycache__", "node_modules"}
 
 
 def files():
     return sorted(p for p in ROOT.rglob("*") if p.is_file()
                   and not any(part in EXCLUDED or part.startswith(".build") for part in p.relative_to(ROOT).parts)
+                  and p.relative_to(ROOT).parts[:2] != ("Resources", "CanvasWeb")
+                  and not p.name.endswith(".tsbuildinfo")
                   and p.name != "SOURCE-MANIFEST.sha256")
 
 
@@ -26,6 +29,7 @@ def audit():
     matches = []
     known_bootstrap = 0
     test_literal_matches = 0
+    reviewed_ui_matches = 0
     credential_assignment = re.compile(r'(?i)\b\w*(?:password|passwd|secret|token|apikey|api_key|accesskey|access_key)\w*\b\s*(?:=|:)\s*"([^"\n]+)"')
     candidates = files()
     for path in candidates:
@@ -48,11 +52,14 @@ def audit():
                     known_bootstrap += 1
                 elif relative.startswith("Tests/"):
                     test_literal_matches += 1
+                elif hashlib.sha256(line.encode()).hexdigest() in REVIEWED_UI.get(relative, []):
+                    reviewed_ui_matches += 1
                 else:
                     matches.append({"file": relative, "line": line_number, "kind": "credential_literal_review"})
     print(json.dumps({"files": len(candidates), "bytes": sum(p.stat().st_size for p in candidates),
         "unexpected_matches": matches, "known_public_bootstrap_literals": known_bootstrap,
         "synthetic_test_literal_lines": test_literal_matches,
+        "reviewed_ui_literal_lines": reviewed_ui_matches,
         "note": "Heuristic scan, not a security certification; values never printed. Review test literals separately."}, indent=2))
     return bool(matches)
 
