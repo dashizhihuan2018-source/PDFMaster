@@ -1,0 +1,734 @@
+{
+  "schema_version": 1,
+  "version": "V0.1.5-win-preview1",
+  "note": "Frozen source-derived baseline; pending is NOT passed. Compile/smoke evidence does not replace cross-platform/human parity.",
+  "baseline_features": [
+    "open-save-reopen",
+    "text-find-select",
+    "navigation",
+    "undo-redo",
+    "native-shortcuts",
+    "file-drop-associations",
+    "local-canvas",
+    "online-canvas",
+    "recents-favorites",
+    "account-secrets",
+    "theme-tool-skins",
+    "install-upgrade-uninstall",
+    "dpi-accessibility",
+    "tool-annotate",
+    "tool-edit",
+    "tool-sign",
+    "tool-forms",
+    "tool-comments",
+    "tool-resize",
+    "tool-ocr",
+    "tool-pages",
+    "tool-compress",
+    "tool-merge",
+    "tool-compare",
+    "tool-page-numbers",
+    "tool-copilot",
+    "tool-blank",
+    "tool-measure",
+    "tool-password",
+    "tool-translate",
+    "tool-redact",
+    "tool-redline",
+    "tool-draw",
+    "tool-image-to-pdf",
+    "tool-word-to-pdf",
+    "tool-sheet-to-pdf",
+    "tool-file-to-pdf",
+    "tool-pdf-to-word",
+    "tool-pdf-to-image",
+    "tool-pdf-to-excel",
+    "tool-pdf-to-powerpoint"
+  ],
+  "features": [
+    {
+      "id": "open-save-reopen",
+      "description": "打开/另存/重新打开及跨端回读",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "text-find-select",
+      "description": "文本查找、选择和复制",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "navigation",
+      "description": "缩放、翻页、页面概览",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "undo-redo",
+      "description": "批注及编辑撤销/重做",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "native-shortcuts",
+      "description": "原生菜单与Cmd/Ctrl快捷键",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "file-drop-associations",
+      "description": "拖放、单实例和系统文件关联",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "local-canvas",
+      "description": "无边记数据格式及编辑",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "online-canvas",
+      "description": "无限画布外链",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "recents-favorites",
+      "description": "最近文件与收藏持久化",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "account-secrets",
+      "description": "账号、订阅与凭据安全存储",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "theme-tool-skins",
+      "description": "主题、工具图标及皮肤",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "install-upgrade-uninstall",
+      "description": "干净系统安装、升级与保留用户数据的卸载",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "dpi-accessibility",
+      "description": "多屏DPI、键盘与无障碍",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-annotate",
+      "description": "批注",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-edit",
+      "description": "编辑",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-sign",
+      "description": "签署 PDF",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-forms",
+      "description": "填写表单",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-comments",
+      "description": "评论 PDF",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-resize",
+      "description": "页面重设大小",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-ocr",
+      "description": "识别文本",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-pages",
+      "description": "管理页面",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-compress",
+      "description": "压缩 PDF",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-merge",
+      "description": "合并 PDF",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-compare",
+      "description": "对比 PDF",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-page-numbers",
+      "description": "页码",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-copilot",
+      "description": "PDF Copilot",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-blank",
+      "description": "空白 PDF",
+      "mac_baseline_availability": "available",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-measure",
+      "description": "度量",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-password",
+      "description": "设置密码",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-translate",
+      "description": "翻译 PDF",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-redact",
+      "description": "隐藏 PDF 内容",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-redline",
+      "description": "红线",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-draw",
+      "description": "绘图",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-image-to-pdf",
+      "description": "图片转 PDF",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-word-to-pdf",
+      "description": "Word 转 PDF",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-sheet-to-pdf",
+      "description": "表转 PDF",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-file-to-pdf",
+      "description": "其他文件转 PDF",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-pdf-to-word",
+      "description": "PDF 转 Word",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-pdf-to-image",
+      "description": "PDF 转图片",
+      "mac_baseline_availability": "partial",
+      "macos": {
+        "status": "pending",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-pdf-to-excel",
+      "description": "PDF 转 Excel",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    },
+    {
+      "id": "tool-pdf-to-powerpoint",
+      "description": "PDF 转 PowerPoint",
+      "mac_baseline_availability": "unavailable",
+      "macos": {
+        "status": "blocked",
+        "evidence": []
+      },
+      "windows": {
+        "status": "pending",
+        "evidence": []
+      },
+      "human_review": {
+        "macos": "pending",
+        "windows": "pending"
+      }
+    }
+  ]
+}

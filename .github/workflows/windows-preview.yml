@@ -1,0 +1,57 @@
+name: Windows preview
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/windows-port]
+    paths: ['windows/**', '.github/workflows/windows-preview.yml']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: windows
+    env:
+      ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - name: Locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: PDF round-trip tests
+        run: npm test
+      - name: Build x64 installer and portable archive
+        run: npm run package
+      - name: Start packaged application and render real PDF
+        run: |
+          $env:SMOKE_OUTPUT = Join-Path $pwd 'qa'
+          New-Item -ItemType Directory -Force $env:SMOKE_OUTPUT | Out-Null
+          $p = Start-Process -FilePath (Join-Path $pwd 'release/win-unpacked/PDFMaster.exe') -ArgumentList '--smoke-test' -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'Application smoke timeout' }
+          if ($p.ExitCode -ne 0) { throw "Application smoke failed: $($p.ExitCode)" }
+          if (-not (Test-Path 'qa/pdfmaster-smoke.json')) { throw 'Missing PDF render evidence' }
+      - name: SHA-256 manifests
+        run: |
+          $names = @('PDFMaster-V0.1.5-win-preview1-x64.exe','PDFMaster-V0.1.5-win-preview1-x64.zip')
+          $lines = foreach ($name in $names) { $p = Join-Path 'release' $name; if ((Get-Item $p).Length -lt 1000000) { throw 'Incomplete package' }; "$((Get-FileHash $p -Algorithm SHA256).Hash.ToLower())  $name" }
+          $lines | Set-Content -Encoding utf8 'release/SHA256SUMS.txt'
+      - name: Save verified candidates, not a parity certification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: PDFMaster-Windows-x64-preview1
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            windows/release/PDFMaster-V0.1.5-win-preview1-x64.exe
+            windows/release/PDFMaster-V0.1.5-win-preview1-x64.zip
+            windows/release/SHA256SUMS.txt
+            windows/qa/pdfmaster-smoke.json
+            windows/qa/pdfmaster-smoke.png
+            windows/WINDOWS-STATUS.md

@@ -1,0 +1,21 @@
+{
+  "name": "pdfmaster-windows",
+  "version": "0.1.5-win.1",
+  "private": true,
+  "description": "PDF Master Windows platform adaptation preview",
+  "author": "Nankong",
+  "main": "main.cjs",
+  "scripts": {"start": "electron .", "test": "node --test test/*.test.cjs", "package": "electron-builder --win nsis zip --x64 --publish never"},
+  "dependencies": {"pdf-lib": "1.17.1", "pdfjs-dist": "6.4.299"},
+  "devDependencies": {"electron": "44.9.0", "electron-builder": "26.15.3"},
+  "build": {
+    "appId": "cn.nankong.pdfmaster.windows",
+    "productName": "PDFMaster",
+    "artifactName": "PDFMaster-V0.1.5-win-preview1-x64.${ext}",
+    "directories": {"output": "release"},
+    "files": ["main.cjs", "preload.cjs", "core.cjs", "renderer/**", "node_modules/**", "package.json", "WINDOWS-STATUS.md", {"from":"../Resources/ToolIcons","to":"renderer/icons"}],
+    "extraResources": [{"from": "../Resources/Branding/PDFMaster.png", "to": "brand.png"}],
+    "win": {"target": ["nsis", "zip"], "icon": "../Resources/Branding/PDFMaster.png", "signAndEditExecutable": false},
+    "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "deleteAppDataOnUninstall": false, "runAfterFinish": false}
+  }
+}
