@@ -27,6 +27,14 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: PDF round-trip tests
         run: npm test
+      - name: Pinned qpdf runtime with complete upstream licenses
+        run: |
+          $url = 'https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-mingw64.zip'
+          Invoke-WebRequest -Uri $url -OutFile 'qpdf-runtime.zip'
+          if ((Get-FileHash 'qpdf-runtime.zip' -Algorithm SHA256).Hash.ToLower() -ne '773d2fa0c7d161e2271430734338e560a07b25d0edf11ceee8e53de435012766') { throw 'qpdf digest mismatch' }
+          Expand-Archive -Path 'qpdf-runtime.zip' -DestinationPath 'runtime/qpdf'
+          Remove-Item 'qpdf-runtime.zip'
+          @{url=$url;sha256='773d2fa0c7d161e2271430734338e560a07b25d0edf11ceee8e53de435012766';license='Complete upstream package retained; qpdf Apache-2.0 and bundled dependency notices'} | ConvertTo-Json | Set-Content 'runtime/qpdf/PROVENANCE.json'
       - name: Build x64 installer and portable archive
         run: npm run package
       - name: Start packaged application and render real PDF

@@ -13,8 +13,8 @@
     "productName": "PDFMaster",
     "artifactName": "PDFMaster-V0.1.5-win-preview1-x64.${ext}",
     "directories": {"output": "release"},
-    "files": ["main.cjs", "preload.cjs", "core.cjs", "renderer/**", "node_modules/**", "package.json", "WINDOWS-STATUS.md", {"from":"../Resources/ToolIcons","to":"renderer/icons"}],
-    "extraResources": [{"from": "../Resources/Branding/PDFMaster.png", "to": "brand.png"}],
+    "files": ["main.cjs", "preload.cjs", "core.cjs", "qpdf.cjs", "renderer/**", "node_modules/**", "package.json", "WINDOWS-STATUS.md", {"from":"../Resources/ToolIcons","to":"renderer/icons"}],
+    "extraResources": [{"from": "../Resources/Branding/PDFMaster.png", "to": "brand.png"}, {"from":"runtime/qpdf","to":"qpdf"}],
     "win": {"target": ["nsis", "zip"], "icon": "../Resources/Branding/PDFMaster.png", "signAndEditExecutable": false},
     "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "deleteAppDataOnUninstall": false, "runAfterFinish": false}
   }
