@@ -43,10 +43,15 @@ jobs:
             $hash=$Matches[1]; $name=$Matches[2]
             if ($name -notin $names -or (Get-FileHash (Join-Path 'incoming/release' $name) -Algorithm SHA256).Hash.ToLower() -ne $hash) { throw 'Installer hash mismatch' }
           }
+          $macName='PDFMaster-V0.1.5-arm64.dmg'
+          $macHash='e17db3725ccba563202794d7f3874f6a4bb8433d505026d4217d06df8b5949ab'
+          gh release download v0.1.5 --repo $env:REPO --pattern $macName --dir incoming/mac
+          if ($LASTEXITCODE -or (Get-FileHash (Join-Path 'incoming/mac' $macName) -Algorithm SHA256).Hash.ToLower() -ne $macHash) { throw 'Original Mac installer mismatch' }
+          "$macHash  $macName" | Add-Content -Encoding utf8 'incoming/release/SHA256SUMS.txt'
           $tag='v0.1.5-win-preview1'
           gh release view $tag --repo $env:REPO --json tagName 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) { throw 'Release already exists; do not overwrite' }
-          $notes=(Get-Content 'incoming/WINDOWS-STATUS.md' -Raw)+"`n`nWindows x64 适配预览，非完整Mac功能对等版。原Mac安装包保持不变。`n`n自动构建/安装/启动/卸载证据：$($run.html_url)`n源码提交：$env:EXPECTED_SHA`n下载exe安装器或zip便携包，并以SHA256SUMS.txt核验。未代码签名，人工GUI和跨端数据对等仍待验收。"
+          $notes=(Get-Content 'incoming/WINDOWS-STATUS.md' -Raw)+"`n`n同页下载：macOS Apple Silicon 原版DMG（V0.1.5，来自原有v0.1.5发布，文件逐字节未变）+ Windows x64 EXE安装器/ZIP便携包。Windows为适配预览，非完整Mac功能对等版。Intel Mac和Windows ARM未提供原生包。`n`n自动构建/安装/启动/卸载证据：$($run.html_url)`nWindows源码提交：$env:EXPECTED_SHA`n以SHA256SUMS.txt核验三份安装包。Windows未代码签名，人工GUI和跨端数据对等仍待验收。"
           $notes | Set-Content -Encoding utf8 'release-notes.md'
-          gh release create $tag --repo $env:REPO --target $env:EXPECTED_SHA --prerelease --title 'PDF Master Windows x64 preview1 · 适配预览' --notes-file release-notes.md 'incoming/release/PDFMaster-V0.1.5-win-preview1-x64.exe' 'incoming/release/PDFMaster-V0.1.5-win-preview1-x64.zip' 'incoming/release/SHA256SUMS.txt' 'incoming/WINDOWS-STATUS.md' 'incoming/qa/pdfmaster-smoke.json' 'incoming/qa/pdfmaster-smoke.png' 'incoming/qa/installer-smoke.json'
+          gh release create $tag --repo $env:REPO --target $env:EXPECTED_SHA --prerelease --title 'PDF Master · Mac + Windows适配预览1' --notes-file release-notes.md 'incoming/mac/PDFMaster-V0.1.5-arm64.dmg' 'incoming/release/PDFMaster-V0.1.5-win-preview1-x64.exe' 'incoming/release/PDFMaster-V0.1.5-win-preview1-x64.zip' 'incoming/release/SHA256SUMS.txt' 'incoming/WINDOWS-STATUS.md' 'incoming/qa/pdfmaster-smoke.json' 'incoming/qa/pdfmaster-smoke.png' 'incoming/qa/installer-smoke.json'
           if ($LASTEXITCODE) { throw 'Release publication failed; inspect state before retry' }
