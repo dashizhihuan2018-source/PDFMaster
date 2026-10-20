@@ -33,7 +33,7 @@ jobs:
         run: |
           $env:SMOKE_OUTPUT = Join-Path $pwd 'qa'
           New-Item -ItemType Directory -Force $env:SMOKE_OUTPUT | Out-Null
-          $p = Start-Process -FilePath (Join-Path $pwd 'release/win-unpacked/PDFMaster.exe') -ArgumentList '--smoke-test' -PassThru
+          $p = Start-Process -FilePath (Join-Path $pwd 'release/win-unpacked/PDFMaster.exe') -ArgumentList '--smoke-test' -PassThru -RedirectStandardOutput 'qa/stdout.log' -RedirectStandardError 'qa/stderr.log'
           if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'Application smoke timeout' }
           if ($p.ExitCode -ne 0) { throw "Application smoke failed: $($p.ExitCode)" }
           if (-not (Test-Path 'qa/pdfmaster-smoke.json')) { throw 'Missing PDF render evidence' }
@@ -55,3 +55,13 @@ jobs:
             windows/qa/pdfmaster-smoke.json
             windows/qa/pdfmaster-smoke.png
             windows/WINDOWS-STATUS.md
+      - name: Preserve startup diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: PDFMaster-Windows-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            windows/qa/stdout.log
+            windows/qa/stderr.log

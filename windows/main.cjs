@@ -28,7 +28,7 @@ async function handle(action,args={}){
   throw Error('该功能尚未完成 Windows 适配，未执行任何修改');
 }
 app.whenReady().then(async()=>{
-  win=new BrowserWindow({width:1280,height:860,minWidth:900,minHeight:620,title:'PDF Master',show:!smoke,webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false}});
+  win=new BrowserWindow({width:1280,height:860,minWidth:900,minHeight:620,title:'PDF Master',icon:app.isPackaged?path.join(process.resourcesPath,'brand.png'):path.join(__dirname,'../Resources/Branding/PDFMaster.png'),show:!smoke,webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false}});
   const trusted=require('node:url').pathToFileURL(entry).href;
   ipcMain.handle('pdfmaster',(event,action,args)=>{if(event.senderFrame!==win.webContents.mainFrame||event.senderFrame.url!==trusted)throw Error('Untrusted frame');return handle(action,args);});
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));

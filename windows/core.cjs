@@ -18,8 +18,10 @@ async function load(bytes) {
   return doc;
 }
 async function blank() { const doc = await PDFDocument.create(); doc.addPage([595.28, 841.89]); return doc.save(); }
+function pageCopySafe(doc){for(const name of ['AcroForm','Outlines','Names','StructTreeRoot','PageLabels','OCProperties'])if(doc.catalog.has(PDFName.of(name)))throw Error('包含表单、目录、附件或结构信息的 PDF 暂不支持页面结构重写；请保留原件');}
 async function modify(bytes, op, args = {}) {
   const doc = await load(bytes), count = doc.getPageCount();
+  if(['remove','reorder','extract','duplicate'].includes(op))pageCopySafe(doc);
   if (op === 'rotate') {
     const {degrees} = require('pdf-lib');
     indices(args.pages, count).forEach(i => doc.getPage(i).setRotation(degrees((doc.getPage(i).getRotation().angle + 90) % 360)));
@@ -34,7 +36,8 @@ async function modify(bytes, op, args = {}) {
     return out.save();
   } else if (op === 'duplicate') {
     indices(args.pages, count); const pages = await doc.copyPages(doc, args.pages);
-    for(let n=pages.length-1;n>=0;n--) doc.insertPage(args.pages[n]+1,pages[n]);
+    const pairs=pages.map((page,n)=>({page,index:args.pages[n]})).sort((a,b)=>b.index-a.index);
+    for(const item of pairs)doc.insertPage(item.index+1,item.page);
   } else if (op === 'annotate') {
     const page = doc.getPage(indices([args.page],count)[0]);
     const [w,h] = [page.getWidth(),page.getHeight()];
@@ -80,7 +83,7 @@ async function modify(bytes, op, args = {}) {
 async function merge(buffers) {
   if(!Array.isArray(buffers)||buffers.length<2||buffers.length>100)throw Error('请选择 2–100 个 PDF');
   const out=await PDFDocument.create();
-  for(const data of buffers){const d=await load(data);for(const p of await out.copyPages(d,d.getPageIndices()))out.addPage(p);}
+  let total=0;for(const data of buffers){const d=await load(data);pageCopySafe(d);total+=d.getPageCount();if(total>10000)throw Error('页数超限');for(const p of await out.copyPages(d,d.getPageIndices()))out.addPage(p);}
   if(out.getPageCount()>10000)throw Error('页数超限');return out.save();
 }
 async function images(buffers) {
