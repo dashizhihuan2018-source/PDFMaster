@@ -354,9 +354,13 @@ window.runSmoke = async () => {
   await ready;
   if (!documentPDF) throw Error("No smoke document");
   const p = await documentPDF.getPage(1);
+  const canvas=$("#pdf"),pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+  let bluePixels=0;for(let i=0;i<pixels.length;i+=4)if(pixels[i]<100&&pixels[i+1]<150&&pixels[i+2]>120&&pixels[i+3]>200)bluePixels++;
   return {
     rendered: $("#pdf").width > 0 && $("#pdf").height > 0,
     pages: documentPDF.numPages,
     annotations: (await p.getAnnotations()).length,
+    annotationPixels:bluePixels>100,
+    bluePixelCount:bluePixels,
   };
 };

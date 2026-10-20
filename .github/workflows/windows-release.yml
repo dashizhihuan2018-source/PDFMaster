@@ -1,5 +1,8 @@
 name: Publish verified Windows preview
 on:
+  push:
+    branches: [codex/windows-port]
+    paths: ['.github/workflows/windows-release.yml']
   workflow_dispatch:
     inputs:
       build_run_id:
@@ -15,6 +18,7 @@ permissions:
   actions: read
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 15
     env:

@@ -333,10 +333,13 @@ app
     );
     if (smoke) {
       bytes = await core.blank();
+      const fixture=await core.load(bytes);
+      fixture.getPage(0).drawText('PDF Master Windows - synthetic round-trip check',{x:50,y:740,size:14});
+      bytes=await fixture.save();
       bytes = await core.modify(bytes, "annotate", {
         page: 0,
         kind: "Square",
-        rect: [50, 50, 180, 140],
+        rect: [50, 550, 180, 640],
       });
       title = "synthetic-smoke.pdf";
       const compressed = await qpdf.transform(
@@ -367,7 +370,7 @@ app
       try {
         const result =
           await win.webContents.executeJavaScript("window.runSmoke()");
-        if (!result.rendered || result.annotations < 1)
+        if (!result.rendered || !result.annotationPixels || result.annotations < 1)
           throw Error("PDF render/annotation smoke failed");
         const folder = process.env.SMOKE_OUTPUT || app.getPath("temp");
         await fs.mkdir(folder, { recursive: true });
@@ -380,6 +383,7 @@ app
               platform: process.platform,
               arch: process.arch,
               version: app.getVersion(),
+              qpdf:{compressionRoundTrip:true,aes256EncryptDecryptRoundTrip:true},
             },
             null,
             2,
