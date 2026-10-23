@@ -32,7 +32,11 @@ https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
 ## 获取与使用
 
-当前版本 **V0.1.7**（build 28）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.7/PDFMaster-V0.1.7-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.7)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；Windows 仍为旧独立预览，不包含本轮新画布适配。系统与功能兼容范围见[兼容性与验证说明](VERIFICATION.md)，非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+当前 macOS 安装包 **V0.1.18**（build40）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.18/PDFMaster-V0.1.18-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.18)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；最低构建目标 macOS 14.0，尚未完成其他 Mac 或所有系统版本验收。Windows 仍为旧独立预览。非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+
+V0.1.18 更新原生阅读器右侧 PDF Copilot、富文本回答及页码引用，支持在本机账户设置中分别绑定自己的 **DMX / DeepSeek / Agnes Key**，并包含 build40 的双页布局、字体兼容与批注修复。不同账户/服务商不共用 Key，发送前需核对范围并同意可能计费；DeepSeek 真实 Key 调用尚未验证。包内不包含用户登录状态、真实密钥或用户文档。
+
+**安装包与源码版本分开标注：本次只更新安装包与下载说明，本仓库公开源码仍为 V0.1.7/build28，并未同步为 build40；标签里的源码快照不是本安装包的可重建源码。** V0.1.18 公开包沿用已审查的 V0.1.7 内置画布资源；原生程序来自本机验证后的 build40，清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名，不是本机安装版的逐字节副本。完整边界见[本轮发布说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.18)。下列 V0.1.7 说明和编译步骤对应现有公开源码。
 
 V0.1.7 将无限画布随应用打包，从固定本地源加载，不再加载或跳转画布网站。无需网站或本机账户登录，点击“DMX Key 设置…”输入自己的 Key，Key 仅在本机钥匙串保存，不交给 JS、配置 JSON 或画布 ZIP。首次生成需原生会话授权；费用由自己的 DMX 账户承担。[完整使用教程](docs/无限画布使用教程.md)。支持页仅保留邮箱 `archseuyang@163.com`。同时保留关闭窗口后再次打开 PDF / Dock 重开时的窗口生命周期修复。
 
