@@ -1,0 +1,29 @@
+name: Public release smoke (free macOS)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/release-smoke.yml
+      - scripts/ci-release-smoke.*
+      - docs/release.json
+permissions:
+  contents: read
+concurrency:
+  group: public-release-smoke-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  published-dmg:
+    if: github.event.repository.private == false
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check public installer without rebuilding or re-signing
+        shell: bash
+        run: bash scripts/ci-release-smoke.sh
