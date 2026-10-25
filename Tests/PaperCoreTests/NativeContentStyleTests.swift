@@ -4,9 +4,9 @@ import XCTest
 @testable import PaperCore
 
 final class NativeContentStyleTests: XCTestCase {
-    private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
-    private var source: URL { root.appendingPathComponent("work/parallel/content-edit/evidence/content-edit-qa.pdf") }
-    private var engine: ContentEditEngine { ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py")) }
+    private lazy var publicFixture = try! PublicContentFixture()
+    private var source: URL { publicFixture.source }
+    private var engine: ContentEditEngine { ContentEditEngine() }
 
     func testExplicitStylePreservesDecimalSizeColorAndRealSearchableContent() throws {
         let original = try Data(contentsOf: source)
@@ -65,5 +65,14 @@ final class NativeContentStyleTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
         XCTAssertEqual(try Data(contentsOf: input), original)
         XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testOriginalFontFallbackCannotBeUsedForAnUnrelatedExplicitName() throws {
+        let page = try engine.inspect(source, page: 0, cancelled: { false })
+        let span = try XCTUnwrap(page.spans.first { $0.text == "Original target" })
+        let style = ContentTextStyle(fontName: "NoSuchFont-\(UUID())", size: 14, color: 0, retainsOriginalFont: true)
+        XCTAssertThrowsError(try NativeContentTextPDF.render(span.text, span: span, page: page, style: style))
+        let legacy = Data(#"{"fontName":"Times-Roman","size":14,"color":0}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(ContentTextStyle.self, from: legacy).retainsOriginalFont)
     }
 }

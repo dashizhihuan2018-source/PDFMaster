@@ -4,9 +4,9 @@
 
 **自由创作，灵感无界。**
 
-[官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19)
+[官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [逐项功能](https://dashizhihuan2018-source.github.io/PDFMaster/features.html) · [使用教程](https://dashizhihuan2018-source.github.io/PDFMaster/guide.html) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.20)
 
-2026-10-26 **源码修订 r1**：修复两项墨迹交互测试写截图时依赖私有工作目录的问题，改用独立临时文件并校验读回。产品程序、功能与安装包仍为已验证的 V0.1.19/build41，不为测试路径修复伪造新程序版本。[r1安装包与完整源码](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19-r1) · [根因及复现说明](docs/INK-TEST-R1.md)。
+2026-10-26 **V0.1.20 / build42**：内容编辑与字体兼容迁移为独立 Swift / Apple 系统框架实现，必要 qpdf 随 App 打包，不再要求用户安装 Python、PyMuPDF、fontTools 或 Homebrew。复杂 PDF 保守拒绝，不承诺任意格式或所有 Mac 兼容。历史 [V0.1.19 源码修订 r1](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19-r1) 保留，不覆盖旧资产。
 
 PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF 工具集、无限画布、无边记** 三种工作方式，将文档、图片、便签与想法连接起来：从专注阅读，到自由批注，再到有序整理，让 PDF 成为思考的起点。
 
@@ -16,7 +16,7 @@ PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF �
 
 | 工作方式 | 帮你完成什么 | 使用方式 |
 | --- | --- | --- |
-| **PDF 工具集** | 阅读与搜索、高亮与手绘、便签与图形、手写签名、页面整理，以及部分 OCR 与导出操作 | 日常阅读、批注和页面整理在本机进行；部分工具需要可选外部依赖 |
+| **PDF 工具集** | 阅读与搜索、高亮与手绘、便签与图形、手写签名、页面整理，以及有限结构内容编辑、OCR 与导出操作 | 本地工具随包提供，支持边界详见功能页；AI 单独配置 |
 | **无限画布** | 在软件内置的节点工作区组合文字、图片、视频与想法 | 离线编辑、本机保存；AI 生成使用自己的 DMX Key 并联网计费，无网站登录或跳转 |
 | **无边记** | 在本地画布中自由组织 PDF、图片、便签、连线与手绘，保存为 `.pdfmasterboard`，并导出 PDF 或 PNG | 本地保存，与内置 AI 节点画布分别管理 |
 
@@ -36,13 +36,13 @@ https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
 ## 获取与使用
 
-当前 macOS 安装包 **V0.1.19**（build41）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.19/PDFMaster-V0.1.19-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；最低构建目标 macOS 14.0，尚未完成其他 Mac 或所有系统版本验收。Windows 仍为旧独立预览。非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+当前 macOS 安装包 **V0.1.20**（build42）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.20/PDFMaster-V0.1.20-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.20)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；最低构建目标 macOS 14.0，尚未完成其他 Mac 或所有系统版本验收。系统安全检查未通过时停止并反馈，不关闭全局安全保护。Windows 仍为旧独立预览。非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
 
 V0.1.19 修复导入图章（Stamp）中整张CAD图纸被低分辨率缓存放大而发糊的问题，按当前缩放与Retina像素密度重绘原始外观，保留批注叠放与旋转，不压平或改写原PDF。本机完整778项测试通过，并检查原生窗口多倍率及滚动显示；不是所有PDF或其它Mac的兼容认证。详见[发布说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19)。
 
 V0.1.18 更新原生阅读器右侧 PDF Copilot、富文本回答及页码引用，支持在本机账户设置中分别绑定自己的 **DMX / DeepSeek / Agnes Key**，并包含 build40 的双页布局、字体兼容与批注修复。不同账户/服务商不共用 Key，发送前需核对范围并同意可能计费；DeepSeek 真实 Key 调用尚未验证。包内不包含用户登录状态、真实密钥或用户文档。
 
-**最新版安装包和完整对应项目源码均已公开：V0.1.19/build41。** 本仓库包含完整 Swift 原生程序、画布前端、测试、字体适配脚本、资源、许可证和构建脚本，不再使用 build28 原生源码代替最新版。公开包沿用已审查的 V0.1.7 画布前端；其完整源码也在 `CanvasWeb/`，不含私有演示、第三方提示词快照或用户数据。公开二进制清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名，因此不是本机安装版或自行构建结果的逐字节副本。外部工具按下方说明安装；依赖缓存、编译产物和私人开发历史不属于项目源码。
+**当前版本对应项目源码：V0.1.20/build42。** 本仓库包含 Swift 原生程序、画布前端、测试、资源、许可证和构建脚本。公开包沿用已审查的画布前端，其源码在 `CanvasWeb/`，不含私有演示、第三方提示词快照或用户数据。主程序由此公开源码树构建，清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名；不承诺自行构建结果逐字节一致。开发构建需准备下述工具，最终 App 不需要开发环境。依赖缓存、编译产物和私人开发历史不属于项目源码。
 
 V0.1.7 将无限画布随应用打包，从固定本地源加载，不再加载或跳转画布网站。无需网站或本机账户登录，点击“DMX Key 设置…”输入自己的 Key，Key 仅在本机钥匙串保存，不交给 JS、配置 JSON 或画布 ZIP。首次生成需原生会话授权；费用由自己的 DMX 账户承担。[完整使用教程](docs/无限画布使用教程.md)。支持页仅保留邮箱 `archseuyang@163.com`。同时保留关闭窗口后再次打开 PDF / Dock 重开时的窗口生命周期修复。
 
@@ -70,26 +70,36 @@ V0.1.0 完善文档保存体验：⌘S 直接保存当前 PDF，新文档首次�
 
 ```sh
 (cd CanvasWeb && npm ci --ignore-scripts && npm run typecheck && npm run build)
-# 内容编辑回归需先配置下方 Python / PyMuPDF / fontTools 运行时：
-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 scripts/generate-test-fixtures.py
-swift test
-bash scripts/build-app.sh
+# 先按下方说明从官方源码构建 qpdf，再把显式路径传入测试和打包。
+PDFMASTER_TEST_QPDF="$PWD/work/vendor-build/bin/qpdf" \
+PDFMASTER_QPDF="$PWD/work/vendor-build/bin/qpdf" swift test
 ```
 
 打包结果为 `dist/PDF Master.app`。脚本从锁文件安装前端依赖、构建本地画布与原生程序并创建新 bundle，不安装、不运行、不清理旧版本；已有目标会拒绝覆盖。使用 macOS 本地 ad-hoc 签名，不改变系统安全策略。
 
-qpdf 不捆绑进此源码目录或默认 App bundle。页码、无损优化等依赖外部 qpdf，应用通过 `PDFMASTER_QPDF` 的绝对可执行路径或当前 PATH 发现它。打包时可传 `--qpdf /absolute/path/to/qpdf` 仅检查该可选依赖，不复制二进制或依赖库；图形启动环境 PATH 可能不同，可直接运行 `dist/PDF Master.app/Contents/MacOS/PaperDesk` 并显式设置环境。没有 qpdf 时相关操作明确拒绝，部分测试明确 skip。
+### 构建并捆绑 qpdf
+
+从 [qpdf 12.4.2 官方发布](https://github.com/qpdf/qpdf/releases/tag/v12.4.2)和 [libjpeg-turbo 3.2.0 官方发布](https://github.com/libjpeg-turbo/libjpeg-turbo/releases/tag/3.2.0)取得源码，核对厂商校验/签名并解压。需要 CMake；脚本不自动下载、不安装到系统。`QPDF_SOURCE`、`JPEG_SOURCE` 在下例中由你设为已核对源码的绝对目录。
 
 ```sh
-PDFMASTER_QPDF=/absolute/path/to/qpdf swift test
-bash scripts/build-app.sh --qpdf /absolute/path/to/qpdf
+bash scripts/build-qpdf.sh --qpdf-source "$QPDF_SOURCE" \
+  --jpeg-source "$JPEG_SOURCE" --output "$PWD/work/vendor-build"
+export PDFMASTER_TEST_QPDF="$PWD/work/vendor-build/bin/qpdf"
+export PDFMASTER_TEST_QPDF_LIB="$PWD/work/vendor-build/lib/libqpdf.30.dylib"
+export PDFMASTER_TEST_QPDF_SOURCE="$QPDF_SOURCE"
+export PDFMASTER_TEST_JPEG_SOURCE="$JPEG_SOURCE"
+export PDFMASTER_QPDF="$PDFMASTER_TEST_QPDF"
+swift test
+bash scripts/build-app.sh --qpdf "$PDFMASTER_TEST_QPDF" \
+  --qpdf-lib "$PDFMASTER_TEST_QPDF_LIB" \
+  --qpdf-source "$QPDF_SOURCE" --jpeg-source "$JPEG_SOURCE"
 ```
 
-### 可选内容编辑运行时
+脚本捆绑 qpdf、依赖库及对应许可证，检查依赖闭包与最低系统目标。生产原生内容引擎仅使用包内组件；DEBUG 测试允许上述显式工具注入。不要提交 `work/vendor-build` 或源码缓存到 Git。
 
-PDF 内容编辑功能使用包外 Python 3.12、PyMuPDF 1.27.2.3 与 fontTools，当前适配器要求标准 framework Python 和该用户的 Library/Python 安装位置；不是自包含便携功能。运行时不在此仓库，也不自动下载。PyMuPDF 为 AGPL-3.0 或商业授权；调用外部进程不构成许可豁免。请根据最终使用/分发模式自行确认合规，不能把本目录公开视为商业许可证批准。[PyMuPDF 官方许可](https://pymupdf.io/licensing)。
+### 测试样本与原生引擎
 
-先运行 `scripts/generate-test-fixtures.py`，从代码生成纯虚构文本和图片到被忽略的 `work/parallel/content-edit/evidence/`；原生文字编辑测试使用这些夹具。可选集成测试另设 `PDFMASTER_CONTENT_FIXTURE="$PWD/work/parallel/content-edit/evidence/content-edit-qa.pdf"` 和 `PDFMASTER_CONTENT_REPLACEMENT="$PWD/work/parallel/content-edit/evidence/replacement.png"`，不配置时明确跳过。不要提供私人业务 PDF。图像导入测试现场生成图片，图标测试使用 Resources 内的正式图标。故障文件清晰度测试为单独 opt-in；仓库不附用户文件，默认跳过该项，其余四项使用合成 Stamp。
+内容编辑和字体兼容使用 Swift、CoreText、PDFKit 与包内 qpdf，不含旧 Python 编辑脚本。测试现场生成虚构文字、四色图和矢量 PDF，不需用户 PDF 或私人工作目录。原生单行编辑、图像替换、链接与有限区域移除均有保守拒绝边界，不是完整桌面排版器或认证脱敏方案。故障文件清晰度测试仍是单独 opt-in，仓库不附用户文件，默认跳过该项，其余项目使用合成 Stamp。开发环境中的 `scripts/audit-source.py` 只是源码审查工具，不是 App 运行时。
 
 ## 网络、账户和隐私
 
@@ -103,7 +113,7 @@ AI 功能使用用户自行提供的 DMX Key；Key 置于本机非同步 Keychai
 
 此源码目前仅公开供查看；权利人尚未指定项目开源许可证，因此不应推定获得使用、修改、复制或再分发授权。此声明不改变第三方组件各自已授予的许可，也不声称拥有第三方或生成内容的排他权利。请先取得权利人明确授权再作其他用途。
 
-SwiftyDraw 局部平滑路径适配保留 MIT 许可证与固定来源说明，见 `Resources/Licenses/SwiftyDraw/`。品牌与 56 张工具图标的来源说明见 `Resources/ASSETS.md`。系统框架/字体不随仓库复制。qpdf、libjpeg-turbo 和 PyMuPDF 未捆绑在此源码；若另行分发它们或其二进制，请遵守各自许可证并保留完整 notice，不能拿 SwiftyDraw MIT 作为整个产品许可。
+SwiftyDraw 局部平滑路径适配保留 MIT 许可证与固定来源说明，见 `Resources/Licenses/SwiftyDraw/`。品牌与 56 张工具图标的来源说明见 `Resources/ASSETS.md`。系统框架/字体不随仓库复制。qpdf 与 libjpeg-turbo 源码未捆绑在此仓库；发布 App 内含其二进制和完整许可，已移除 PyMuPDF 运行时。若另行分发第三方源码或二进制，请遵守各自许可证并保留完整 notice，不能拿 SwiftyDraw MIT 作为整个产品许可。
 
 内置画布前端基于 basketikun 的 InfiniteCanvas（MIT）改编，许可证和改编说明见 `CanvasWeb/LICENSE` 与 `Resources/Licenses/InfiniteCanvas/`。该部分不受本项目原创内容的额外非商业限制；npm 依赖各自遵循其许可证。
 

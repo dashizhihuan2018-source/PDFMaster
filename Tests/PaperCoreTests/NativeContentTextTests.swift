@@ -4,11 +4,11 @@ import XCTest
 @testable import PaperCore
 
 final class NativeContentTextTests: XCTestCase {
+    private lazy var publicFixture = try! PublicContentFixture()
     func testReplacementUsesNativeGlyphLayoutAndSearchablePDFResources() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = root.appendingPathComponent("work/parallel/content-edit/evidence/content-edit-qa.pdf")
+        let source = publicFixture.source
         let original = try Data(contentsOf: source)
-        let engine = ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py"))
+        let engine = ContentEditEngine()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("NativeContentText-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: dir) }

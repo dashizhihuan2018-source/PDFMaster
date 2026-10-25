@@ -33,6 +33,13 @@ import PDFKit
     private let isExisting: Bool
     private let stylesEnabled: Bool
     private let allowsFractionalFontSize: Bool
+    /// Compare user-facing face/weight choices, not NSFont's unstable private
+    /// system aliases (a no-op conversion can rename .AppleSystemUIFont).
+    var hasFontFaceChanges: Bool {
+        let value = (fontField.currentEditor()?.string ?? fontField.stringValue).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.caseInsensitiveCompare(initialFont.familyName ?? initialFont.fontName) != .orderedSame ||
+            (boldButton.state == .on) != NSFontManager.shared.traits(of: initialFont).contains(.boldFontMask)
+    }
     var hasDraftChanges: Bool {
         textView.string != initialText || pageBounds != initialBounds || baseFont != initialFont || textColor != initialColor
     }
@@ -224,7 +231,7 @@ import PDFKit
             // family picker. Resizing them must not silently choose a new face.
             let oldBold = manager.traits(of: baseFont).contains(.boldFontMask)
             let changed = oldBold == (boldButton.state == .on) ? baseFont : manager.convert(baseFont, toHaveTrait: boldButton.state == .on ? .boldFontMask : .unboldFontMask)
-            resolved = manager.convert(changed, toSize: size)
+            resolved = abs(changed.pointSize - size) < 0.0001 ? changed : manager.convert(changed, toSize: size)
         }
         else if let actualFamily { resolved = manager.font(withFamily: actualFamily, traits: traits, weight: 5, size: size) }
         else { resolved = NSFont(name: familyName, size: size).map { manager.convert($0, toHaveTrait: boldButton.state == .on ? .boldFontMask : .unboldFontMask) } }

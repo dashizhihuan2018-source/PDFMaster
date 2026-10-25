@@ -5,21 +5,12 @@ import PaperCore
 @testable import PaperDesk
 
 @MainActor final class ContentEditIntegrationTests: XCTestCase {
-    private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
-    private var fixture: URL { URL(fileURLWithPath: ProcessInfo.processInfo.environment["PDFMASTER_CONTENT_FIXTURE"] ?? "/nonexistent/content-edit.pdf") }
-    private var engine: ContentEditEngine { ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py")) }
-
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        let environment = ProcessInfo.processInfo.environment
-        try XCTSkipUnless(environment["PDFMASTER_CONTENT_FIXTURE"] != nil && environment["PDFMASTER_CONTENT_REPLACEMENT"] != nil,
-            "Optional content-edit fixtures not configured; see README")
-        try XCTSkipUnless(FileManager.default.fileExists(atPath: fixture.path) && FileManager.default.isExecutableFile(atPath: ContentEditEngine.localPython.path),
-            "Optional content-edit fixture or Python 3.12 absent")
-    }
+    private lazy var publicFixture = try! PublicContentFixture()
+    private var fixture: URL { publicFixture.source }
+    private var engine: ContentEditEngine { ContentEditEngine() }
 
     private func controller() throws -> WorkbenchController {
-        try XCTSkipUnless(FileManager.default.fileExists(atPath: fixture.path), "Local self-made fixture absent")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.path))
         let c = WorkbenchController(); _ = c.view; try c.workspace.open(fixture); c.refreshDocument(); return c
     }
     private func inspect(_ input: PDFEngineInput) throws -> ContentPage {
@@ -57,7 +48,7 @@ import PaperCore
         let c = try controller(); var input = try c.workspace.engineInput(); var page = try inspect(input)
         var request = ContentEditRequest(operation: "replace-image", page: 0)
         request.id = try XCTUnwrap(page.images.first).id
-        request.image_path = ProcessInfo.processInfo.environment["PDFMASTER_CONTENT_REPLACEMENT"]
+        request.image_path = publicFixture.replacement.path
         try await c.applyContentEdit(request, input: input, engine: engine)
         XCTAssertTrue(c.workspace.isDirty)
         input = try c.workspace.engineInput()

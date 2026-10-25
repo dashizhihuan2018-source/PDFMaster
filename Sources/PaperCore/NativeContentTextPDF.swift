@@ -7,20 +7,22 @@ import CoreText
 /// This uses system APIs only, never loads or links PDF Expert's frameworks.
 /// Single horizontal span only; not a reproduction of its paragraph engine.
 enum NativeContentTextPDF {
-    static func render(_ text: String, span: ContentSpan, page: ContentPage, style: ContentTextStyle? = nil) throws -> (Data, String) {
+    static func render(_ text: String, span: ContentSpan, page: ContentPage, style: ContentTextStyle? = nil) throws -> (Data, String, CGRect) {
         guard !text.isEmpty, text.count <= 4096,
               !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               span.origin.count == 2, span.origin.allSatisfy(\.isFinite),
               span.size.isFinite, span.size > 0, span.size <= 4096 else { throw OrganizeError.invalidInput }
         if let style { guard style.isValid else { throw OrganizeError.invalidInput } }
-        let supplied = style?.fontName ?? (span.font.components(separatedBy: "+").last ?? span.font)
+        let retainsOriginalFont = style == nil || style?.retainsOriginalFont == true
+        if style?.retainsOriginalFont == true, style?.fontName != span.font { throw OrganizeError.invalidInput }
+        let supplied = retainsOriginalFont ? (span.font.components(separatedBy: "+").last ?? span.font) : style!.fontName
         let available = CTFontManagerCopyAvailablePostScriptNames() as? [String] ?? []
         let aliases = supplied.localizedCaseInsensitiveContains("FangSong") ? ["STFangsong", "FangSong", "SongtiSC-Regular"] : []
         let name = ([supplied] + aliases).compactMap { candidate in available.first { $0.caseInsensitiveCompare(candidate) == .orderedSame } }.first ?? supplied
         let font = CTFontCreateWithName(name as CFString, style?.size ?? span.size, nil)
         // Explicit user choices must exist; never silently substitute an unknown
         // font. Original embedded/subset fonts retain the existing fallback path.
-        if style != nil, !available.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }),
+        if !retainsOriginalFont, !available.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }),
            (CTFontCopyPostScriptName(font) as String).caseInsensitiveCompare(name) != .orderedSame {
             throw OrganizeError.processFailed("所选字体在本机不可用；草稿已保留")
         }
@@ -55,6 +57,7 @@ enum NativeContentTextPDF {
         context.textPosition = CGPoint(x: span.origin[0], y: page.height - span.origin[1])
         CTLineDraw(line, context)
         context.endPDFPage(); context.closePDF()
-        return (data as Data, names.sorted().joined(separator: ", "))
+        let bounds = CTLineGetBoundsWithOptions(line,[.useGlyphPathBounds]).offsetBy(dx:span.origin[0],dy:page.height-span.origin[1])
+        return (data as Data, names.sorted().joined(separator: ", "), bounds)
     }
 }

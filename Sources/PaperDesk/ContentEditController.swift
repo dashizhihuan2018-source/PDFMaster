@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
         guard !isLocalToolRunning, pdfView.finishInlineTextEditing() else { return }
         let engine = contentEngine()
         guard engine != nil || id == "content-text" else {
-            setInteractionStatus("未找到内容编辑组件（Python 3.12 / PyMuPDF）。文档未修改。")
+            setInteractionStatus("未找到原生内容编辑组件。文档未修改。")
             return
         }
         resetDocumentInteractionState(); contentToolID = id; pdfView.contentEditingEnabled = true
@@ -28,10 +28,7 @@ import UniformTypeIdentifiers
     }
 
     private func contentEngine() -> ContentEditEngine? {
-        guard FileManager.default.isExecutableFile(atPath: ContentEditEngine.localPython.path),
-              let script = Bundle.main.resourceURL?.appendingPathComponent("Engines/content-edit/engine.py"),
-              FileManager.default.fileExists(atPath: script.path) else { return nil }
-        return ContentEditEngine(script: script)
+        ContentEditEngine()
     }
 
     func applyContentEdit(_ request: ContentEditRequest, input: PDFEngineInput, engine: ContentEditEngine) async throws {
@@ -136,7 +133,9 @@ import UniformTypeIdentifiers
         let color = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255,
                             green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: 1)
         let originalFont = NSFont(name: span.font, size: span.size) ?? .systemFont(ofSize: span.size)
-        let font = draftStyle.flatMap { NSFont(name: $0.fontName, size: $0.size) } ?? originalFont
+        let font = draftStyle.flatMap { style in
+            NSFont(name: style.fontName, size: style.size) ?? NSFontManager.shared.convert(originalFont, toSize: style.size)
+        } ?? originalFont
         pdfView.inlineTextSession = PDFInlineTextSession(pdfView: pdfView, page: page, bounds: bounds,
             text: draft ?? span.text, font: font,
             color: color, allowsEmptyCommit: true, allowsFractionalFontSize: true, commit: { [weak self, weak window] text, _, font, color in
@@ -147,8 +146,9 @@ import UniformTypeIdentifiers
                 let colorValue = component(srgb.redComponent) << 16 | component(srgb.greenComponent) << 8 | component(srgb.blueComponent)
                 // Preserve the original embedded-font fallback when the user
                 // only edits text; an explicit style uses the chosen native font.
-                let styleChanged = font.fontName != originalFont.fontName || abs(font.pointSize - originalFont.pointSize) > 0.0001 || colorValue != span.color
-                let selectedStyle = styleChanged ? ContentTextStyle(fontName: font.fontName, size: font.pointSize, color: colorValue) : nil
+                let retainsOriginalFont = (draftStyle == nil || draftStyle?.retainsOriginalFont == true) && self.pdfView.inlineTextSession?.hasFontFaceChanges == false
+                let styleChanged = !retainsOriginalFont || abs(font.pointSize - span.size) > 0.0001 || colorValue != span.color
+                let selectedStyle = styleChanged ? ContentTextStyle(fontName: retainsOriginalFont ? span.font : font.fontName, size: font.pointSize, color: colorValue, retainsOriginalFont: retainsOriginalFont) : nil
                 guard text != span.text || selectedStyle != nil else { return }
                 guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
                     throw OrganizeError.processFailed("原文替换暂限单行；多行文字请在空白处新建文本框。草稿已保留。")

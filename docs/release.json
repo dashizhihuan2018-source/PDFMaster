@@ -1,16 +1,16 @@
 {
-  "version": "V0.1.19",
-  "build": 41,
+  "version": "V0.1.20",
+  "build": 42,
   "platform": "macOS",
   "architecture": "arm64",
   "minimumOS": "14.0",
-  "bytes": 29557005,
-  "sha256": "ad3b298930d90048e76ae2e960fd9a757f2369236d1f660826ca50ea61a0d18d",
-  "download": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.19/PDFMaster-V0.1.19-arm64.dmg",
-  "checksum": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.19/PDFMaster-V0.1.19-arm64-SHA256.txt",
-  "releaseNotes": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19",
-  "sourceVersion": "V0.1.19/build41",
+  "bytes": 30068070,
+  "sha256": "309884f872f9520a0ef85aea69335075c549528a63e056236118986b2c8755c8",
+  "download": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.20/PDFMaster-V0.1.20-arm64.dmg",
+  "checksum": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.20/PDFMaster-V0.1.20-arm64-SHA256.txt",
+  "releaseNotes": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.20",
+  "sourceVersion": "V0.1.20/build42",
   "prerelease": true,
   "notarized": false,
-  "selfContainedContentEditing": false
+  "selfContainedContentEditing": true
 }

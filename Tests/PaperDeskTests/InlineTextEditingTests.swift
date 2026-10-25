@@ -5,6 +5,7 @@ import XCTest
 @testable import PaperDesk
 
 @MainActor final class InlineTextEditingTests: XCTestCase {
+    private lazy var publicFixture = try! PublicContentFixture()
     private func fixture() throws -> (WorkbenchController, NSWindow) {
         _ = NSApplication.shared
         let c = WorkbenchController(); _ = c.view
@@ -182,11 +183,10 @@ import XCTest
     }
     func testOriginalContentNowUsesInlineEditorAndCancelLeavesSourceUnchanged() throws {
         let (c, w) = try fixture(); defer { w.contentViewController = nil }
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = root.appendingPathComponent("work/parallel/content-edit/evidence/content-edit-qa.pdf")
+        let source = publicFixture.source
         let original = try Data(contentsOf: source)
         try c.workspace.open(source); c.refreshDocument(); c.enterMode(.editing)
-        let engine = ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py"))
+        let engine = ContentEditEngine()
         let span = try XCTUnwrap(engine.inspect(source, page: 0, cancelled: { false }).spans.first { $0.text == "Original target" })
         let input = try c.workspace.engineInput()
         c.presentInlineTextReplacement(span, page: 0, input: input, engine: engine, window: w)

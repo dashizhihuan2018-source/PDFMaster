@@ -28,15 +28,17 @@ test('homepage pins the verified public installer and labels limitations', () =>
   if (!existsSync(new URL('index.html', root))) return assert.fail('missing download homepage');
   const html = readFileSync(new URL('index.html', root), 'utf8');
   const release = JSON.parse(readFileSync(new URL('release.json', root), 'utf8'));
-  assert.equal(release.version, 'V0.1.19');
-  assert.equal(release.build, 41);
-  assert.equal(release.sha256, 'ad3b298930d90048e76ae2e960fd9a757f2369236d1f660826ca50ea61a0d18d');
+  assert.equal(release.version, 'V0.1.20');
+  assert.equal(release.build, 42);
+  assert.equal(release.sha256, '309884f872f9520a0ef85aea69335075c549528a63e056236118986b2c8755c8');
   assert.ok(html.includes(release.download));
   assert.ok(html.includes(release.checksum));
   assert.ok(html.includes('未获 Apple 公证'));
   assert.ok(html.includes('Python'));
   assert.ok(html.includes('对应项目源码已公开'));
-  assert.equal(release.sourceVersion, 'V0.1.19/build41');
+  assert.equal(release.sourceVersion, 'V0.1.20/build42');
+  assert.equal(release.selfContainedContentEditing, true);
+  assert.ok(html.includes('不再依赖外置 Python'));
   assert.ok(html.includes('不会上传'));
   assert.ok(html.includes('© 2026 Nankong'));
   assert.ok(!html.includes('完全自主知识产权'));
@@ -63,8 +65,8 @@ test('all local page and resource links resolve, including cross-page anchors', 
       }
     }
     if (page !== 'index.html') {
-      assert.ok(html.includes('V0.1.19 / build41'));
-      assert.ok(html.includes('尚未发布') || html.includes('待发布预览'));
+      assert.ok(html.includes('V0.1.20 / build42'));
+      assert.ok(!html.includes('尚未发布') && !html.includes('待发布预览'));
     }
   }
 });

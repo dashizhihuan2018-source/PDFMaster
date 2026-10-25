@@ -5,7 +5,7 @@ import PaperCore
 @testable import PaperDesk
 
 @MainActor final class ContentTextDialogTests: XCTestCase {
-    private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
+    private lazy var publicFixture = try! PublicContentFixture()
 
     func testCompactFangSongChineseAppliesUndoRedoAndSavedCopyReopens() async throws {
         let original = "合同管理办法，原文文字测试", replacement = "合同管理办法，修改文字测试"
@@ -32,7 +32,7 @@ import PaperCore
         let originalData = Data(pdf.utf8); try originalData.write(to: source)
         let c = WorkbenchController(); _ = c.view; try c.workspace.open(source); c.refreshDocument()
         let input = try c.workspace.engineInput(); try input.data.write(to: snapshot)
-        let engine = ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py"))
+        let engine = ContentEditEngine()
         let span = try XCTUnwrap(engine.inspect(snapshot, page: 0, cancelled: { false }).spans.first { $0.text == original })
         XCTAssertEqual(span.font, "FangSong_GB2312")
         var request = ContentEditRequest(operation: "replace-text", page: 0); request.id = span.id; request.text = replacement
@@ -49,8 +49,8 @@ import PaperCore
 
     func testFailedApplyShowsReasonAndKeepsDraftForRetry() async throws {
         _ = NSApplication.shared
-        let fixture = root.appendingPathComponent("work/parallel/content-edit/evidence/content-edit-qa.pdf")
-        let engine = ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py"))
+        let fixture = publicFixture.source
+        let engine = ContentEditEngine()
         let c = WorkbenchController(); _ = c.view
         try c.workspace.open(fixture); c.refreshDocument()
         let input = try c.workspace.engineInput()

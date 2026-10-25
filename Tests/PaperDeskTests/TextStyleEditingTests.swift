@@ -5,7 +5,8 @@ import XCTest
 @testable import PaperDesk
 
 @MainActor final class TextStyleEditingTests: XCTestCase {
-    private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
+    private lazy var publicFixture = try! PublicContentFixture()
+    private lazy var chineseFixture = try! PublicContentFixture(pageCount: 5, title: "示例古建", imagePageCount: 4, titleSize: 66, titleFont: "PDFMasterSyntheticCJK")
 
     private func fixture() throws -> (WorkbenchController, NSWindow, PDFInlineTextSession) {
         _ = NSApplication.shared
@@ -63,8 +64,8 @@ import XCTest
     func testOriginalSingleSpanEditorEnablesFontFamilySizeAndColorControls() throws {
         let (controller, window, _) = try fixture(); defer { window.contentViewController = nil }
         _ = controller.pdfView.finishInlineTextEditing(commit: false)
-        let source = root.appendingPathComponent("work/parallel/content-edit/evidence/content-edit-qa.pdf")
-        let engine = ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py"))
+        let source = publicFixture.source
+        let engine = ContentEditEngine()
         try controller.workspace.open(source); controller.refreshDocument(); controller.enterMode(.editing)
         let span = try XCTUnwrap(engine.inspect(source, page: 0, cancelled: { false }).spans.first { $0.text == "Original target" })
         controller.presentInlineTextReplacement(span, page: 0, input: try controller.workspace.engineInput(), engine: engine, window: window)
@@ -122,9 +123,9 @@ import XCTest
     func testOriginalUnchangedTextCanCommitNewStyleIntoNativeContent() async throws {
         let (controller, window, initial) = try fixture(); defer { window.contentViewController = nil }
         _ = initial.finish(commit: false)
-        let source = root.appendingPathComponent("work/parallel/content-edit/evidence/content-edit-qa.pdf")
+        let source = publicFixture.source
         let original = try Data(contentsOf: source)
-        let engine = ContentEditEngine(script: root.appendingPathComponent("Resources/ContentEdit/engine.py"))
+        let engine = ContentEditEngine()
         try controller.workspace.open(source); controller.refreshDocument(); controller.enterMode(.editing)
         let span = try XCTUnwrap(engine.inspect(source, page: 0, cancelled: { false }).spans.first { $0.text == "Original target" })
         controller.presentInlineTextReplacement(span, page: 0, input: try controller.workspace.engineInput(), engine: engine, window: window)
@@ -163,5 +164,93 @@ import XCTest
         XCTAssertEqual(redone.size, 10.5, accuracy: 0.02)
         XCTAssertEqual(redone.color, 0xFF0000)
         XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testSelfAuthoredChineseDefaultInlineFontCanReplaceTitleAndSaveReopen() async throws {
+        try await replaceSelfAuthoredChineseTitle(changesSizeAndColor: false)
+    }
+
+    func testSelfAuthoredChineseSizeAndColorOnlyRetainOriginalFontFallback() async throws {
+        try await replaceSelfAuthoredChineseTitle(changesSizeAndColor: true)
+    }
+
+    private func replaceSelfAuthoredChineseTitle(changesSizeAndColor: Bool) async throws {
+        let (controller, window, initial) = try fixture(); defer { window.contentViewController = nil }
+        _ = initial.finish(commit: false)
+        let source = chineseFixture.source
+        let original = try Data(contentsOf: source)
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("SelfAuthoredChinese-inline-\(UUID()).pdf")
+        let saved = temporary.deletingPathExtension().appendingPathExtension("saved.pdf")
+        try original.write(to: temporary)
+        defer { try? FileManager.default.removeItem(at: temporary); try? FileManager.default.removeItem(at: saved) }
+        let engine = ContentEditEngine()
+        try controller.workspace.open(temporary); controller.refreshDocument(); controller.enterMode(.editing)
+        let span = try XCTUnwrap(engine.inspect(temporary, page: 0, cancelled: { false }).spans.first { $0.text == "示例古建" })
+        controller.presentInlineTextReplacement(span, page: 0, input: try controller.workspace.engineInput(), engine: engine, window: window)
+        let session = try XCTUnwrap(controller.pdfView.inlineTextSession)
+        let family = try combo("文字字体", in: controller)
+        XCTAssertEqual(family.stringValue, ".AppleSystemUIFont", "This fixture must exercise the unavailable embedded-font UI fallback")
+        XCTAssertEqual(try combo("文字字号", in: controller).stringValue, "66")
+        if changesSizeAndColor {
+            apply("63.5", to: try combo("文字字号", in: controller))
+            let color = try XCTUnwrap(descendants(controller.view).compactMap { $0 as? NSColorWell }.first { $0.accessibilityLabel() == "文字颜色" })
+            color.color = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+            if let action = color.action { NSApp.sendAction(action, to: color.target, from: color) }
+        }
+        session.textView.string = "阅读示例"
+        let done = try XCTUnwrap(descendants(controller.view).compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == "完成文字输入" })
+        done.performClick(nil)
+        for _ in 0..<400 where controller.isContentEditPending { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertFalse(controller.isContentEditPending)
+        XCTAssertTrue(controller.workspace.isDirty, "Default inline font must not become an unavailable explicit face: \(controller.interactionStatusText)")
+        XCTAssertNil(controller.pdfView.inlineTextSession)
+        try controller.workspace.saveCopy(to: saved)
+        let document = try XCTUnwrap(PDFDocument(url: saved))
+        XCTAssertEqual(document.pageCount, 5)
+        XCTAssertTrue(document.page(at: 0)?.string?.contains("阅读示例") == true)
+        XCTAssertFalse(document.page(at: 0)?.string?.contains("示例古建") == true)
+        if changesSizeAndColor {
+            let edited = try XCTUnwrap(engine.inspect(saved, page: 0, cancelled: { false }).spans.first { $0.text == "阅读示例" })
+            XCTAssertEqual(edited.size, 63.5, accuracy: 0.01)
+            XCTAssertEqual(edited.color, 0xFF0000)
+        }
+        for index in 1..<5 { XCTAssertEqual(document.page(at: index)?.string, PDFDocument(data: original)?.page(at: index)?.string) }
+        XCTAssertEqual(try Data(contentsOf: temporary), original)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testExplicitUnknownInlineFontKeepsDraftAndOriginalBytes() throws {
+        let (controller, window, initial) = try fixture(); defer { window.contentViewController = nil }
+        _ = initial.finish(commit: false)
+        let source = chineseFixture.source
+        let original = try Data(contentsOf: source), engine = ContentEditEngine()
+        try controller.workspace.open(source); controller.refreshDocument(); controller.enterMode(.editing)
+        let span = try XCTUnwrap(engine.inspect(source, page: 0, cancelled: { false }).spans.first { $0.text == "示例古建" })
+        controller.presentInlineTextReplacement(span, page: 0, input: try controller.workspace.engineInput(), engine: engine, window: window)
+        let session = try XCTUnwrap(controller.pdfView.inlineTextSession)
+        apply("NoSuchPDFMasterFont-\(UUID())", to: try combo("文字字体", in: controller))
+        for text in [span.text, "阅读示例"] {
+            session.textView.string = text
+            XCTAssertFalse(controller.pdfView.finishInlineTextEditing())
+            XCTAssertTrue(controller.pdfView.inlineTextSession === session)
+            XCTAssertEqual(session.textView.string, text)
+            XCTAssertFalse(controller.workspace.isDirty)
+            XCTAssertFalse(controller.isContentEditPending)
+        }
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        _ = session.finish(commit: false)
+    }
+
+    func testRetriedOriginalFontDraftKeepsFractionalSize() throws {
+        let (controller, window, initial) = try fixture(); defer { window.contentViewController = nil }
+        _ = initial.finish(commit: false)
+        let source = chineseFixture.source, engine = ContentEditEngine()
+        try controller.workspace.open(source); controller.refreshDocument(); controller.enterMode(.editing)
+        let span = try XCTUnwrap(engine.inspect(source, page: 0, cancelled: { false }).spans.first { $0.text == "示例古建" })
+        controller.presentInlineTextReplacement(span, page: 0, input: try controller.workspace.engineInput(), engine: engine, window: window,
+            draft: "保留草稿", draftStyle: ContentTextStyle(fontName: span.font, size: 63.5, color: 0xFF0000, retainsOriginalFont: true))
+        XCTAssertEqual(try combo("文字字号", in: controller).stringValue, "63.5")
+        XCTAssertEqual(controller.pdfView.inlineTextSession?.textView.string, "保留草稿")
+        _ = controller.pdfView.finishInlineTextEditing(commit: false)
     }
 }
