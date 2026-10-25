@@ -1,0 +1,89 @@
+name: PDF Master Rust candidate packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pdfmaster-rust-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+        working-directory: RustPDFMaster
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned native ARM64 toolchain
+        run: bash tools/ci-setup.sh macos
+      - name: Verify configuration and all three Rust workspaces
+        run: |
+          python3 -m unittest -v tools/test_candidate_ci.py
+          bash tools/ci-check.sh
+      - name: Run core-only functional smoke
+        run: bash tools/ci-core-smoke.sh
+      - name: Build and package unsigned macOS ARM64 app candidate
+        run: bash tools/ci-build-macos.sh
+      - name: Upload exact macOS candidate and SHA-256
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pdfmaster-rust-candidate-macos-arm64
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            RustPDFMaster/artifacts/pdfmaster-rust-candidate-macos-arm64.zip
+            RustPDFMaster/artifacts/pdfmaster-rust-candidate-macos-arm64.zip.sha256
+      - name: Build and package unsigned iOS simulator ARM64 archive
+        run: bash tools/ci-build-ios.sh
+      - name: Upload exact iOS simulator archive and SHA-256
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pdfmaster-rust-candidate-ios-simulator-arm64
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            RustPDFMaster/artifacts/pdfmaster-rust-candidate-ios-simulator-arm64.xcarchive.zip
+            RustPDFMaster/artifacts/pdfmaster-rust-candidate-ios-simulator-arm64.xcarchive.zip.sha256
+
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: RustPDFMaster
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned native x64 toolchain
+        run: bash tools/ci-setup.sh windows
+      - name: Verify configuration and all three Rust workspaces
+        run: |
+          python -m unittest -v tools/test_candidate_ci.py
+          bash tools/ci-check.sh
+      - name: Run core-only functional smoke
+        run: bash tools/ci-core-smoke.sh
+      - name: Build exact unsigned NSIS x64 candidate
+        run: bash tools/ci-build-windows.sh
+      - name: Upload exact Windows NSIS candidate and SHA-256
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pdfmaster-rust-candidate-windows-x64-nsis
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe
+            RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe.sha256

@@ -1,0 +1,8 @@
+target/
+dist/
+/src-tauri/gen/
+/evidence/private/
+*.mobileprovision
+*.p12
+*.key
+.DS_Store

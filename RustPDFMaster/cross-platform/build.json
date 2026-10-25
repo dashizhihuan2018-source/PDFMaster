@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "project": "pdfmaster-rust-candidate",
+  "jobs": {
+    "macos": {
+      "runner": "macos-15",
+      "setup": "bash tools/ci-setup.sh macos",
+      "test": "python3 -m unittest -v tools/test_candidate_ci.py\nbash tools/ci-check.sh",
+      "build": "bash tools/ci-build-macos.sh\nbash tools/ci-build-ios.sh",
+      "smoke": "bash tools/ci-core-smoke.sh",
+      "artifact": "artifacts/pdfmaster-rust-candidate-macos-arm64.zip"
+    },
+    "windows": {
+      "runner": "windows-2025",
+      "setup": "bash tools/ci-setup.sh windows",
+      "test": "python -m unittest -v tools/test_candidate_ci.py\nbash tools/ci-check.sh",
+      "build": "bash tools/ci-build-windows.sh",
+      "smoke": "bash tools/ci-core-smoke.sh",
+      "artifact": "artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe"
+    }
+  }
+}
