@@ -24,6 +24,16 @@ test('detailed feature discovery and locally hosted bold serif are shipped', () 
   const css = readFileSync(new URL('product.css', root), 'utf8');
   assert.match(css, /font-family:SourceHanSerifBold/); assert.match(css, /font-weight:700/);
 });
+test('first installation is actionable without globally disabling macOS protection', () => {
+  const html = readFileSync(new URL('index.html', root), 'utf8');
+  const guide = readFileSync(new URL('guide.html', root), 'utf8');
+  assert.ok(html.includes('guide.html#install'));
+  assert.ok(guide.includes('id="install"'));
+  for (const phrase of ['隐私与安全性', '仍要打开', '可信来源', '未遭篡改', '已损坏', '将损坏', '系统管理员', '另一台 Mac', 'shasum -a 256']) assert.ok(guide.includes(phrase), phrase);
+  assert.ok(guide.includes('https://support.apple.com/zh-cn/102445'));
+  assert.ok(guide.includes('309884f872f9520a0ef85aea69335075c549528a63e056236118986b2c8755c8'));
+  assert.ok(!/spctl\s+--(?:master-disable|global-disable)|xattr\s+-[a-z]*d|sudo\s/.test(html + guide));
+});
 test('homepage pins the verified public installer and labels limitations', () => {
   if (!existsSync(new URL('index.html', root))) return assert.fail('missing download homepage');
   const html = readFileSync(new URL('index.html', root), 'utf8');
