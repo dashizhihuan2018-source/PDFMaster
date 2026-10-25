@@ -8,9 +8,27 @@ public struct ContentPage: Codable {
     public let page: Int; public let width: Double; public let height: Double
     public let spans: [ContentSpan]; public let images: [ContentImage]; public let links: [ContentLink]; public let limitations: [String]
 }
+/// An explicit uniform style for one existing horizontal span. This does not
+/// enable paragraph reflow: the content engine still checks its actual glyph
+/// bounds against the original footprint, page and all neighboring objects.
+public struct ContentTextStyle: Codable, Equatable {
+    public let fontName: String
+    public let size: Double
+    public let color: Int
+    public init(fontName: String, size: Double, color: Int) {
+        self.fontName = fontName; self.size = size; self.color = color
+    }
+    var isValid: Bool {
+        !fontName.isEmpty && fontName.utf8.count <= 256 &&
+        !fontName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) &&
+        size.isFinite && (1...512).contains(size) && (0...0xFFFFFF).contains(color)
+    }
+}
 public struct ContentEditRequest: Encodable {
     public let operation: String; public let page: Int
     public var id: String?; public var text: String?; public var bbox: [Double]?; public var uri: String?; public var image_path: String?
+    public var textStyle: ContentTextStyle?
+    var rendered_text_pdf_path: String?
     public init(operation: String, page: Int) { self.operation = operation; self.page = page }
 }
 
@@ -40,8 +58,24 @@ public final class ContentEditEngine {
     }
     public func apply(_ source: URL, request: ContentEditRequest, output: URL, cancelled: () -> Bool) throws -> String {
         guard !FileManager.default.fileExists(atPath: output.path), request.operation != "inspect" else { throw OrganizeError.invalidInput }
-        let data = try run(source, request: request, output: output, cancelled: cancelled)
+        if let style = request.textStyle {
+            guard request.operation == "replace-text", style.isValid else { throw OrganizeError.invalidInput }
+        }
+        var prepared = request
+        var nativeFont: String?
+        var renderedURL: URL?
+        defer { if let renderedURL { try? FileManager.default.removeItem(at: renderedURL) } }
+        if request.operation == "replace-text", let text = request.text, !text.isEmpty {
+            let page = try inspect(source, page: request.page, cancelled: cancelled)
+            guard let span = page.spans.first(where: { $0.id == request.id }) else { throw OrganizeError.invalidInput }
+            let rendered = try NativeContentTextPDF.render(text, span: span, page: page, style: request.textStyle)
+            let url = source.deletingLastPathComponent().appendingPathComponent("native-text-" + UUID().uuidString + ".pdf")
+            guard FileManager.default.createFile(atPath: url.path, contents: rendered.0, attributes: [.posixPermissions: 0o600]) else { throw OrganizeError.invalidInput }
+            renderedURL = url; prepared.rendered_text_pdf_path = url.path; nativeFont = rendered.1
+        }
+        let data = try run(source, request: prepared, output: output, cancelled: cancelled)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if let nativeFont { return "原生排版文字已写入 PDF · 实际字体：" + nativeFont }
         return (json?["message"] as? String) ?? "内容编辑已完成 · 可撤销 · 请存储副本"
     }
     private func validBox(_ box: [Double], in page: ContentPage) -> Bool {

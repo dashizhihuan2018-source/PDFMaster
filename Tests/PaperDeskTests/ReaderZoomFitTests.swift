@@ -5,6 +5,22 @@ import XCTest
 
 @MainActor
 final class ReaderZoomFitTests: XCTestCase {
+    func testFittedTwoPageSpreadIsFullyVisibleAfterSwitchingFromLargeZoom() async throws {
+        let (reader, view) = try fixture(viewport: CGSize(width: 1000, height: 700),
+            sizes: Array(repeating: CGSize(width: 600, height: 840), count: 4))
+        try reader.setZoom(.percent(172))
+        reader.setLayout(.twoPages, continuous: true)
+        try reader.setZoom(.fitPage)
+        await settle(view)
+        let pages = try XCTUnwrap(view.document)
+        let left = try XCTUnwrap(pages.page(at: 0)), right = try XCTUnwrap(pages.page(at: 1))
+        let spread = view.convert(left.bounds(for: view.displayBox), from: left)
+            .union(view.convert(right.bounds(for: view.displayBox), from: right))
+        let clip = try XCTUnwrap(view.documentView?.enclosingScrollView?.contentView)
+        let visible = view.convert(clip.bounds, from: clip)
+        XCTAssertTrue(visible.insetBy(dx: -1, dy: -1).contains(spread), "spread \(spread), viewport \(visible)")
+    }
+
     func testFitPageInContinuousModeFitsBothDimensionsWithConsistentBorder() async throws {
         let (reader, view) = try fixture(viewport: CGSize(width: 1000, height: 500))
         reader.setLayout(.single, continuous: true)

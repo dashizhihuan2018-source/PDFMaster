@@ -6,6 +6,19 @@ public struct DMXMessage: Codable, Sendable {
     public let content: String
     public init(role: String, content: String) { self.role = role; self.content = content }
 }
+/// Text-only providers. Credentials never cross providers; media remains on DMX.
+public enum PDFTextProvider: String, CaseIterable, Sendable {
+    case agnes, dmx, deepseek
+    public var title: String {
+        switch self { case .agnes: return "Agnes"; case .dmx: return "DMX"; case .deepseek: return "DeepSeek" }
+    }
+    public var defaultModel: String {
+        switch self { case .agnes: return "agnes-3.0-flash"; case .dmx: return DMXAIClient.defaultTextModel; case .deepseek: return "deepseek-flash" }
+    }
+    fileprivate var baseURL: String {
+        switch self { case .agnes: return "https://apihub.agnes-ai.com/v1/"; case .dmx: return "https://www.dmxapi.cn/v1/"; case .deepseek: return "https://api.deepseek.com/" }
+    }
+}
 public enum DMXVideoResult: Equatable, Sendable { case running, completed(URL), failed }
 public enum DMXAIError: Error, LocalizedError {
     case invalidInput, invalidKey, network, http(Int), invalidResponse, tooLarge, redirect, cancelled
@@ -75,11 +88,14 @@ public final class DMXAIClient: @unchecked Sendable {
         }
         return ["succeeded", "completed", "success"].contains(state) ? .failed : .running
     }
-    public func completeText(model: String = defaultTextModel, messages: [DMXMessage], key: String) async throws -> String {
+    public func completeText(provider: PDFTextProvider = .dmx, model: String? = nil, messages: [DMXMessage], key: String) async throws -> String {
+        let model = model ?? provider.defaultModel
         guard !model.isEmpty, model.count <= 160, model.range(of: "^[A-Za-z0-9._:/-]+$", options: .regularExpression) != nil,
               !messages.isEmpty, messages.count <= 16, messages.allSatisfy({ ["system", "user", "assistant"].contains($0.role) }),
               messages.reduce(0, { $0 + $1.content.count }) <= 48_000 else { throw DMXAIError.invalidInput }
-        let json = try await post("chat/completions", body: ["model": model, "messages": messages.map { ["role": $0.role, "content": $0.content] }, "stream": false, "max_tokens": 4096], key: key, timeout: 120, limit: 1024 * 1024)
+        var body: [String: Any] = ["model": model, "messages": messages.map { ["role": $0.role, "content": $0.content] }, "stream": false, "max_tokens": 4096]
+        if provider == .deepseek { body["thinking"] = ["type": "disabled"] }
+        let json = try await post("chat/completions", body: body, key: key, timeout: 120, limit: 1024 * 1024, provider: provider)
         guard let choices = json["choices"] as? [[String: Any]], let message = choices.first?["message"] as? [String: Any],
               let text = message["content"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 100_000 else { throw DMXAIError.invalidResponse }
         return text
@@ -122,9 +138,9 @@ public final class DMXAIClient: @unchecked Sendable {
     private func validatePrompt(_ prompt: String) throws {
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, prompt.count <= 32_000 else { throw DMXAIError.invalidInput }
     }
-    private func post(_ path: String, body: [String: Any], key: String, timeout: TimeInterval, limit: Int) async throws -> [String: Any] {
+    private func post(_ path: String, body: [String: Any], key: String, timeout: TimeInterval, limit: Int, provider: PDFTextProvider = .dmx) async throws -> [String: Any] {
         guard !key.isEmpty, key.count <= 1024, !key.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || CharacterSet.whitespacesAndNewlines.contains($0) }) else { throw DMXAIError.invalidKey }
-        var request = URLRequest(url: URL(string: "https://www.dmxapi.cn/v1/" + path)!)
+        var request = URLRequest(url: URL(string: provider.baseURL + path)!)
         request.httpMethod = "POST"; request.timeoutInterval = timeout
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("application/json", forHTTPHeaderField: "Accept")

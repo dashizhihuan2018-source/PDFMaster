@@ -69,13 +69,14 @@ private final class SummaryAIProtocol: URLProtocol {
         XCTAssertNil(defaults.string(forKey: "PDFMaster.VideoTask.guest"))
     }
     func testCompletedCopilotAnswerClearsWhenSwitchingDocument() async throws {
-        let (shell, store, _) = try fixture(); try store.saveDMXKey("integration-test-key")
+        let (shell, store, _) = try fixture(); try store.saveAgnesKey("integration-test-key")
         let text = NSTextView(frame: CGRect(x: 0, y: 0, width: 300, height: 300)); text.string = "Public integration fixture"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
         try text.dataWithPDF(inside: text.bounds).write(to: url)
         XCTAssertTrue(shell.open(url: url))
         XCTAssertTrue(shell.dispatch(toolID: "copilot", openProvider: { XCTFail("Already open"); return nil }))
         let copilot = try XCTUnwrap(shell.copilotController)
+        XCTAssertEqual(copilot.selectedProvider, .agnes)
         SummaryAIProtocol.handler = { $0.finish(#"{"choices":[{"message":{"role":"assistant","content":"Summary [p.1]"}}]}"#) }
         defer { SummaryAIProtocol.handler = nil; copilot.close() }
         copilot.consentButton.state = .on; XCTAssertTrue(copilot.startGeneration())

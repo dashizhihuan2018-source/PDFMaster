@@ -3,6 +3,17 @@ import AppKit
 @testable import PaperDesk
 
 @MainActor final class ReferenceToolbarTests: XCTestCase {
+    func testLayoutOptionsIsReachableFromTheToolbar() throws {
+        let c = WorkbenchController(); _ = c.view
+        try c.workspace.createBlank(); c.refreshDocument()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let button = try XCTUnwrap(descendants(c.view).compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == "布局选项" })
+        XCTAssertTrue(button.isEnabled)
+        XCTAssertEqual(button.action, NSSelectorFromString("showLayoutOptions:"))
+        XCTAssertTrue(button.target === c)
+    }
+
     func testFourSquareButtonTogglesFullPageOverviewAndOpensSelectedPage() throws {
         let c = WorkbenchController(); _ = c.view
         try c.workspace.createBlank(); try c.workspace.insertBlank(at: 1); c.refreshDocument()

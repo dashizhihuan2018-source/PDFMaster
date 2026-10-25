@@ -1,10 +1,13 @@
 import AppKit
+import PaperCore
 
 @MainActor
 final class AccountSettingsController: NSViewController, NSWindowDelegate {
     let usernameField = NSTextField(string: "")
     let passwordField = NSSecureTextField(string: "")
     let keyField = NSSecureTextField(string: "")
+    let agnesKeyField = NSSecureTextField(string: "")
+    let deepSeekKeyField = NSSecureTextField(string: "")
     let oldPasswordField = NSSecureTextField(string: "")
     let newPasswordField = NSSecureTextField(string: "")
     let confirmPasswordField = NSSecureTextField(string: "")
@@ -14,9 +17,15 @@ final class AccountSettingsController: NSViewController, NSWindowDelegate {
     let logoutButton = NSButton(title: "退出登录", target: nil, action: nil)
     let saveKeyButton = NSButton(title: "保存 Key 到钥匙串", target: nil, action: nil)
     let removeKeyButton = NSButton(title: "移除已存 Key", target: nil, action: nil)
+    let saveAgnesKeyButton = NSButton(title: "保存 Agnes Key 到钥匙串", target: nil, action: nil)
+    let removeAgnesKeyButton = NSButton(title: "移除 Agnes Key", target: nil, action: nil)
+    let saveDeepSeekKeyButton = NSButton(title: "保存 DeepSeek Key 到钥匙串", target: nil, action: nil)
+    let removeDeepSeekKeyButton = NSButton(title: "移除 DeepSeek Key", target: nil, action: nil)
     let changePasswordButton = NSButton(title: "修改密码", target: nil, action: nil)
     let securityNotice = NSTextField(wrappingLabelWithString: "")
     let keyStatus = NSTextField(wrappingLabelWithString: "")
+    let agnesKeyStatus = NSTextField(wrappingLabelWithString: "")
+    let deepSeekKeyStatus = NSTextField(wrappingLabelWithString: "")
     let accountStatus = NSTextField(wrappingLabelWithString: "")
     let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let store: AccountStore
@@ -28,33 +37,46 @@ final class AccountSettingsController: NSViewController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 550, height: 650))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 550, height: 700))
         securityNotice.stringValue = "账户、登录记忆与 Key 仅保存在本机；不是云端登录，也不提供系统管理员权限。初始账户 Nankong 使用公开默认密码，请登录后立即修改。这里的记忆仅指登录与 Key，不是 AI 长期对话记忆。"
         statusLabel.textColor = .secondaryLabelColor
         let title = NSTextField(labelWithString: "本机账户与 AI 设置")
         title.font = .systemFont(ofSize: 21, weight: .semibold)
-        for (field, name) in [(usernameField, "本机用户名"), (passwordField, "本机登录密码"), (keyField, "DMX API Key"),
+        for (field, name) in [(usernameField, "本机用户名"), (passwordField, "本机登录密码"), (keyField, "DMX API Key"), (agnesKeyField, "Agnes API Key"), (deepSeekKeyField, "DeepSeek API Key"),
                               (oldPasswordField, "当前密码"), (newPasswordField, "新密码"), (confirmPasswordField, "确认新密码")] {
             field.placeholderString = name; field.setAccessibilityLabel(name)
             field.widthAnchor.constraint(greaterThanOrEqualToConstant: 450).isActive = true
         }
         let content = NSStackView(views: [title, securityNotice, accountStatus, usernameField, passwordField,
             rememberButton, row(loginButton, registerButton, logoutButton), section("DMX Key · 当前账户"), keyStatus,
-            keyField, row(saveKeyButton, removeKeyButton), section("修改本机密码"), oldPasswordField,
+            keyField, row(saveKeyButton, removeKeyButton), section("DeepSeek Key · 当前账户（PDF 文字问答）"), deepSeekKeyStatus,
+            deepSeekKeyField, row(saveDeepSeekKeyButton, removeDeepSeekKeyButton), section("Agnes Key · 当前账户"), agnesKeyStatus,
+            agnesKeyField, row(saveAgnesKeyButton, removeAgnesKeyButton), section("修改本机密码"), oldPasswordField,
             newPasswordField, confirmPasswordField, changePasswordButton, statusLabel])
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 10
         content.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(content)
-        NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
-            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
-            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
-            content.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -24)])
-        for label in [securityNotice, keyStatus, accountStatus, statusLabel] {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let document = AccountSettingsDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(content); scroll.documentView = document; view.addSubview(scroll)
+        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            content.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 28),
+            content.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -28),
+            content.topAnchor.constraint(equalTo: document.topAnchor, constant: 24),
+            content.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -24)])
+        for label in [securityNotice, keyStatus, agnesKeyStatus, deepSeekKeyStatus, accountStatus, statusLabel] {
             label.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
         for (button, action) in [(loginButton, #selector(performLogin)), (registerButton, #selector(performRegister)),
             (logoutButton, #selector(performLogout)), (saveKeyButton, #selector(performSaveKey)),
-            (removeKeyButton, #selector(performRemoveKey)), (changePasswordButton, #selector(performChangePassword))] {
+            (removeKeyButton, #selector(performRemoveKey)), (saveAgnesKeyButton, #selector(performSaveAgnesKey)),
+            (removeAgnesKeyButton, #selector(performRemoveAgnesKey)), (saveDeepSeekKeyButton, #selector(performSaveDeepSeekKey)),
+            (removeDeepSeekKeyButton, #selector(performRemoveDeepSeekKey)), (changePasswordButton, #selector(performChangePassword))] {
             button.target = self; button.action = action; button.bezelStyle = .rounded
         }
         usernameField.stringValue = store.rememberedUsername ?? "Nankong"
@@ -69,7 +91,8 @@ final class AccountSettingsController: NSViewController, NSWindowDelegate {
     }
     func showWindow(relativeTo parent: NSWindow? = nil) {
         if let settingsWindow { settingsWindow.makeKeyAndOrderFront(nil); return }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 550, height: 700),
+        let availableHeight = (parent?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 550, height: min(750, max(400, availableHeight - 80))),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "PDF Master · 本机账户与 AI 设置"
         window.contentViewController = self; window.isReleasedWhenClosed = false; window.delegate = self
@@ -78,6 +101,7 @@ final class AccountSettingsController: NSViewController, NSWindowDelegate {
             window.setFrameOrigin(NSPoint(x: parent.frame.midX - window.frame.width / 2,
                                           y: parent.frame.midY - window.frame.height / 2))
         } else { window.center() }
+        window.setFrame(window.constrainFrameRect(window.frame, to: parent?.screen ?? NSScreen.main), display: false)
         window.makeKeyAndOrderFront(nil)
     }
     func windowWillClose(_ notification: Notification) { clearSecureFields(); settingsWindow = nil }
@@ -111,6 +135,26 @@ final class AccountSettingsController: NSViewController, NSWindowDelegate {
         catch { showFailure(error) }
         keyField.stringValue = ""; refresh()
     }
+    @objc func performSaveAgnesKey() {
+        do { try store.saveAgnesKey(agnesKeyField.stringValue); statusLabel.stringValue = "Agnes Key 已安全保存在当前账户的 macOS 钥匙串中。" }
+        catch { showFailure(error) }
+        agnesKeyField.stringValue = ""; refresh()
+    }
+    @objc func performRemoveAgnesKey() {
+        do { try store.deleteAgnesKey(); statusLabel.stringValue = "已移除当前账户的 Agnes Key。" }
+        catch { showFailure(error) }
+        agnesKeyField.stringValue = ""; refresh()
+    }
+    @objc func performSaveDeepSeekKey() {
+        do { try store.saveDeepSeekKey(deepSeekKeyField.stringValue); statusLabel.stringValue = "DeepSeek Key 已安全保存在当前账户的 macOS 钥匙串中。" }
+        catch { showFailure(error) }
+        deepSeekKeyField.stringValue = ""; refresh()
+    }
+    @objc func performRemoveDeepSeekKey() {
+        do { try store.deleteDeepSeekKey(); statusLabel.stringValue = "已移除当前账户的 DeepSeek Key。" }
+        catch { showFailure(error) }
+        deepSeekKeyField.stringValue = ""; refresh()
+    }
     @objc func performChangePassword() {
         guard newPasswordField.stringValue == confirmPasswordField.stringValue else {
             statusLabel.stringValue = "两次新密码不一致，请重新确认。"; return
@@ -127,7 +171,7 @@ final class AccountSettingsController: NSViewController, NSWindowDelegate {
     }
     private func clearSecureFields() {
         view.window?.endEditing(for: nil)
-        for field in [passwordField, keyField, oldPasswordField, newPasswordField, confirmPasswordField] { field.stringValue = "" }
+        for field in [passwordField, keyField, agnesKeyField, deepSeekKeyField, oldPasswordField, newPasswordField, confirmPasswordField] { field.stringValue = "" }
     }
     private func showFailure(_ error: Error) {
         // Never surface arbitrary upstream strings that could contain credentials.
@@ -143,13 +187,19 @@ final class AccountSettingsController: NSViewController, NSWindowDelegate {
         if loggedIn { rememberButton.state = store.keepsLogin ? .on : .off }
         loginButton.isEnabled = !loggedIn && healthy; registerButton.isEnabled = !loggedIn && healthy
         logoutButton.isEnabled = loggedIn
-        for control in [keyField, oldPasswordField, newPasswordField, confirmPasswordField] { control.isEnabled = loggedIn }
-        for button in [saveKeyButton, removeKeyButton, changePasswordButton] { button.isEnabled = loggedIn }
+        for control in [keyField, agnesKeyField, deepSeekKeyField, oldPasswordField, newPasswordField, confirmPasswordField] { control.isEnabled = loggedIn }
+        for button in [saveKeyButton, removeKeyButton, saveAgnesKeyButton, removeAgnesKeyButton, saveDeepSeekKeyButton, removeDeepSeekKeyButton, changePasswordButton] { button.isEnabled = loggedIn }
         accountStatus.stringValue = store.currentUsername.map { "当前本机账户：\($0)" } ?? "尚未登录本机账户"
-        if loggedIn {
-            do { keyStatus.stringValue = try store.readDMXKey() == nil ? "未保存 Key；仅当你使用 AI 时才会向 DMX 发送请求。" : "已保存 Key（已隐藏）；可输入新 Key 替换或移除。" }
-            catch { keyStatus.stringValue = "钥匙串不可用；已隐藏所有凭据。" }
-        } else { keyStatus.stringValue = "请先登录。每个账户的 Key 单独保存，不与其他本机账户共享。" }
+        for (provider, label) in [(PDFTextProvider.dmx, keyStatus), (.agnes, agnesKeyStatus), (.deepseek, deepSeekKeyStatus)] {
+            if loggedIn {
+                do { label.stringValue = try store.hasSavedKey(for: provider) ? "已保存 \(provider.title) Key（已隐藏）；与其他服务商和账户独立保存。" : "未保存 \(provider.title) Key；请选择服务商并绑定你自己的 Key，确认发送后才使用。" }
+                catch { label.stringValue = "无法确认 \(provider.title) Key 状态；没有读取或回显密钥。" }
+            } else { label.stringValue = "请先登录。\(provider.title) Key 仅保存到当前账户，不读取其他账户或服务商的 Key。" }
+        }
         if let error = store.initializationError { showFailure(error) }
     }
+}
+
+private final class AccountSettingsDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }

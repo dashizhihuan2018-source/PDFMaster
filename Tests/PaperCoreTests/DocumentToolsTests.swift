@@ -124,8 +124,15 @@ final class DocumentToolsTests: XCTestCase {
         let revision = workspace.revision
         let bookmarkedPage = try XCTUnwrap(workspace.document?.outlineRoot?.child(at: 0)?.destination?.page)
         let bookmarkedIndex = try XCTUnwrap(workspace.document).index(for: bookmarkedPage)
-        XCTAssertThrowsError(try workspace.delete(pages: IndexSet(integer: bookmarkedIndex)))
-        XCTAssertEqual(workspace.revision, revision)
+        let count = try XCTUnwrap(workspace.document).pageCount
+        try workspace.delete(pages: IndexSet(integer: bookmarkedIndex))
+        XCTAssertEqual(workspace.revision, revision + 1)
+        XCTAssertEqual(workspace.document?.pageCount, count - 1)
+        XCTAssertEqual(workspace.document?.outlineRoot?.numberOfChildren, 0)
+        workspace.undo()
+        XCTAssertEqual(workspace.document?.pageCount, count)
+        XCTAssertEqual(workspace.document?.outlineRoot?.child(at: 0)?.label, "Renamed")
+        XCTAssertEqual(workspace.document?.outlineRoot?.child(at: 0)?.child(at: 0)?.label, "Nested")
     }
 
     func testSaveAndSnapshotsPreserveEmbeddedFilesAndPageLabels() throws {

@@ -4,12 +4,19 @@ import CommonCrypto
 import Security
 import Darwin
 import LocalAuthentication
+import PaperCore
 
 @MainActor
 protocol AccountSecretStorage {
+    func contains(service: String, account: String) throws -> Bool
     func read(service: String, account: String) throws -> String?
     func save(_ value: String, service: String, account: String) throws
     func delete(service: String, account: String) throws
+}
+
+extension AccountSecretStorage {
+    // A status probe must never fall back to decrypting the value.
+    func contains(service: String, account: String) throws -> Bool { throw AccountStoreFailure.secureStorageUnavailable }
 }
 
 @MainActor
@@ -19,6 +26,15 @@ final class KeychainAccountSecretStorage: AccountSecretStorage {
         return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: account, kSecAttrSynchronizable as String: false,
          kSecUseAuthenticationContext as String: context]
+    }
+    func contains(service: String, account: String) throws -> Bool {
+        var request = query(service: service, account: account)
+        request[kSecReturnAttributes as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        let status = SecItemCopyMatching(request as CFDictionary, nil)
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess else { throw AccountStoreFailure.secureStorageUnavailable }
+        return true
     }
     func read(service: String, account: String) throws -> String? {
         var request = query(service: service, account: account)
@@ -58,7 +74,7 @@ enum AccountStoreFailure: Error, Equatable, LocalizedError {
         case .duplicateUsername: return "这个本机用户名已存在。"
         case .invalidPassword: return "密码需为 8–1024 字节，且不能为空白。"
         case .unchangedPassword: return "新密码不能与当前密码相同。"
-        case .invalidKey: return "请输入有效的 DMX Key（不可包含空白或控制字符）。"
+        case .invalidKey: return "请输入有效的 API Key（不可包含空白或控制字符）。"
         case .corruptMetadata: return "本机账户文件异常；已停止登录，原文件未被覆盖。"
         case .persistenceUnavailable: return "无法安全保存本机账户设置，请检查本机目录权限。"
         case .secureStorageUnavailable: return "macOS 钥匙串暂不可用，请解锁登录钥匙串后再试。"
@@ -69,13 +85,15 @@ enum AccountStoreFailure: Error, Equatable, LocalizedError {
 
 /// Local convenience accounts, not operating-system users, remote identities or a
 /// security boundary against another process running as the same macOS user.
-/// Passwords use salted PBKDF2-HMAC-SHA256 (600,000 rounds); DMX keys and session
+/// Passwords use salted PBKDF2-HMAC-SHA256 (600,000 rounds); provider keys and session
 /// bearer secrets live only in the non-synchronizing, device-local Keychain.
 @MainActor
 final class AccountStore {
     static let shared = AccountStore()
     static let didChangeNotification = Notification.Name("PDFMasterAccountDidChange")
     static let dmxKeychainService = "cn.nankong.pdfmaster.ai"
+    static let deepSeekKeychainService = "cn.nankong.pdfmaster.ai.deepseek"
+    static let agnesKeychainService = "cn.nankong.pdfmaster.ai.agnes"
     private static let sessionService = "cn.nankong.pdfmaster.session"
     private static let bootstrapPassword = "ZJKG8888"
     private static let rounds = 600_000
@@ -201,6 +219,44 @@ final class AccountStore {
     func deleteDMXKey() throws {
         try secretStorage.delete(service: Self.dmxKeychainService, account: loggedInKey())
         notify()
+    }
+
+    func readAgnesKey() throws -> String? {
+        let username = try loggedInKey()
+        return try secretStorage.read(service: Self.agnesKeychainService, account: username)
+    }
+    func saveAgnesKey(_ value: String) throws {
+        let username = try loggedInKey()
+        guard !value.isEmpty, value.utf8.count <= 4096,
+              !value.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains($0) }) else { throw AccountStoreFailure.invalidKey }
+        try secretStorage.save(value, service: Self.agnesKeychainService, account: username)
+        notify()
+    }
+    func deleteAgnesKey() throws {
+        try secretStorage.delete(service: Self.agnesKeychainService, account: loggedInKey())
+        notify()
+    }
+
+    func readDeepSeekKey() throws -> String? {
+        try secretStorage.read(service: Self.deepSeekKeychainService, account: loggedInKey())
+    }
+    func saveDeepSeekKey(_ value: String) throws {
+        let username = try loggedInKey()
+        guard !value.isEmpty, value.utf8.count <= 4096,
+              !value.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains($0) }) else { throw AccountStoreFailure.invalidKey }
+        try secretStorage.save(value, service: Self.deepSeekKeychainService, account: username); notify()
+    }
+    func deleteDeepSeekKey() throws {
+        try secretStorage.delete(service: Self.deepSeekKeychainService, account: loggedInKey()); notify()
+    }
+    func hasSavedKey(for provider: PDFTextProvider) throws -> Bool {
+        let service: String
+        switch provider {
+        case .dmx: service = Self.dmxKeychainService
+        case .agnes: service = Self.agnesKeychainService
+        case .deepseek: service = Self.deepSeekKeychainService
+        }
+        return try secretStorage.contains(service: service, account: loggedInKey())
     }
 
     func changePassword(old: String, new: String) throws {

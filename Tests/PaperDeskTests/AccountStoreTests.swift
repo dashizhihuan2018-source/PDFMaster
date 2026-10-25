@@ -5,6 +5,7 @@ import XCTest
 @MainActor
 final class MemorySecretStorage: AccountSecretStorage {
     private var entries: [String: String] = [:]
+    func contains(service: String, account: String) throws -> Bool { entries[service + ":" + account] != nil }
     func read(service: String, account: String) throws -> String? { entries[service + ":" + account] }
     func save(_ value: String, service: String, account: String) throws { entries[service + ":" + account] = value }
     func delete(service: String, account: String) throws { entries.removeValue(forKey: service + ":" + account) }
@@ -68,6 +69,47 @@ final class AccountStoreTests: XCTestCase {
         store.logout()
         try store.login(username: "second", password: "second-password", remember: false)
         XCTAssertEqual(try store.readDMXKey(), "second-test-secret")
+    }
+
+    func testAgnesKeyIsIsolatedByProviderAndAccountAndSurvivesRecreation() throws {
+        let (url, secrets, store) = fixture()
+        XCTAssertThrowsError(try store.readAgnesKey())
+        XCTAssertThrowsError(try store.saveAgnesKey("first-agnes-test-secret"))
+        XCTAssertThrowsError(try store.deleteAgnesKey())
+        try store.login(username: "Nankong", password: "ZJKG8888", remember: true)
+        try store.saveDMXKey("first-dmx-test-secret")
+        XCTAssertNil(try store.readAgnesKey(), "DMX must never be used as an Agnes fallback")
+        try store.saveAgnesKey("first-agnes-test-secret")
+        XCTAssertEqual(try secrets.read(service: "cn.nankong.pdfmaster.ai.agnes", account: "nankong"), "first-agnes-test-secret")
+        XCTAssertEqual(try AccountStore(metadataURL: url, secretStorage: secrets).readAgnesKey(), "first-agnes-test-secret")
+        let metadata = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+        XCTAssertFalse(metadata.contains("first-agnes-test-secret"))
+        store.logout()
+        try store.register(username: "Second", password: "second-password")
+        try store.login(username: "second", password: "second-password", remember: false)
+        XCTAssertNil(try store.readAgnesKey())
+        try store.saveAgnesKey("second-agnes-test-secret")
+        store.logout()
+        try store.login(username: "nankong", password: "ZJKG8888", remember: false)
+        XCTAssertEqual(try store.readAgnesKey(), "first-agnes-test-secret")
+        try store.deleteAgnesKey()
+        XCTAssertNil(try store.readAgnesKey())
+        XCTAssertEqual(try store.readDMXKey(), "first-dmx-test-secret")
+        store.logout()
+        try store.login(username: "second", password: "second-password", remember: false)
+        XCTAssertEqual(try store.readAgnesKey(), "second-agnes-test-secret")
+    }
+
+    func testAgnesKeyRejectsHeaderInjectionAndDoesNotConsultLegacySharedSecrets() throws {
+        let (_, secrets, store) = fixture()
+        try secrets.save("legacy-shared-test-secret", service: "cn.nankong.pdfmaster.ai.agnes", account: "shared")
+        try store.login(username: "Nankong", password: "ZJKG8888", remember: false)
+        XCTAssertNil(try store.readAgnesKey())
+        for invalid in ["", "   ", "invalid\nheader", "invalid\tkey", String(repeating: "x", count: 4097)] {
+            XCTAssertThrowsError(try store.saveAgnesKey(invalid))
+        }
+        XCTAssertNil(try store.readAgnesKey())
+        XCTAssertEqual(try secrets.read(service: "cn.nankong.pdfmaster.ai.agnes", account: "shared"), "legacy-shared-test-secret")
     }
 
     func testMetadataContainsNeitherPlaintextPasswordNorAPIKey() throws {

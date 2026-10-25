@@ -249,20 +249,39 @@ def replace_text(page, info, request):
             raise ValueError("Overlapping text spans cannot be safely replaced")
     # Text replacement is true redaction with graphics/images explicitly ignored.
     # Original text positioning/font may not be reconstructible from subset fonts.
-    if all(32 <= ord(c) <= 126 for c in text):
+    rendered_data = None
+    native_path = request.get("rendered_text_pdf_path")
+    if native_path is not None:
+        # REA: RDPDFKitCore 0x24a00c builds a temporary native-text PDF;
+        # 0x247ca4 imports generated streams/resources with name substitutions.
+        # The Swift adapter supplies a system-rendered PDF. Importing it as an
+        # isolated Form XObject prevents collisions with the source's /F1 etc.
+        rendered_data = read_regular(native_path, MAX_PDF)
+        with fitz.open(stream=rendered_data, filetype="pdf") as native:
+            safe_document(native)
+            if len(native) != 1 or native[0].rect != page.rect:
+                raise ValueError("Native text PDF geometry mismatch")
+            replacement_spans = inspect_page(native[0])["spans"]
+            if ("".join(s["text"] for s in replacement_spans) != text or not replacement_spans
+                    or native[0].get_images() or native[0].get_drawings()
+                    or native[0].get_links() or list(native[0].annots() or [])):
+                raise ValueError("Native text PDF must contain only the exact searchable replacement")
+            newrect = fitz.Rect(replacement_spans[0]["bbox"])
+            for span in replacement_spans[1:]:
+                newrect |= fitz.Rect(span["bbox"])
+        fontname = "native-PDF-font-resources"
+    elif all(32 <= ord(c) <= 126 for c in text):
         fontname = {"Helvetica":"helv","Helvetica-Bold":"hebo","Helvetica-Oblique":"heit",
                     "Times-Roman":"tiro","Times-Bold":"tibo","Courier":"cour","Courier-Bold":"cobo"}.get(target["font"],"helv")
     elif all(32 <= ord(c) <=126 or 0x3400 <= ord(c) <=0x9fff or 0x3000 <= ord(c) <=0x303f or 0xff00<=ord(c)<=0xffef for c in text):
         fontname = "china-s"
     else:
         raise ValueError("Unsupported replacement glyphs; only basic Latin and Chinese supported")
-    font = fitz.Font(fontname=fontname)
     size = target["size"]
     origin = fitz.Point(target["origin"])
-    width = font.text_length(text,fontsize=size)
     # Font()'s CJK metrics differ from Page.insert_text's built-in font metrics.
     # Measure the actual inserted searchable glyph run in a disposable document.
-    if text:
+    if text and rendered_data is None:
         with fitz.open() as trial:
             trial_page = trial.new_page(width=14400,height=14400)
             trial_page.insert_text((100,size*3),text,fontname=fontname,fontsize=size)
@@ -272,26 +291,37 @@ def replace_text(page, info, request):
             box = fitz.Rect(measured[0]["bbox"])
             newrect = fitz.Rect(origin.x+box.x0-100,origin.y+box.y0-size*3,
                                 origin.x+box.x1-100,origin.y+box.y1-size*3)
-    else:
+    elif not text:
         newrect = rect
-    # MuPDF extraction bbox tolerances differ a little across versions/fonts.
-    if width > rect.width+0.1 or newrect.y0 < rect.y0-0.5 or newrect.y1 > rect.y1+0.5 or not page.rect.contains(newrect):
+    # The original glyph bbox is not a clipping rectangle. FangSong and other
+    # compact fonts often have smaller ascender/descender metrics than china-s,
+    # so requiring identical vertical metrics rejects even shorter CJK edits.
+    # Keep baseline/size and the original horizontal footprint; validate the
+    # ACTUALLY inserted font box against the page and all neighboring objects.
+    if newrect.x0 < rect.x0-0.1 or newrect.x1 > rect.x1+0.1 or not page.rect.contains(newrect):
         raise ValueError("Replacement does not fit original span; use shorter text (no implicit shrinking)")
     if any(s["id"] != target["id"] and newrect.intersects(fitz.Rect(s["bbox"])) for s in info["spans"]):
         raise ValueError("Replacement would overlap neighboring text")
+    if any(newrect.intersects(fitz.Rect(link["bbox"])) for link in info["links"]):
+        raise ValueError("Replacement would overlap an existing link")
+    if any(newrect.intersects(annotation.rect) for annotation in page.annots() or []):
+        raise ValueError("Replacement would overlap an existing annotation")
     expected = collections.Counter(span_signature(s) for s in info["spans"] if s["id"] != target["id"])
     original_images, original_graphics = image_signature(page),graphics_signature(page)
     page.add_redact_annot(rect,fill=False,cross_out=False)
     page.apply_redactions(images=0,graphics=0,text=0)
     color = tuple(((target["color"]>>shift)&255)/255 for shift in (16,8,0))
-    if text:
+    if rendered_data is not None:
+        with fitz.open(stream=rendered_data, filetype="pdf") as native:
+            page.show_pdf_page(page.rect, native, 0, keep_proportion=False)
+    elif text:
         page.insert_text(origin,text,fontname=fontname,fontsize=size,color=color)
     def verify(out):
         actual = inspect_page(out)["spans"]
         actual_counts = collections.Counter(span_signature(s) for s in actual)
         if expected - actual_counts:
             raise ValueError("Verification failed: neighboring text changed")
-        region = "".join(s["text"] for s in actual if rect.intersects(fitz.Rect(s["bbox"])) and span_signature(s) not in expected)
+        region = "".join(s["text"] for s in actual if span_signature(s) not in expected)
         if region != text or image_signature(out) != original_images or graphics_signature(out) != original_graphics:
             raise ValueError("Verification failed: replaced text or preserved image/vector mismatch")
     return verify,[f"Replacement font: {fontname}; embedded/subset original font not reused; no paragraph reflow."]

@@ -7,10 +7,18 @@ import PaperCore
     var inkEnabled = false { didSet { if oldValue != inkEnabled { cancelGesture() } } }
     var placementEnabled = false { didSet { if oldValue != placementEnabled { cancelGesture() } } }
     var contentEditingEnabled = false { didSet { if oldValue != contentEditingEnabled { cancelGesture() } } }
+    var freeTextInputEnabled = false
+    var inlineTextSession: PDFInlineTextSession?
+    weak var textStyleToolbarHost: NSView?
+    var onTextStyleToolbarVisibilityChange: ((Bool) -> Void)?
+    var onTextAnnotationEditing: ((Int, Int) -> Void)?
+    @discardableResult func finishInlineTextEditing(commit: Bool = true) -> Bool {
+        inlineTextSession?.finish(commit: commit) ?? true
+    }
     var markupSelectionEnabled = false { didSet { if oldValue != markupSelectionEnabled { markupStart = nil; setCurrentSelection(nil, animate: false) } } }
     var onTextSelectionCompleted: ((PDFSelection) -> Void)?
     private var markupStart: (page: PDFPage, point: CGPoint, document: PDFDocument)?
-    override var document: PDFDocument? { didSet { if oldValue !== document { markupStart = nil; restoreNativeInkRendering(); clearShapeSelection() } } }
+    override var document: PDFDocument? { didSet { if oldValue !== document { _ = finishInlineTextEditing(commit: false); markupStart = nil; restoreNativeInkRendering(); clearShapeSelection() } } }
     var allowsCopying = true
     var shapeTool: ShapeToolKind?
     var shapeStyle = AnnotationStyle(strokeColor: .systemRed, fillColor: nil, lineWidth: 2)
@@ -60,6 +68,17 @@ import PaperCore
         init(_ annotation: PDFAnnotation) { self.annotation = annotation }
     }
     private var committedInk: [ObjectIdentifier: InkPresentation] = [:]
+    // FreeText and imported Stamp appearances share PDFKit's low-resolution
+    // annotation cache. Draw the original /AP at viewport zoom and device scale.
+    // All presented annotations share one parent so PDF stacking order survives
+    // (e.g. a CAD Stamp, then Ink, then arrows drawn above it).
+    private final class TextPresentation {
+        weak var annotation: PDFAnnotation?
+        let layer = FreeTextAppearanceLayer()
+        var geometry: [CGFloat]?
+        init(_ annotation: PDFAnnotation) { self.annotation = annotation; layer.annotation = annotation }
+    }
+    private var committedText: [ObjectIdentifier: TextPresentation] = [:]
 
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true
@@ -90,12 +109,14 @@ import PaperCore
     }
     deinit { NotificationCenter.default.removeObserver(self) }
     override func layout() { super.layout(); redrawOverlay() }
+    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); redrawOverlay() }
 
     /// Call after page-local presentation annotations are changed, without
     /// replacing PDFView.document or discarding PDFKit's page tiles.
     func refreshCommittedInkRendering() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         for entry in committedInk.values { entry.geometry = nil }
+        for entry in committedText.values { entry.geometry = nil }
         updateCommittedInkRendering()
         CATransaction.commit()
         if !isCommittingInk { CATransaction.flush() }
@@ -105,7 +126,7 @@ import PaperCore
     /// into a lazy thumbnail snapshot or an exported presentation document.
     func presentationDataRepresentation() -> Data? {
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        let annotations = committedInk.values.compactMap(\.annotation)
+        let annotations = committedInk.values.compactMap(\.annotation) + committedText.values.compactMap(\.annotation)
         for annotation in annotations { annotation.shouldDisplay = true }
         defer {
             for annotation in annotations { annotation.shouldDisplay = false }
@@ -120,9 +141,15 @@ import PaperCore
             entry.layer.removeFromSuperlayer()
         }
         committedInk.removeAll()
+        for entry in committedText.values {
+            entry.annotation?.shouldDisplay = true
+            entry.layer.removeFromSuperlayer()
+        }
+        committedText.removeAll()
     }
 
     private func updateCommittedInkRendering() {
+        updateCommittedTextRendering()
         committedInkLayer.frame = bounds
         let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         var retained = Set<ObjectIdentifier>()
@@ -137,7 +164,7 @@ import PaperCore
             let mapping = CGAffineTransform(a: x.x-origin.x, b: x.y-origin.y,
                                             c: y.x-origin.x, d: y.y-origin.y,
                                             tx: origin.x, ty: origin.y)
-            for annotation in page.annotations where annotation.type == "Ink" {
+            for (index, annotation) in page.annotations.enumerated() where annotation.type == "Ink" {
                 let key = ObjectIdentifier(annotation)
                 guard (annotation.shouldDisplay || committedInk[key] != nil),
                       let paths = annotation.paths, !paths.isEmpty else { continue }
@@ -149,6 +176,7 @@ import PaperCore
                 }
                 retained.insert(key)
                 let layer = entry.layer
+                layer.zPosition = CGFloat(index)
                 layer.isHidden = hasInkStylePreview && selectedInkAnnotation === annotation
                 let geometry = [mapping.a, mapping.b, mapping.c, mapping.d, mapping.tx, mapping.ty,
                                 bounds.width, bounds.height, backingScale]
@@ -170,6 +198,69 @@ import PaperCore
         }
         for key in Set(committedInk.keys).subtracting(retained) {
             guard let entry = committedInk.removeValue(forKey: key) else { continue }
+            entry.annotation?.shouldDisplay = true
+            entry.layer.removeFromSuperlayer()
+        }
+    }
+
+    private func updateCommittedTextRendering() {
+        let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        var retained = Set<ObjectIdentifier>()
+        for page in visiblePages {
+            let crop = convert(page.bounds(for: .cropBox), from: page)
+            guard crop.intersects(bounds) else { continue }
+            let origin = convert(CGPoint.zero, from: page)
+            let x = convert(CGPoint(x: 1, y: 0), from: page)
+            let y = convert(CGPoint(x: 0, y: 1), from: page)
+            let mapping = CGAffineTransform(a: x.x-origin.x, b: x.y-origin.y,
+                                            c: y.x-origin.x, d: y.y-origin.y,
+                                            tx: origin.x, ty: origin.y)
+            // A Stamp can contain a whole drawing, not just a small rubber stamp.
+            // Render its surrounding graphic annotations too, in source order,
+            // so a sharp opaque Stamp cannot cover later native arrows/markup.
+            // Interactive links, widgets and popup windows remain PDFKit-owned.
+            let hasStamp = page.annotations.contains { $0.type == "Stamp" }
+            for (index, annotation) in page.annotations.enumerated() where
+                annotation.type == "FreeText" || (hasStamp && !["Ink", "Link", "Widget", "Popup"].contains(annotation.type ?? "")) {
+                let key = ObjectIdentifier(annotation)
+                guard annotation.shouldDisplay || committedText[key] != nil else { continue }
+                // Move the actual appearance while dragging, without changing
+                // authoritative bounds or creating repeated undo transactions.
+                let liveBounds: CGRect
+                if let t = transform, t.handle == nil, let preview = shapePreviewBounds,
+                   t.page == document?.index(for: page),
+                   page.annotations.indices.contains(t.index), page.annotations[t.index] === annotation {
+                    liveBounds = preview
+                } else { liveBounds = annotation.bounds }
+                let translation = CGAffineTransform(translationX: liveBounds.minX - annotation.bounds.minX,
+                                                    y: liveBounds.minY - annotation.bounds.minY)
+                let liveMapping = translation.concatenating(mapping)
+                // Allocate only the visible annotation rectangle, not a full
+                // viewport bitmap for every text block in a long document.
+                let frame = convert(liveBounds, from: page).insetBy(dx: -2, dy: -2)
+                    .intersection(crop).intersection(bounds).integral
+                guard !frame.isEmpty, !frame.isNull else { continue }
+                let entry = committedText[key] ?? TextPresentation(annotation)
+                if committedText[key] == nil {
+                    committedText[key] = entry
+                    annotation.shouldDisplay = false
+                    committedInkLayer.addSublayer(entry.layer)
+                }
+                retained.insert(key)
+                let layer = entry.layer
+                layer.zPosition = CGFloat(index)
+                layer.isHidden = inlineTextSession?.editedAnnotation === annotation
+                let geometry = [liveMapping.a, liveMapping.b, liveMapping.c, liveMapping.d, liveMapping.tx, liveMapping.ty,
+                                frame.minX, frame.minY, frame.width, frame.height, backingScale]
+                guard entry.geometry != geometry else { continue }
+                entry.geometry = geometry
+                layer.frame = frame; layer.contentsScale = backingScale
+                layer.pageToLayer = liveMapping.concatenating(CGAffineTransform(translationX: -frame.minX, y: -frame.minY))
+                layer.setNeedsDisplay(); layer.displayIfNeeded()
+            }
+        }
+        for key in Set(committedText.keys).subtracting(retained) {
+            guard let entry = committedText.removeValue(forKey: key) else { continue }
             entry.annotation?.shouldDisplay = true
             entry.layer.removeFromSuperlayer()
         }
@@ -207,7 +298,7 @@ import PaperCore
     private var selectedAnnotation: PDFAnnotation? {
         guard let s = selectedShape, let p = document?.page(at: s.page), p.annotations.indices.contains(s.index) else { return nil }
         let a = p.annotations[s.index]
-        return ["Square", "Circle", "Line"].contains(a.type ?? "") ? a : nil
+        return ["Square", "Circle", "Line", "FreeText"].contains(a.type ?? "") ? a : nil
     }
     private func clamp(_ point: CGPoint, on page: PDFPage) -> CGPoint {
         var b = page.bounds(for: .cropBox)
@@ -294,8 +385,30 @@ import PaperCore
         redrawOverlay()
     }
     override func mouseDown(with event: NSEvent) {
+        guard finishInlineTextEditing() else { return }
         window?.makeFirstResponder(self)
         let v = convert(event.locationInWindow, from:nil)
+        if (freeTextInputEnabled || contentEditingEnabled || event.clickCount == 2 || (!inkEnabled && !placementEnabled && !markupSelectionEnabled)),
+           let page = page(for: v, nearest: false), let document,
+           let annotation = page.annotations.reversed().first(where: { $0.type == "FreeText" && convert($0.bounds, from: page).contains(v) }),
+           let index = page.annotations.firstIndex(of: annotation) {
+            if event.clickCount >= 2 {
+                clearShapeSelection()
+                onTextAnnotationEditing?(document.index(for: page), index)
+            } else {
+                let pageIndex = document.index(for: page)
+                onAnnotationSelection?(pageIndex, index)
+                if annotationManipulationEnabled {
+                    window?.contentView?.layoutSubtreeIfNeeded()
+                    let anchor = convert(convert(event.locationInWindow, from: nil), to: page)
+                    selectedShape = (pageIndex, index)
+                    beginGesture(on: page, at: anchor)
+                    transform = (pageIndex, index, annotation.bounds, nil)
+                    redrawOverlay()
+                }
+            }
+            return
+        }
         if markupSelectionEnabled {
             markupStart = nil; setCurrentSelection(nil, animate: false)
             guard let document, let page = page(for: v, nearest: false) else { return }
@@ -330,7 +443,7 @@ import PaperCore
             if let a, let ai = page.annotations.firstIndex(of:a) {
                 if a.type == "Widget" { onBlockedWidget?(); return }
                 onAnnotationSelection?(i,ai)
-                if annotationManipulationEnabled, ["Square","Circle","Line"].contains(a.type ?? "") {
+                if annotationManipulationEnabled, ["Square","Circle","Line","FreeText"].contains(a.type ?? "") {
                     // Revealing the style bar can reflow PDFKit's page. Anchor the
                     // gesture after that layout, so selection is not a translation.
                     window?.contentView?.layoutSubtreeIfNeeded()
@@ -377,6 +490,7 @@ import PaperCore
         setCurrentSelection(selection, animate: false)
     }
     @objc private func redrawOverlay() {
+        inlineTextSession?.reposition()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer {
@@ -397,6 +511,7 @@ import PaperCore
         var rect = annotation?.bounds
         var tool = annotation.flatMap { ShapeToolKind.annotationKind($0) }
         var style = annotation.map { AnnotationStyle(annotation: $0) } ?? shapeStyle
+        if annotation?.type == "FreeText" { tool = .rectangle; style = AnnotationStyle(strokeColor: .clear, fillColor: nil, lineWidth: 1) }
         if hasShapePreview { page=gesturePage; rect=shapePreviewBounds; if let previewStyle { style=previewStyle } else if transform == nil { tool=shapeTool; style=shapeStyle; annotation=nil } }
         let path = CGMutablePath(); let handles = CGMutablePath()
         if let page, let rect, let tool {
@@ -445,10 +560,11 @@ import PaperCore
         previewLayer.isHidden = !hasShapePreview && !hasInkPreview
     }
     /// Native overlay bitmap used to verify mid-gesture pixels without modifying the PDF.
-    func renderShapeOverlay() -> Data? {
-        guard bounds.width > 0, bounds.height > 0,
-              let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:Int(bounds.width),pixelsHigh:Int(bounds.height),bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0),
+    func renderShapeOverlay(backingScale: CGFloat = 1) -> Data? {
+        guard bounds.width > 0, bounds.height > 0, backingScale.isFinite, (1...4).contains(backingScale),
+              let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:Int(ceil(bounds.width * backingScale)),pixelsHigh:Int(ceil(bounds.height * backingScale)),bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0),
               let context = NSGraphicsContext(bitmapImageRep:bitmap)?.cgContext else { return nil }
+        context.scaleBy(x: backingScale, y: backingScale)
         overlay.layer?.render(in:context)
         return bitmap.representation(using:.png,properties:[:])
     }
@@ -500,6 +616,7 @@ import PaperCore
         super.keyDown(with:event)
     }
     @discardableResult func cancelPlacementForEscape()->Bool {
+        if inlineTextSession != nil { return finishInlineTextEditing(commit: false) }
         guard markupSelectionEnabled || inkEnabled || placementEnabled || contentEditingEnabled || gesturePage != nil || selectedShape != nil || selectedInk != nil else { return false }
         markupSelectionEnabled=false; inkEnabled=false; placementEnabled=false; contentEditingEnabled=false; shapeTool=nil; cancelGesture(); clearShapeSelection(); onCancelPlacement?(); return true
     }
@@ -510,6 +627,26 @@ import PaperCore
             if command != .copy { return false }
         }
         return item.action.map { isPDFActionAllowed($0,hasSelection:currentSelection != nil) } ?? true
+    }
+}
+
+final class FreeTextAppearanceLayer: CALayer {
+    weak var annotation: PDFAnnotation?
+    var pageToLayer = CGAffineTransform.identity
+    override func draw(in context: CGContext) {
+        guard let annotation else { return }
+        context.saveGState()
+        context.setShouldAntialias(true)
+        context.interpolationQuality = .high
+        context.concatenate(pageToLayer)
+        // Native annotation.draw applies the page's box/rotation transform itself.
+        // PDFView.convert already includes it; remove that second transform or
+        // rotated imported stamps are turned twice and clipped to the wrong area.
+        if let page = annotation.page {
+            context.concatenate(page.transform(for: .cropBox).inverted())
+        }
+        annotation.draw(with: .cropBox, in: context)
+        context.restoreGState()
     }
 }
 

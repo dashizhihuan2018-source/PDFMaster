@@ -330,3 +330,4 @@ public enum ZoomInput {
         return (viewWidth - gutter) / pageSizes.reduce(0) { $0 + $1.width }
     }
 }
+

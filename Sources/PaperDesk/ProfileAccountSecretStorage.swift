@@ -6,6 +6,7 @@ import Foundation
     private let namespace: String
     init(base: AccountSecretStorage, namespace: String) { self.base = base; self.namespace = namespace }
     private func scoped(_ service: String) -> String { namespace + "." + service }
+    func contains(service: String, account: String) throws -> Bool { try base.contains(service: scoped(service), account: account) }
     func read(service: String, account: String) throws -> String? { try base.read(service: scoped(service), account: account) }
     func save(_ value: String, service: String, account: String) throws { try base.save(value, service: scoped(service), account: account) }
     func delete(service: String, account: String) throws { try base.delete(service: scoped(service), account: account) }

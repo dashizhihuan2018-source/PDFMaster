@@ -1,7 +1,7 @@
 import AppKit
 
 /// Independent bindings from PDF Expert 3.13.4 (1177) compiled MainMenu.nib.
-/// Standard menu bindings only; no upstream application resources are bundled.
+/// Evidence and unsupported entries: docs/research/2026-10-16-pdfexpert-shortcuts.md.
 @MainActor enum ExpertShortcuts {
     static func apply(to item: NSMenuItem, action: Selector) {
         let tools: [Selector: String] = [

@@ -69,6 +69,7 @@ final class ApplicationShellController: NSViewController {
     private(set) var accountSettingsController: AccountSettingsController?
     private(set) var aiStudioController: AIStudioController?
     private(set) var copilotController: PDFCopilotController?
+    private weak var copilotWorkbench: WorkbenchController?
     private var studios: [AIStudioController] = []
     var accountSettingsPresenter: ((AccountSettingsController) -> Void)?
     var aiStudioPresenter: ((AIStudioController) -> Void)?
@@ -95,7 +96,7 @@ final class ApplicationShellController: NSViewController {
         if isViewLoaded, activeTabID == nil { dashboard.refreshContents() }
     }
     private func invalidateAIContext() {
-        copilotController?.invalidateContext()
+        hideCopilot()
         studios.forEach { $0.invalidateContext() }
     }
     func showAccountSettings() {
@@ -130,7 +131,8 @@ final class ApplicationShellController: NSViewController {
     }
     @discardableResult func showCopilot() -> Bool {
         guard let workbench = activeWorkbench else { return false }
-        copilotController?.close()
+        if copilotWorkbench === workbench, copilotController != nil { hideCopilot(); return true }
+        hideCopilot()
         let controller = PDFCopilotController(documentProvider: { [weak self, weak workbench] in
             guard self?.activeWorkbench === workbench else { return nil }
             return workbench?.workspace.document
@@ -140,17 +142,24 @@ final class ApplicationShellController: NSViewController {
             guard self?.activeWorkbench === workbench else { return }
             workbench?.navigateCopilot(to: index)
         }, revisionProvider: { [weak workbench] in workbench?.workspace.revision ?? -1 },
-        sessionIdentityProvider: { [weak self] in self?.aiIdentity }, client: aiClient)
+        sessionIdentityProvider: { [weak self] in self?.aiIdentity }, client: aiClient,
+        agnesKeyProvider: { [weak self] in try self?.accountStore.readAgnesKey() }, initialProvider: .agnes,
+        deepSeekKeyProvider: { [weak self] in try self?.accountStore.readDeepSeekKey() })
         controller.onOpenSettings = { [weak self] in self?.showAccountSettings() }
-        copilotController = controller
+        controller.onClose = { [weak self] in self?.hideCopilot() }
+        copilotController = controller; copilotWorkbench = workbench
+        workbench.setCopilotPanel(controller.panelView)
         if let copilotPresenter { copilotPresenter(controller) }
-        else { controller.showWindow(relativeTo: view.window) }
         return true
+    }
+    func hideCopilot() {
+        copilotController?.close(); copilotWorkbench?.setCopilotPanel(nil)
+        copilotController = nil; copilotWorkbench = nil
     }
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 820)); root.wantsLayer = true; root.layer?.backgroundColor = ShellPalette.canvas.cgColor
-        tabBar.orientation = .horizontal; tabBar.spacing = 0; tabBar.alignment = .centerY; tabBar.edgeInsets = NSEdgeInsets(top: 0, left: 100, bottom: 0, right: 8)
+        tabBar.orientation = .horizontal; tabBar.distribution = .fill; tabBar.spacing = 0; tabBar.alignment = .centerY; tabBar.edgeInsets = NSEdgeInsets(top: 0, left: 100, bottom: 0, right: 8)
         tabBar.wantsLayer = true; tabBar.layer?.backgroundColor = ShellPalette.top.cgColor
         windowControls.orientation = .horizontal; windowControls.spacing = 8; windowControls.alignment = .centerY
         [tabBar, content].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; root.addSubview($0) }
@@ -349,6 +358,9 @@ final class ApplicationShellController: NSViewController {
         return true
     }
     func activate(tabID: UUID) {
+        if activeTabID != tabID, activeWorkbench?.pdfView.finishInlineTextEditing() == false { return }
+        if activeTabID != tabID, let active = activeWorkbench,
+           active.isLocalToolRunning || active.isContentEditPending { return }
         // Loading the shell establishes its home state. Do that before assigning
         // the active tab, not later while transferring keyboard focus.
         _ = view
@@ -378,6 +390,8 @@ final class ApplicationShellController: NSViewController {
         rebuildTabs(); show(activeWorkbench!); onActiveWorkbenchChange?(activeWorkbench)
     }
     func showHome() {
+        guard activeWorkbench?.pdfView.finishInlineTextEditing() != false else { return }
+        guard activeWorkbench?.view.window?.attachedSheet == nil else { return }
         if activeTabID != nil { invalidateAIContext() }
         activeWorkbench?.registerInkMenuItem(nil)
         activeTabID = nil; rebuildTabs(); show(dashboard)
@@ -406,6 +420,8 @@ final class ApplicationShellController: NSViewController {
         }
         guard let index = documentTabs.firstIndex(where: { $0.id == tabID }) else { return true }
         let controller = documentTabs[index].controller
+        guard controller.pdfView.finishInlineTextEditing() else { return false }
+        guard !controller.isLocalToolRunning, controller.view.window?.attachedSheet == nil else { return false }
         guard !controller.workspace.isDirty || (dirtyDecision?() ?? controller.guardDirty()) else { return false }
         controller.readerSession.cancelSearch()
         controller.cancelLocalTool()
@@ -419,6 +435,8 @@ final class ApplicationShellController: NSViewController {
     }
     func guardAllDirty(canvasDecision: ((CanvasTab) -> Bool)?, _ decision: ((DocumentTab) -> Bool)? = nil) -> Bool {
         canvasTabs.forEach { $0.controller.finishEditing() }
+        guard documentTabs.allSatisfy({ $0.controller.pdfView.finishInlineTextEditing() }) else { return false }
+        guard documentTabs.allSatisfy({ !$0.controller.isLocalToolRunning && $0.controller.view.window?.attachedSheet == nil }) else { return false }
         return documentTabs.allSatisfy { !$0.controller.workspace.isDirty || (decision?($0) ?? $0.controller.guardDirty()) }
         && canvasTabs.allSatisfy { !$0.controller.session.isDirty || (canvasDecision?($0) ?? $0.controller.guardDirty()) }
     }
@@ -432,6 +450,7 @@ final class ApplicationShellController: NSViewController {
         case .closeOtherTabs:
             guard let activeTabID, let closing = ReaderTabPolicy.closeOthers(ids: documentTabs.map(\.id), keeping: activeTabID, approve: { id in
                 guard let tab = self.documentTabs.first(where: { $0.id == id }) else { return false }
+                guard tab.controller.pdfView.finishInlineTextEditing() else { return false }
                 return !tab.controller.workspace.isDirty || tab.controller.guardDirty()
             }) else { return false }
             for tab in documentTabs where closing.contains(tab.id) { tab.controller.readerSession.cancelSearch(); tab.controller.cancelLocalTool() }
@@ -479,6 +498,7 @@ final class ApplicationShellController: NSViewController {
             box.wantsLayer = true; box.layer?.backgroundColor = (activeTabID == tab.id ? NSColor(calibratedWhite: 0.25, alpha: 1) : ShellPalette.top).cgColor
             let select = TabButton(title: tab.title, target: self, action: #selector(selectTab(_:))); select.tabID = tab.id; select.isBordered = false; select.state = activeTabID == tab.id ? .on : .off; select.font = .systemFont(ofSize: 12); select.contentTintColor = ShellPalette.primary; select.setAccessibilityLabel("文档标签 \(tab.title)"); select.setAccessibilityValue(activeTabID == tab.id ? "已选中" : "未选中")
             let close = TabButton(title: "×", target: self, action: #selector(closeTab(_:))); close.tabID = tab.id; close.isBordered = false; close.setAccessibilityLabel("关闭 \(tab.title)")
+            configureTabLayout(box, select: select, close: close)
             box.heightAnchor.constraint(equalToConstant: 40).isActive = true
             box.addArrangedSubview(select); box.addArrangedSubview(close); tabBar.addArrangedSubview(box)
         }
@@ -491,10 +511,25 @@ final class ApplicationShellController: NSViewController {
             select.setAccessibilityLabel("无边记标签 \(tab.title)")
             let close = TabButton(title: "×", target: self, action: #selector(closeTab(_:)))
             close.tabID = tab.id; close.isBordered = false; close.setAccessibilityLabel("关闭无边记 \(tab.title)")
+            configureTabLayout(box, select: select, close: close)
             box.heightAnchor.constraint(equalToConstant: 40).isActive = true
             box.addArrangedSubview(select); box.addArrangedSubview(close); tabBar.addArrangedSubview(box)
         }
         let plus = ChromeTabButton(title: "+", target: self, action: #selector(homeAction)); plus.isBordered = false; plus.font = .systemFont(ofSize: 24, weight: .light); plus.setAccessibilityLabel("新标签"); plus.toolTip = "新标签"; plus.widthAnchor.constraint(equalToConstant: 36).isActive = true; plus.heightAnchor.constraint(equalToConstant: 40).isActive = true; newTabButton = plus; tabBar.addArrangedSubview(plus)
+        // Only this trailing space may grow. Otherwise AppKit stretches the first
+        // document tab to fill the titlebar and pushes its neighbour to the right.
+        let trailingSpace = NSView()
+        trailingSpace.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        trailingSpace.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        tabBar.addArrangedSubview(trailingSpace)
+    }
+    private func configureTabLayout(_ box: NSStackView, select: NSButton, close: NSButton) {
+        select.lineBreakMode = .byTruncatingMiddle
+        select.toolTip = select.title
+        select.setContentHuggingPriority(.required, for: .horizontal)
+        box.setContentHuggingPriority(.required, for: .horizontal)
+        box.widthAnchor.constraint(lessThanOrEqualToConstant: 360).isActive = true
+        close.widthAnchor.constraint(equalToConstant: 20).isActive = true
     }
     @objc private func homeAction() { dashboard.select(.home); showHome() }
     @objc private func selectTab(_ sender: TabButton) { if let id = sender.tabID { activate(tabID: id) } }

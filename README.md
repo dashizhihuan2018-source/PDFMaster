@@ -38,7 +38,7 @@ V0.1.19 修复导入图章（Stamp）中整张CAD图纸被低分辨率缓存放�
 
 V0.1.18 更新原生阅读器右侧 PDF Copilot、富文本回答及页码引用，支持在本机账户设置中分别绑定自己的 **DMX / DeepSeek / Agnes Key**，并包含 build40 的双页布局、字体兼容与批注修复。不同账户/服务商不共用 Key，发送前需核对范围并同意可能计费；DeepSeek 真实 Key 调用尚未验证。包内不包含用户登录状态、真实密钥或用户文档。
 
-**安装包与源码版本分开标注：本次只更新安装包与下载说明，本仓库公开源码仍为 V0.1.7/build28，并未同步为 build41；标签里的源码快照不是本安装包的可重建源码。** V0.1.19 公开包沿用已审查的 V0.1.7 内置画布资源；原生程序来自本机验证后的 build41，清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名，不是本机安装版的逐字节副本。完整边界见[本轮发布说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19)。下列 V0.1.7 说明和编译步骤对应现有公开源码。
+**最新版安装包和完整对应项目源码均已公开：V0.1.19/build41。** 本仓库包含完整 Swift 原生程序、画布前端、测试、字体适配脚本、资源、许可证和构建脚本，不再使用 build28 原生源码代替最新版。公开包沿用已审查的 V0.1.7 画布前端；其完整源码也在 `CanvasWeb/`，不含私有演示、第三方提示词快照或用户数据。公开二进制清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名，因此不是本机安装版或自行构建结果的逐字节副本。外部工具按下方说明安装；依赖缓存、编译产物和私人开发历史不属于项目源码。
 
 V0.1.7 将无限画布随应用打包，从固定本地源加载，不再加载或跳转画布网站。无需网站或本机账户登录，点击“DMX Key 设置…”输入自己的 Key，Key 仅在本机钥匙串保存，不交给 JS、配置 JSON 或画布 ZIP。首次生成需原生会话授权；费用由自己的 DMX 账户承担。[完整使用教程](docs/无限画布使用教程.md)。支持页仅保留邮箱 `archseuyang@163.com`。同时保留关闭窗口后再次打开 PDF / Dock 重开时的窗口生命周期修复。
 
@@ -66,6 +66,8 @@ V0.1.0 完善文档保存体验：⌘S 直接保存当前 PDF，新文档首次�
 
 ```sh
 (cd CanvasWeb && npm ci --ignore-scripts && npm run typecheck && npm run build)
+# 内容编辑回归需先配置下方 Python / PyMuPDF / fontTools 运行时：
+/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 scripts/generate-test-fixtures.py
 swift test
 bash scripts/build-app.sh
 ```
@@ -81,9 +83,9 @@ bash scripts/build-app.sh --qpdf /absolute/path/to/qpdf
 
 ### 可选内容编辑运行时
 
-PDF 内容编辑功能使用包外 Python 3.12 与 PyMuPDF 1.27.2.3，当前适配器要求标准 framework Python 和该用户的 Library/Python 安装位置；不是自包含便携功能。运行时不在此仓库，也不自动下载。PyMuPDF 为 AGPL-3.0 或商业授权；调用外部进程不构成许可豁免。请根据最终使用/分发模式自行确认合规，不能把本目录公开视为商业许可证批准。[PyMuPDF 官方许可](https://pymupdf.io/licensing)。
+PDF 内容编辑功能使用包外 Python 3.12、PyMuPDF 1.27.2.3 与 fontTools，当前适配器要求标准 framework Python 和该用户的 Library/Python 安装位置；不是自包含便携功能。运行时不在此仓库，也不自动下载。PyMuPDF 为 AGPL-3.0 或商业授权；调用外部进程不构成许可豁免。请根据最终使用/分发模式自行确认合规，不能把本目录公开视为商业许可证批准。[PyMuPDF 官方许可](https://pymupdf.io/licensing)。
 
-内容编辑集成测试只有显式设置 `PDFMASTER_CONTENT_FIXTURE`（自有测试 PDF）、`PDFMASTER_CONTENT_REPLACEMENT`（自有 PNG）且运行时可用才执行；否则按原因 skip。夹具须有测试断言要求的文本/图片结构，不能用私人业务 PDF。其他图像导入测试现场生成合成图片，图标测试使用 Resources 内的正式图标，不依赖开发工作区。
+先运行 `scripts/generate-test-fixtures.py`，从代码生成纯虚构文本和图片到被忽略的 `work/parallel/content-edit/evidence/`；原生文字编辑测试使用这些夹具。可选集成测试另设 `PDFMASTER_CONTENT_FIXTURE="$PWD/work/parallel/content-edit/evidence/content-edit-qa.pdf"` 和 `PDFMASTER_CONTENT_REPLACEMENT="$PWD/work/parallel/content-edit/evidence/replacement.png"`，不配置时明确跳过。不要提供私人业务 PDF。图像导入测试现场生成图片，图标测试使用 Resources 内的正式图标。故障文件清晰度测试为单独 opt-in；仓库不附用户文件，默认跳过该项，其余四项使用合成 Stamp。
 
 ## 网络、账户和隐私
 

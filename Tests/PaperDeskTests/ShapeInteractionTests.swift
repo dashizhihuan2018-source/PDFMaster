@@ -144,8 +144,8 @@ import PaperCore
         let later=try XCTUnwrap(c.pdfView.renderShapeOverlay())
         XCTAssertNotEqual(early,later,"Moving while pressed must change rendered pixels, not only stored coordinates")
         XCTAssertEqual(c.workspace.document?.page(at:0)?.annotations.count,0)
-        let file=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png")
-        defer { try? FileManager.default.removeItem(at:file) }
+        let file=FileManager.default.temporaryDirectory.appendingPathComponent("shape-drag-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: file) }
         try later.write(to:file)
         c.pdfView.cancelPlacementForEscape(); window.contentViewController=nil
     }

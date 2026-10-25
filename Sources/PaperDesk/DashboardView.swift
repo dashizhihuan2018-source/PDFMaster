@@ -335,11 +335,23 @@ final class DashboardViewController: NSViewController {
     }
     private func choosePDF() -> URL? { let panel = NSOpenPanel(); panel.allowedContentTypes = [.pdf]; return panel.runModal() == .OK ? panel.url : nil }
     @objc private func customizeTools() {
-        let list = NSStackView(); list.orientation = .vertical; list.spacing = 7
+        // NSAlert reserves accessory space from its frame, not the stack's
+        // fitting size. A zero frame collapses the rows into the response buttons.
+        let rowHeight: CGFloat = 32
+        let rowSpacing: CGFloat = 8
+        let rowCount = shell.preferredTools.toolIDs.count
+        let list = NSStackView(frame: NSRect(x: 0, y: 0, width: 300,
+            height: CGFloat(rowCount) * rowHeight + CGFloat(max(0, rowCount - 1)) * rowSpacing))
+        list.orientation = .vertical; list.spacing = rowSpacing; list.alignment = .leading
         var popups: [NSPopUpButton] = []
         for (index, selectedID) in shell.preferredTools.toolIDs.enumerated() {
-            let row = NSStackView(); row.orientation = .horizontal; row.addArrangedSubview(label("\(index + 1)", 12, .medium, ShellPalette.secondary))
-            let popup = NSPopUpButton(); popup.addItems(withTitles: ToolCatalog.all.map(\.title)); popup.selectItem(at: ToolCatalog.all.firstIndex { $0.id == selectedID } ?? 0); popup.widthAnchor.constraint(equalToConstant: 250).isActive = true
+            let row = NSStackView(); row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 8
+            row.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
+            let number = label("\(index + 1)", 12, .medium, .secondaryLabelColor)
+            number.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            row.addArrangedSubview(number)
+            let popup = NSPopUpButton(); popup.addItems(withTitles: ToolCatalog.all.map(\.title)); popup.selectItem(at: ToolCatalog.all.firstIndex { $0.id == selectedID } ?? 0)
+            NSLayoutConstraint.activate([popup.widthAnchor.constraint(equalToConstant: 250), popup.heightAnchor.constraint(equalToConstant: 28)])
             popups.append(popup); row.addArrangedSubview(popup); list.addArrangedSubview(row)
         }
         let alert = NSAlert(); alert.messageText = "自定义推荐工具"; alert.informativeText = "六个位置可独立排序，且不能重复。取消不会更改当前设置。"; alert.accessoryView = list; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")

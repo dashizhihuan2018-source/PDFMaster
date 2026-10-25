@@ -73,4 +73,37 @@ final class AccountSettingsControllerTests: XCTestCase {
         XCTAssertEqual(controller.newPasswordField.stringValue, "")
         XCTAssertEqual(controller.confirmPasswordField.stringValue, "")
     }
+
+    func testAgnesControlsAreSeparateSecureAndClearOnLogoutAndClose() throws {
+        let (store, controller) = fixture()
+        XCTAssertTrue(controller.agnesKeyField.cell is NSSecureTextFieldCell)
+        XCTAssertFalse(controller.agnesKeyField.isEnabled)
+        XCTAssertFalse(controller.saveAgnesKeyButton.isEnabled)
+        XCTAssertFalse(controller.removeAgnesKeyButton.isEnabled)
+        try store.login(username: "Nankong", password: "ZJKG8888", remember: false)
+        try store.saveDMXKey("retained-dmx-ui-test-secret")
+        XCTAssertTrue(controller.saveAgnesKeyButton.isEnabled)
+        controller.agnesKeyField.stringValue = "agnes-ui-test-secret"
+        controller.performSaveAgnesKey()
+        XCTAssertEqual(try store.readAgnesKey(), "agnes-ui-test-secret")
+        XCTAssertEqual(try store.readDMXKey(), "retained-dmx-ui-test-secret")
+        XCTAssertEqual(controller.agnesKeyField.stringValue, "")
+        XCTAssertTrue(controller.agnesKeyStatus.stringValue.contains("已保存"))
+        XCTAssertFalse(controller.agnesKeyStatus.stringValue.contains("agnes-ui-test-secret"))
+        controller.performRemoveAgnesKey()
+        XCTAssertNil(try store.readAgnesKey())
+        XCTAssertEqual(try store.readDMXKey(), "retained-dmx-ui-test-secret")
+        controller.agnesKeyField.stringValue = "unsaved-agnes-test-secret"
+        controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        XCTAssertEqual(controller.agnesKeyField.stringValue, "")
+        controller.agnesKeyField.stringValue = "unsaved-agnes-test-secret"
+        store.logout()
+        XCTAssertEqual(controller.agnesKeyField.stringValue, "")
+        XCTAssertFalse(controller.saveAgnesKeyButton.isEnabled)
+    }
+
+    func testAccountSettingsUseScrollableContentForBothProviders() {
+        let (_, controller) = fixture()
+        XCTAssertNotNil(controller.view.subviews.compactMap { $0 as? NSScrollView }.first)
+    }
 }

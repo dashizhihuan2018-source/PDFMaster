@@ -89,6 +89,7 @@ public final class PDFWorkspace: ObservableObject {
     @Published public private(set) var sourceURL: URL?
     @Published public private(set) var isDirty = false
     @Published public private(set) var revision = 0
+    public private(set) var fontCompatibilityNotice: String?
 
     public var canUndo: Bool { !undoSnapshots.isEmpty }
     public var canRedo: Bool { !redoSnapshots.isEmpty }
@@ -399,6 +400,8 @@ public final class PDFWorkspace: ObservableObject {
                 throw PDFWorkspaceError.lockedDocument
             }
         }
+        let fontCompatibility = wasEncrypted ? nil : PDFFontCompatibility.normalize(rawSource)
+        let compatible = fontCompatibility.flatMap { PDFDocument(data: $0.data) } ?? loaded
         let copyData: Data?
         if password != nil {
             copyData = loaded.dataRepresentation(options: [
@@ -406,13 +409,14 @@ public final class PDFWorkspace: ObservableObject {
                 PDFDocumentWriteOption.ownerPasswordOption: ""
             ])
         } else {
-            copyData = loaded.dataRepresentation()
+            copyData = compatible.dataRepresentation()
         }
         guard loaded.pageCount > 0, let data = copyData, let copy = PDFDocument(data: data), !copy.isLocked else {
             throw PDFWorkspaceError.unreadableDocument
         }
 
         document = copy
+        fontCompatibilityNotice = fontCompatibility?.notice
         admittedContentInputs = [rawSource]
         generation = UUID()
         sourceURL = normalized
@@ -619,9 +623,12 @@ public final class PDFWorkspace: ObservableObject {
             guard candidate.pageCount - pages.count >= 1 else {
                 throw PDFWorkspaceError.cannotDeleteLastPage
             }
-            let bookmarkTargets = try self.outlinePageIndexes(in: candidate)
-            guard pages.isDisjoint(with: IndexSet(bookmarkTargets)) else {
-                throw PDFWorkspaceError.invalidSelection
+            // Validate before editing, but a valid bookmark is not a reason to
+            // refuse page deletion. Remove its outline branch while the page
+            // still belongs to the document, so no dangling destination remains.
+            _ = try self.outlinePageIndexes(in: candidate)
+            if let root = candidate.outlineRoot {
+                self.removeBookmarks(targeting: pages, under: root, in: candidate)
             }
             for index in pages.reversed() { candidate.removePage(at: index) }
             _ = try self.outlinePageIndexes(in: candidate)
@@ -766,19 +773,75 @@ public final class PDFWorkspace: ObservableObject {
         }
     }
 
-    public func addText(_ text: String, page: Int, bounds: CGRect) throws {
-        guard !text.isEmpty, bounds.width > 0, bounds.height > 0 else {
-            throw PDFWorkspaceError.invalidSelection
-        }
+    /// Creates an editable FreeText annotation, not a replacement/reflow of the
+    /// page's original content stream. The caller keeps its uncommitted draft
+    /// outside the workspace; a finished text edit becomes one history entry.
+    public func addText(_ text: String, page: Int, bounds: CGRect,
+                        font: NSFont = .systemFont(ofSize: 12), color: NSColor = .black,
+                        rotation: Int = 0) throws {
+        try validateFreeText(text, bounds: bounds, font: font, color: color, rotation: rotation, allowsEmpty: false)
         try mutate(requiring: .commenting, annotationPages: annotationPageScope(page)) { candidate in
             guard let target = candidate.page(at: page) else { throw PDFWorkspaceError.invalidPage }
+            guard target.bounds(for: .cropBox).contains(bounds) else { throw PDFWorkspaceError.invalidSelection }
             let annotation = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
-            annotation.contents = text
-            annotation.font = .systemFont(ofSize: 12)
-            annotation.fontColor = .black
-            annotation.color = .clear
+            applyFreeText(text, bounds: bounds, font: font, color: color, rotation: rotation, to: annotation)
             target.addAnnotation(annotation)
+            forceFreeTextAppearanceWrite(candidate)
         }
+    }
+
+    /// Updates only a FreeText annotation. Empty text deletes that annotation in
+    /// the same single, undoable commenting transaction. A UI holding an index
+    /// across asynchronous work must additionally validate its captured revision.
+    public func updateFreeText(page: Int, index: Int, text: String, bounds: CGRect,
+                               font: NSFont, color: NSColor, rotation: Int = 0) throws {
+        try validateFreeText(text, bounds: bounds, font: font, color: color, rotation: rotation, allowsEmpty: true)
+        try mutate(requiring: .commenting, annotationPages: annotationPageScope(page)) { candidate in
+            guard let target = candidate.page(at: page) else { throw PDFWorkspaceError.invalidPage }
+            guard target.annotations.indices.contains(index), target.annotations[index].type == "FreeText",
+                  target.bounds(for: .cropBox).contains(bounds) else { throw PDFWorkspaceError.invalidSelection }
+            let annotation = target.annotations[index]
+            if text.isEmpty { target.removeAnnotation(annotation) }
+            else { applyFreeText(text, bounds: bounds, font: font, color: color, rotation: rotation, to: annotation) }
+            forceFreeTextAppearanceWrite(candidate)
+        }
+    }
+
+    private func forceFreeTextAppearanceWrite(_ candidate: PDFDocument) {
+        // PDFKit's incremental writer for a parsed PDF omits a newly edited
+        // FreeText's /DA, losing its font size and color in save/undo snapshots.
+        // A temporary append/removal requests its full native writer without
+        // replacing any real page, outline, metadata, annotation or destination.
+        let temporaryIndex = candidate.pageCount
+        candidate.insert(PDFPage(), at: temporaryIndex)
+        candidate.removePage(at: temporaryIndex)
+    }
+
+    private func validateFreeText(_ text: String, bounds: CGRect, font: NSFont, color: NSColor,
+                                  rotation: Int, allowsEmpty: Bool) throws {
+        guard (allowsEmpty || !text.isEmpty), text.utf16.count <= 100_000,
+              !text.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0) && $0 != "\n" && $0 != "\r" && $0 != "\t"
+              }), valid(bounds), valid(color), font.pointSize.isFinite,
+              (1...512).contains(font.pointSize), font.pointSize.rounded() == font.pointSize,
+              [0, 90, 180, 270].contains(rotation) else {
+            throw PDFWorkspaceError.invalidSelection
+        }
+    }
+
+    private func applyFreeText(_ text: String, bounds: CGRect, font: NSFont, color: NSColor,
+                               rotation: Int, to annotation: PDFAnnotation) {
+        // A reparsed FreeText retains /DA and /AP even after setting native font
+        // properties. Drop the stale serialized appearance before regeneration.
+        annotation.removeValue(forAnnotationKey: PDFAnnotationKey(rawValue: "/DA"))
+        annotation.removeValue(forAnnotationKey: PDFAnnotationKey(rawValue: "/AP"))
+        annotation.contents = text
+        annotation.bounds = bounds
+        annotation.font = font
+        annotation.fontColor = color
+        annotation.color = .clear
+        annotation.alignment = .left
+        annotation.setValue(NSNumber(value: rotation), forAnnotationKey: PDFAnnotationKey(rawValue: "/Rotate"))
     }
 
     public func addMarkup(selection: PDFSelection, kind: PDFAnnotationSubtype, color: NSColor) throws {
@@ -1335,6 +1398,17 @@ public final class PDFWorkspace: ObservableObject {
             entries.flatMap { [$0.page] + flatten($0.children) }
         }
         return flatten(try outlineEntries(in: document))
+    }
+
+    private func removeBookmarks(targeting pages: IndexSet, under parent: PDFOutline, in document: PDFDocument) {
+        for index in (0..<parent.numberOfChildren).reversed() {
+            guard let child = parent.child(at: index) else { continue }
+            if let page = child.destination?.page, pages.contains(document.index(for: page)) {
+                child.removeFromParent()
+            } else {
+                removeBookmarks(targeting: pages, under: child, in: document)
+            }
+        }
     }
 
     private func outlineEntries(in document: PDFDocument) throws -> [OutlineEntry] {

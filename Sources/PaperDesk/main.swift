@@ -74,6 +74,21 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
     }
     var copilotPageIndex: Int { currentPageIndex }
+    private let copilotHost = NSView()
+    private var copilotClosedWidth: NSLayoutConstraint?
+    private var copilotOpenWidths: [NSLayoutConstraint] = []
+    var isCopilotVisible: Bool { !copilotHost.subviews.isEmpty }
+    func setCopilotPanel(_ panel: NSView?) {
+        _ = view
+        copilotHost.subviews.forEach { $0.removeFromSuperview() }
+        NSLayoutConstraint.deactivate(copilotOpenWidths); copilotClosedWidth?.isActive = false
+        if let panel {
+            copilotHost.isHidden = false; NSLayoutConstraint.activate(copilotOpenWidths)
+            panel.translatesAutoresizingMaskIntoConstraints = false; copilotHost.addSubview(panel)
+            NSLayoutConstraint.activate([panel.leadingAnchor.constraint(equalTo: copilotHost.leadingAnchor), panel.trailingAnchor.constraint(equalTo: copilotHost.trailingAnchor), panel.topAnchor.constraint(equalTo: copilotHost.topAnchor), panel.bottomAnchor.constraint(equalTo: copilotHost.bottomAnchor)])
+        } else { copilotHost.isHidden = true; copilotClosedWidth?.isActive = true }
+        view.layoutSubtreeIfNeeded()
+    }
     func navigateCopilot(to index: Int) {
         guard index >= 0, index < (workspace.document?.pageCount ?? 0) else { return }
         if isOverviewVisible { setOverviewVisible(false) }
@@ -83,6 +98,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     var localToolCancellation: LocalToolCancellation?
     var compressionPanelController: PDFCompressionPanelController?
     var isLocalToolRunning: Bool { localToolCancellation != nil }
+    var isContentEditPending = false
     var contentToolID: String?
     let pdfView = InkPDFView()
     lazy var readerSession = ReaderSession(pdfView: pdfView)
@@ -112,9 +128,12 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     var toolbarGroupFrames: [NSRect] { toolbarGroups.map { $0.convert($0.bounds, to: view) } }
     private let annotationPalette = NSView()
     private let secondaryTools = NSStackView()
+    private let secondaryToolRow = NSStackView()
+    let textStyleToolbarHost = NSView()
     var secondaryToolIDs: [String] { secondaryTools.arrangedSubviews.compactMap { ($0 as? ToolStripButton)?.toolID } }
     var secondaryToolFrame: NSRect { secondaryTools.convert(secondaryTools.bounds, to: view) }
     private var primaryModeButtons: [ModeButton] = []
+    private let layoutPopover = NSPopover()
     private var eraserEnabled = false
     var clipboard = DocumentClipboard.shared
     private var paletteHeightConstraint: NSLayoutConstraint?
@@ -260,7 +279,11 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
         status.font = .systemFont(ofSize: 11); status.textColor = ShellPalette.secondary; status.alignment = .center; status.wantsLayer = true; status.layer?.backgroundColor = ShellPalette.canvas.cgColor
         pageBadge.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); pageBadge.textColor = ShellPalette.primary; pageBadge.alignment = .center; pageBadge.wantsLayer = true; pageBadge.layer?.backgroundColor = ShellPalette.top.cgColor; pageBadge.layer?.cornerRadius = 7
-        [toolbar, annotationPalette, content, status, pageBadge].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; root.addSubview($0) }
+        [toolbar, annotationPalette, content, copilotHost, status, pageBadge].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; root.addSubview($0) }
+        copilotHost.isHidden = true
+        copilotClosedWidth = copilotHost.widthAnchor.constraint(equalToConstant: 0); copilotClosedWidth?.isActive = true
+        let proportional = copilotHost.widthAnchor.constraint(equalTo: root.widthAnchor, multiplier: 0.28); proportional.priority = .defaultHigh
+        copilotOpenWidths = [proportional, copilotHost.widthAnchor.constraint(greaterThanOrEqualToConstant: 340), copilotHost.widthAnchor.constraint(lessThanOrEqualToConstant: 560)]
         fileImportCancelButton.identifier = NSUserInterfaceItemIdentifier("document-file-import-cancel")
         fileImportCancelButton.target = self; fileImportCancelButton.action = #selector(cancelFileImportFromButton)
         fileImportCancelButton.bezelStyle = .inline; fileImportCancelButton.isHidden = true
@@ -271,9 +294,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: root.topAnchor), toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: root.trailingAnchor), toolbar.heightAnchor.constraint(equalToConstant: workbenchToolbarHeight),
             annotationPalette.topAnchor.constraint(equalTo: toolbar.bottomAnchor), annotationPalette.leadingAnchor.constraint(equalTo: root.leadingAnchor), annotationPalette.trailingAnchor.constraint(equalTo: root.trailingAnchor), paletteHeight,
-            content.topAnchor.constraint(equalTo: annotationPalette.bottomAnchor), content.leadingAnchor.constraint(equalTo: root.leadingAnchor), content.trailingAnchor.constraint(equalTo: root.trailingAnchor), content.bottomAnchor.constraint(equalTo: status.topAnchor),
+            content.topAnchor.constraint(equalTo: annotationPalette.bottomAnchor), content.leadingAnchor.constraint(equalTo: root.leadingAnchor), content.trailingAnchor.constraint(equalTo: copilotHost.leadingAnchor), content.bottomAnchor.constraint(equalTo: status.topAnchor),
+            copilotHost.topAnchor.constraint(equalTo: content.topAnchor), copilotHost.bottomAnchor.constraint(equalTo: content.bottomAnchor), copilotHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             status.leadingAnchor.constraint(equalTo: root.leadingAnchor), status.trailingAnchor.constraint(equalTo: root.trailingAnchor), status.bottomAnchor.constraint(equalTo: root.bottomAnchor), status.heightAnchor.constraint(equalToConstant: 25),
-            pageBadge.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16), pageBadge.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -12), pageBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 58), pageBadge.heightAnchor.constraint(equalToConstant: 26)
+            pageBadge.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), pageBadge.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -12), pageBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 58), pageBadge.heightAnchor.constraint(equalToConstant: 26)
         ])
         configureEmptyView(in: root)
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
@@ -287,8 +311,17 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             self.applyMarkup(selection, kind: tool.kind, color: tool.color)
         }
         pdfView.onAnnotationSelection = { [weak self] page, index in self?.selectAnnotation(page: page, index: index) }
+        pdfView.onTextAnnotationEditing = { [weak self] page, index in self?.editFreeTextInline(page: page, annotationIndex: index) }
         pdfView.onShapeTransform = { [weak self] page, index, bounds in
             guard let self, let a = self.workspace.document?.page(at: page)?.annotations[safe: index] else { return }
+            if a.type == "FreeText" {
+                self.mutateAnnotations(pages: IndexSet(integer: page)) {
+                    try self.workspace.updateFreeText(page: page, index: index, text: a.contents ?? "", bounds: bounds,
+                        font: a.font ?? .systemFont(ofSize: 12), color: a.fontColor ?? .black,
+                        rotation: (a.value(forAnnotationKey: PDFAnnotationKey(rawValue: "/Rotate")) as? Int) ?? 0)
+                }
+                self.selectAnnotation(page: page, index: index); return
+            }
             let style = AnnotationStyle(annotation: a)
             self.mutateAnnotations(pages: IndexSet(integer: page)) { try self.workspace.updateShape(page: page, index: index, bounds: bounds, style: style) }
             self.selectAnnotation(page: page, index: index)
@@ -331,7 +364,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
         left.addArrangedSubview(button("侧栏", #selector(toggleSidebar), symbol: "sidebar.left"))
         left.addArrangedSubview(button("页面预览", #selector(togglePageOverview), symbol: "square.grid.2x2"))
-        left.addArrangedSubview(button("大纲", #selector(showOutline), symbol: "book.closed"))
+        left.addArrangedSubview(button("布局选项", #selector(showLayoutOptions(_:)), symbol: "book"))
         zoomPopup.font = .systemFont(ofSize: 11)
         zoomPopup.widthAnchor.constraint(equalToConstant: 80).isActive = true
         left.addArrangedSubview(zoomPopup)
@@ -372,8 +405,33 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private func configureAnnotationPalette() {
         annotationPalette.wantsLayer = true; annotationPalette.layer?.backgroundColor = ShellPalette.top.cgColor; annotationPalette.isHidden = true
         secondaryTools.orientation = .horizontal; secondaryTools.spacing = 8; secondaryTools.alignment = .centerY
-        secondaryTools.translatesAutoresizingMaskIntoConstraints = false; annotationPalette.addSubview(secondaryTools)
-        NSLayoutConstraint.activate([secondaryTools.centerXAnchor.constraint(equalTo: annotationPalette.centerXAnchor), secondaryTools.centerYAnchor.constraint(equalTo: annotationPalette.topAnchor, constant: 17)])
+        secondaryToolRow.orientation = .horizontal; secondaryToolRow.spacing = 16; secondaryToolRow.alignment = .centerY
+        secondaryToolRow.translatesAutoresizingMaskIntoConstraints = false; annotationPalette.addSubview(secondaryToolRow)
+        secondaryToolRow.addArrangedSubview(secondaryTools)
+        textStyleToolbarHost.setAccessibilityLabel("顶部文字样式")
+        textStyleToolbarHost.isHidden = true
+        secondaryToolRow.addArrangedSubview(textStyleToolbarHost)
+        NSLayoutConstraint.activate([
+            secondaryToolRow.centerXAnchor.constraint(equalTo: annotationPalette.centerXAnchor),
+            secondaryToolRow.centerYAnchor.constraint(equalTo: annotationPalette.topAnchor, constant: 17),
+            textStyleToolbarHost.widthAnchor.constraint(equalToConstant: 400),
+            textStyleToolbarHost.heightAnchor.constraint(equalToConstant: 28)
+        ])
+        pdfView.textStyleToolbarHost = textStyleToolbarHost
+        pdfView.onTextStyleToolbarVisibilityChange = { [weak self] visible in
+            guard let self else { return }
+            self.textStyleToolbarHost.isHidden = !visible
+            if visible {
+                self.annotationPalette.isHidden = false
+                self.shapeStyleBar.isHidden = true; self.inkStyleBar.isHidden = true
+                self.paletteHeightConstraint?.constant = 34
+            } else {
+                self.annotationPalette.isHidden = self.activeMode == nil
+                self.paletteHeightConstraint?.constant = self.activeMode == nil ? 0 :
+                    (!self.shapeStyleBar.isHidden || !self.inkStyleBar.isHidden ? 84 : 34)
+            }
+            self.view.layoutSubtreeIfNeeded()
+        }
         shapeStyleBar.translatesAutoresizingMaskIntoConstraints = false; annotationPalette.addSubview(shapeStyleBar); shapeStyleBar.isHidden = true
         NSLayoutConstraint.activate([shapeStyleBar.centerXAnchor.constraint(equalTo: annotationPalette.centerXAnchor), shapeStyleBar.topAnchor.constraint(equalTo: annotationPalette.topAnchor, constant: 36), shapeStyleBar.heightAnchor.constraint(equalToConstant: 42)])
         shapeStyleBar.onToolChange = { [weak self] tool in self?.beginShapeTool(tool) }
@@ -415,6 +473,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
                 sourceProtection = SourceProtection.capture(url)
                 resetDocumentInteractionState()
                 refreshDocument()
+                if let notice = workspace.fontCompatibilityNotice { setInteractionStatus(notice) }
             }
             return opened
         } catch DocumentAdmissionError.unsupportedWidgets {
@@ -442,6 +501,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     @objc func saveDocument() { _ = saveDocumentInteractively() }
     @objc func saveAsDocument() { _ = saveDocumentInteractively(forceChooseDestination: true) }
     @discardableResult func saveDocumentInteractively(forceChooseDestination: Bool = false, chooseDestination: (() -> URL?)? = nil) -> Bool {
+        guard pdfView.finishInlineTextEditing() else { return false }
+        guard !isLocalToolRunning, view.window?.attachedSheet == nil else { return false }
         var destination = forceChooseDestination ? nil : workspace.sourceURL
         if destination == nil {
             if let chooseDestination { destination = chooseDestination() }
@@ -464,6 +525,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         catch { showError("保存失败：\(error.localizedDescription)"); return false }
     }
     private func saveCopyInteractively() -> Bool {
+        guard pdfView.finishInlineTextEditing() else { return false }
+        guard !isLocalToolRunning, view.window?.attachedSheet == nil else { return false }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.pdf]; panel.nameFieldStringValue = "文档副本.pdf"
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do { try workspace.saveCopy(to: url); refreshDocument(); return true }
@@ -473,7 +536,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         } catch let error as PDFWorkspaceError { showError(WorkbenchMessage.error(error)); return false }
         catch { showError("操作失败：\(error.localizedDescription)"); return false }
     }
-    func guardDirty() -> Bool { guard workspace.isDirty else { return true }; let alert = NSAlert(); alert.messageText = "保存文档更改？"; alert.informativeText = "关闭前保存更改，或放弃本次修改。"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "不保存"); alert.addButton(withTitle: "取消"); switch alert.runModal() { case .alertFirstButtonReturn: return saveDocumentInteractively(); case .alertSecondButtonReturn: return true; default: return false } }
+    func guardDirty() -> Bool { guard pdfView.finishInlineTextEditing(), !isLocalToolRunning, view.window?.attachedSheet == nil else { return false }; guard workspace.isDirty else { return true }; let alert = NSAlert(); alert.messageText = "保存文档更改？"; alert.informativeText = "关闭前保存更改，或放弃本次修改。"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "不保存"); alert.addButton(withTitle: "取消"); switch alert.runModal() { case .alertFirstButtonReturn: return saveDocumentInteractively(); case .alertSecondButtonReturn: return true; default: return false } }
 
     func refreshDocument(preservePage: Int? = nil, scale: CGFloat? = nil) {
         invalidateCopilotIfChanged()
@@ -600,16 +663,18 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc private func toggleSidebar() { _ = readerCommands.run(.toggleSidebar) }
     func toggleSidebarForTesting() { toggleSidebar() }
-    @objc private func cycleLayout() {
-        let menu = readerCommands.makeMenu(commands: [.singlePage, .twoPages, .cover], title: "页面布局")
-        let continuous = NSMenuItem(title: "连续滚动", action: #selector(toggleContinuous), keyEquivalent: "")
-        continuous.target = self; continuous.state = readerCommands.continuous ? .on : .off
-        menu.addItem(.separator()); menu.addItem(continuous)
-        menu.popUp(positioning: nil, at: NSPoint(x: 45, y: view.bounds.height - workbenchToolbarHeight), in: view)
+    @objc private func showLayoutOptions(_ sender: NSButton) {
+        if layoutPopover.isShown { layoutPopover.performClose(sender); return }
+        if isOverviewVisible { setOverviewVisible(false) }
+        layoutPopover.behavior = .transient
+        layoutPopover.contentViewController = ReaderLayoutOptionsController(commands: readerCommands)
+        layoutPopover.contentSize = NSSize(width: 280, height: 230)
+        layoutPopover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
     @objc private func toggleContinuous() { readerCommands.setContinuous(!readerCommands.continuous) }
     @objc private func selectMode(_ sender: ModeButton) { if let mode = sender.mode { enterMode(mode) } }
     func enterMode(_ mode: WorkbenchMode) {
+        guard pdfView.finishInlineTextEditing() else { return }
         pdfView.contentEditingEnabled = false; contentToolID = nil
         resetDocumentInteractionState(); eraserEnabled = false
         setOverviewVisible(mode == .pages)
@@ -838,6 +903,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     @objc func rotatePage() { mutate { try workspace.rotate(page: currentPageIndex, degrees: 90) } }
     @objc func rotatePageLeft() { mutate { try workspace.rotate(page: currentPageIndex, degrees: -90) } }
     @objc func selectEraser() {
+        guard pdfView.finishInlineTextEditing() else { return }
         cancelPendingPlacement(); pdfView.clearShapeSelection(); pdfView.annotationManipulationEnabled = false
         pdfView.inkEnabled = false; pdfView.placementEnabled = false; eraserEnabled = true
         setInteractionStatus("橡皮：点击删除整条手绘笔迹，可撤销；暂不支持局部擦除")
@@ -884,8 +950,11 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc func deleteCurrentPage() { guard let doc = workspace.document, let text = textPrompt("选择要删除的页面", placeholder: "例如 \(currentPageIndex + 1) 或 2-4") else { return }; let pages: IndexSet; do { pages = try PageRange.parse(text, count: doc.pageCount) } catch { showError(WorkbenchMessage.error(.invalidPageRange)); return }; let alert = NSAlert(); alert.messageText = "删除选中的 \(pages.count) 页？"; alert.informativeText = "此操作可通过“撤销”恢复。"; alert.addButton(withTitle: "删除"); alert.addButton(withTitle: "取消"); guard alert.runModal() == .alertFirstButtonReturn else { return }; mutate { try workspace.delete(pages: pages) } }
     @objc func addFreeText() {
-        guard let text = textPrompt("添加文字批注", placeholder: "批注内容"), !text.isEmpty else { return }
-        beginPlacement(.freeText(text), accessibilityName: "文字批注放置模式")
+        guard workspace.document != nil, workspace.allowsCommenting, pdfView.finishInlineTextEditing() else { return }
+        beginPlacement(.freeText(""), accessibilityName: "页面内文字输入模式")
+        pdfView.annotationManipulationEnabled = true
+        pdfView.freeTextInputEnabled = true
+        setInteractionStatus("空白处直接输入 · 已有文字单击选中拖动、双击修改 · Esc 退出")
     }
     @objc func highlight() { addMarkup(.highlight, color: NSColor.systemYellow.withAlphaComponent(0.45)) }; @objc func underline() { addMarkup(.underline, color: .systemIndigo) }; @objc func strikeout() { addMarkup(.strikeOut, color: .systemRed) }
     private func addMarkup(_ kind: PDFAnnotationSubtype, color: NSColor) {
@@ -1127,6 +1196,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
 
     func beginPlacement(_ placement: PendingPlacement, accessibilityName: String) {
         guard workspace.document != nil, workspace.allowsCommenting else { return }
+        guard pdfView.finishInlineTextEditing() else { return }
+        pdfView.freeTextInputEnabled = false
         clearMarkupTool()
         selectedInk = nil
         inkStyleBar.isHidden = true
@@ -1142,6 +1213,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
 
     private func cancelPendingPlacement() {
+        _ = pdfView.finishInlineTextEditing(commit: false)
+        pdfView.freeTextInputEnabled = false
         clearMarkupTool()
         inkStyleBar.widthSlider.cancelShapeTracking()
         selectedInk = nil
@@ -1156,6 +1229,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
 
     func resetDocumentInteractionState() {
+        guard pdfView.finishInlineTextEditing() else { return }
+        pdfView.freeTextInputEnabled = false
         clearMarkupTool()
         inkStyleBar.widthSlider.cancelShapeTracking()
         selectedInk = nil
@@ -1200,6 +1275,9 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private func applyPlacement(from start: CGPoint, to end: CGPoint, page pageIndex: Int) {
         guard let placement = pendingPlacement,
               let page = workspace.document?.page(at: pageIndex) else { return }
+        if pdfView.freeTextInputEnabled {
+            beginFreeTextInput(from: start, to: end, page: pageIndex); return
+        }
         let persistentTool = pdfView.shapeTool
         if persistentTool == nil { pendingPlacement = nil; pdfView.placementEnabled = false }
         pdfView.setAccessibilityLabel("PDF 文档视图")
@@ -1260,8 +1338,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             inkStyleBar.configure(tool:.line,style:AnnotationStyle(annotation:annotation),mode:.selection,enabled:workspace.allowsCommenting,selectionTitle:"所选笔迹")
             inkStyleBar.isHidden = false; shapeStyleBar.isHidden = true
             annotationPalette.isHidden = false; paletteHeightConstraint?.constant = 84
-        } else { selectedShape = nil; selectedInk = nil; pdfView.clearShapeSelection(); shapeStyleBar.isHidden = true; inkStyleBar.isHidden = true; if activeMode != nil { paletteHeightConstraint?.constant = 34 } }
-        status.stringValue = "已选中第 \(page + 1) 页的第 \(index + 1) 个批注（\(annotation.type ?? "Unknown")）"
+        } else { selectedShape = nil; selectedInk = nil; pdfView.clearShapeSelection(); shapeStyleBar.isHidden = true; inkStyleBar.isHidden = true; if activeMode != nil { paletteHeightConstraint?.constant = 34 }
+            if annotation.type == "FreeText", workspace.allowsCommenting { pdfView.selectShape(page: page, index: index) }
+        }
+        status.stringValue = annotation.type == "FreeText" ? "文字已选中 · 拖动移动 · 方向键微调 · 双击修改文字与顶栏样式" : "已选中第 \(page + 1) 页的第 \(index + 1) 个批注（\(annotation.type ?? "Unknown")）"
     }
 
     @objc func editSelectedAnnotation() {
@@ -1271,6 +1351,9 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
               annotation.type != "Widget", annotation.type != "Link" else {
             showError("请先点击选择可编辑批注；表单和链接不在此工具中编辑。")
             return
+        }
+        if annotation.type == "FreeText" {
+            editFreeTextInline(page: selection.page, annotationIndex: selection.index); return
         }
         if annotation.type == "Ink" {
             selectAnnotation(page:selection.page,index:selection.index)
@@ -1368,7 +1451,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             try self.synchronizeAnnotationPresentation(pages: pages)
         }
     }
-    private func synchronizeAnnotationPresentation(pages: IndexSet) throws {
+    func synchronizeAnnotationPresentation(pages: IndexSet) throws {
             invalidateCopilotIfChanged()
             guard !isOverviewVisible, !readerPresentationNeedsRefresh else {
                 self.refreshDocument(); return
