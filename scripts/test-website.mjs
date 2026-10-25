@@ -5,6 +5,17 @@ const root = new URL('../docs/', import.meta.url);
 test('download homepage exists', () => {
   assert.ok(existsSync(new URL('index.html', root)), 'missing download homepage');
 });
+test('homepage reuses campaign, poster, video and actual app icon', () => {
+  const html = readFileSync(new URL('index.html', root), 'utf8');
+  for (const phrase of ['自由创作，', '灵感无界。', '一个应用，三重自由', 'PDF 工具集', '无限画布', '无边记']) assert.ok(html.includes(phrase), phrase);
+  for (const file of ['pdfmaster-poster.png', 'pdfmaster-demo.mp4', 'pdfmaster-icon.png']) {
+    assert.ok(html.includes('media/' + file), file);
+    assert.ok(existsSync(new URL('media/' + file, root)), file);
+  }
+  assert.match(html, /<video\b[^>]*controls/);
+  assert.match(html, /<link rel="icon"[^>]*pdfmaster-icon.png/);
+  assert.ok(!/<video\b[^>]*autoplay/.test(html));
+});
 test('homepage pins the verified public installer and labels limitations', () => {
   if (!existsSync(new URL('index.html', root))) return assert.fail('missing download homepage');
   const html = readFileSync(new URL('index.html', root), 'utf8');
