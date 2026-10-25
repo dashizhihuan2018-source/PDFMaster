@@ -104,8 +104,10 @@ import PaperCore
         c.pdfView.mouseDragged(with: event(.leftMouseDragged, pagePoint: end, page: page, view: c.pdfView))
         let late = try XCTUnwrap(c.pdfView.renderShapeOverlay())
         XCTAssertNotEqual(early, late)
-        let artifact = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("docs/verification/ink-drag-in-progress.png")
+        let artifact = FileManager.default.temporaryDirectory.appendingPathComponent("pdfmaster-ink-drag-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: artifact) }
         try late.write(to: artifact)
+        XCTAssertEqual(try Data(contentsOf: artifact), late)
         XCTAssertEqual(c.workspace.revision, revision)
         XCTAssertEqual(c.workspace.document?.page(at: 0)?.annotations.count, 0)
         c.pdfView.mouseUp(with: event(.leftMouseUp, pagePoint: end, page: page, view: c.pdfView))

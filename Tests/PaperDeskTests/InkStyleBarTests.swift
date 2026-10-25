@@ -149,8 +149,11 @@ import PaperCore
         let previewPath = try XCTUnwrap(c.pdfView.inkPreviewPath)
         XCTAssertFalse(previewPath.isEmpty)
         XCTAssertTrue(c.pdfView.convert(previewPath.boundingBoxOfPath,from:page).intersects(c.pdfView.bounds))
-        let artifact = URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("docs/verification/ink-selected-width-preview.png")
-        try XCTUnwrap(c.pdfView.renderShapeOverlay()).write(to:artifact)
+        let artifact = FileManager.default.temporaryDirectory.appendingPathComponent("pdfmaster-ink-width-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: artifact) }
+        let rendered = try XCTUnwrap(c.pdfView.renderShapeOverlay())
+        try rendered.write(to:artifact)
+        XCTAssertEqual(try Data(contentsOf: artifact), rendered)
         XCTAssertNotEqual(before,try XCTUnwrap(c.pdfView.renderShapeOverlay()))
         let width = c.inkStyleBar.style.lineWidth
         XCTAssertEqual(c.workspace.revision,revision)

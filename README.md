@@ -6,6 +6,8 @@
 
 [官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19)
 
+2026-10-26 **源码修订 r1**：修复两项墨迹交互测试写截图时依赖私有工作目录的问题，改用独立临时文件并校验读回。产品程序、功能与安装包仍为已验证的 V0.1.19/build41，不为测试路径修复伪造新程序版本。[r1安装包与完整源码](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19-r1) · [根因及复现说明](docs/INK-TEST-R1.md)。
+
 PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF 工具集、无限画布、无边记** 三种工作方式，将文档、图片、便签与想法连接起来：从专注阅读，到自由批注，再到有序整理，让 PDF 成为思考的起点。
 
 [30 秒产品介绍](#30-秒了解-pdf-master) · [高清海报](#产品海报) · [编译与使用](#编译与打包)
