@@ -16,6 +16,14 @@ test('homepage reuses campaign, poster, video and actual app icon', () => {
   assert.match(html, /<link rel="icon"[^>]*pdfmaster-icon.png/);
   assert.ok(!/<video\b[^>]*autoplay/.test(html));
 });
+test('detailed feature discovery and locally hosted bold serif are shipped', () => {
+  const html = readFileSync(new URL('index.html', root), 'utf8');
+  assert.match(html, /class="feature-grid"/);
+  assert.ok((html.match(/class="feature-card/g) ?? []).length >= 8);
+  for (const file of ['features.html', 'guide.html', 'product.css', 'fonts/OFL.txt', 'fonts/SourceHanSerifCN-Bold.woff2']) assert.ok(existsSync(new URL(file, root)), file);
+  const css = readFileSync(new URL('product.css', root), 'utf8');
+  assert.match(css, /font-family:SourceHanSerifBold/); assert.match(css, /font-weight:700/);
+});
 test('homepage pins the verified public installer and labels limitations', () => {
   if (!existsSync(new URL('index.html', root))) return assert.fail('missing download homepage');
   const html = readFileSync(new URL('index.html', root), 'utf8');
@@ -38,4 +46,25 @@ test('homepage pins the verified public installer and labels limitations', () =>
   assert.match(html, /name="viewport"/);
   assert.match(readFileSync(new URL('site.css', root), 'utf8'), /prefers-reduced-motion/);
   assert.match(readFileSync(new URL('site.css', root), 'utf8'), /@media/);
+});
+
+test('all local page and resource links resolve, including cross-page anchors', () => {
+  const pages = ['index.html', 'features.html', 'guide.html'];
+  for (const page of pages) {
+    const html = readFileSync(new URL(page, root), 'utf8');
+    for (const match of html.matchAll(/(?:href|src)="([^"]+)"/g)) {
+      if (/^(?:https?:|mailto:|data:)/.test(match[1])) continue;
+      const link = new URL(match[1], new URL(page, root));
+      if (link.pathname.endsWith('/')) link.pathname += 'index.html';
+      assert.ok(existsSync(link), `${page}: ${match[1]}`);
+      if (link.hash) {
+        const target = readFileSync(link, 'utf8');
+        assert.ok(target.includes(`id="${decodeURIComponent(link.hash.slice(1))}"`), `${page}: missing anchor ${match[1]}`);
+      }
+    }
+    if (page !== 'index.html') {
+      assert.ok(html.includes('V0.1.19 / build41'));
+      assert.ok(html.includes('尚未发布') || html.includes('待发布预览'));
+    }
+  }
 });
