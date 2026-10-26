@@ -91,6 +91,15 @@ fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::
         .map_err(|error| error.to_string())
 }
 
+fn workspace_shapes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::ShapeList> {
+    workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .shapes(page)
+        .map_err(|error| error.to_string())
+}
+
 fn read_insertion_files(paths: &[std::path::PathBuf]) -> Reply<Vec<Vec<u8>>> {
     if paths.is_empty() || paths.len() > pdfmaster_core::MAX_INSERT_FILES {
         return Err("请选择 1–32 份 PDF；整批未修改当前文档。".into());
@@ -482,6 +491,80 @@ mod workspace_tests {
         assert!(view.warning.is_some());
         assert!(w.has_unsaved_work());
         assert!(workspace_notes(&w, 0).unwrap().notes.is_empty());
+    }
+
+    fn shape_workspace() -> (Workspace, tempfile::TempDir) {
+        let (mut w, directory) = note_workspace();
+        let edit = serde_json::from_value(serde_json::json!({"kind":"add_shape","page":0,"shape":"ellipse","bounds":{"x":10.,"y":10.,"width":60.,"height":50.},"stroke":{"r":0.,"g":0.,"b":0.},"fill":null,"line_width":2.})).unwrap();
+        apply_single_edit(&mut w, edit).unwrap();
+        w.session.as_mut().unwrap().mark_saved();
+        (w, directory)
+    }
+
+    #[test]
+    fn shape_delete_requires_snapshot_and_cannot_bypass_native_confirmation() {
+        let (mut w, _directory) = shape_workspace();
+        let expected = workspace_shapes(&w, 0).unwrap().shapes[0].clone();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        let selected = prepare_shape_delete(&w, 0, expected.clone()).unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+        assert!(apply_single_edit(&mut w, Edit::DeleteShape { page: 0, expected }).is_err());
+        let view = apply_confirmed_shape_delete(&mut w, &selected).unwrap();
+        assert!(view.info.dirty);
+        assert!(workspace_shapes(&w, 0).unwrap().shapes.is_empty());
+        assert_eq!(workspace_notes(&w, 0).unwrap().notes.len(), 1);
+        assert!(apply_confirmed_shape_delete(&mut w, &selected).is_err());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn shape_delete_rejects_reopened_changed_exporting_and_editing_documents() {
+        let (mut w, _directory) = shape_workspace();
+        let expected = workspace_shapes(&w, 0).unwrap().shapes[0].clone();
+        let selected = prepare_shape_delete(&w, 0, expected.clone()).unwrap();
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        assert!(prepare_shape_delete(&w, 0, expected.clone()).is_err());
+        assert!(apply_confirmed_shape_delete(&mut w, &selected).is_err());
+        w.cancel_note_editor(editor.id).unwrap();
+        let (export, _, _) = w.begin_export().unwrap();
+        assert!(prepare_shape_delete(&w, 0, expected.clone()).is_err());
+        assert!(apply_confirmed_shape_delete(&mut w, &selected).is_err());
+        w.release_export(export);
+        w.replace_document(
+            Session::open(&selected.snapshot).unwrap(),
+            "reopened.pdf".into(),
+        )
+        .unwrap();
+        assert!(apply_confirmed_shape_delete(&mut w, &selected).is_err());
+        let selected = prepare_shape_delete(&w, 0, expected).unwrap();
+        apply_single_edit(
+            &mut w,
+            Edit::Rotate {
+                page: 0,
+                degrees: 90,
+            },
+        )
+        .unwrap();
+        let changed = w.session.as_ref().unwrap().bytes().unwrap();
+        assert!(apply_confirmed_shape_delete(&mut w, &selected).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), changed);
+    }
+
+    #[test]
+    fn shape_delete_checkpoint_failure_keeps_committed_dirty_document() {
+        let (mut w, directory) = shape_workspace();
+        let expected = workspace_shapes(&w, 0).unwrap().shapes[0].clone();
+        let selected = prepare_shape_delete(&w, 0, expected).unwrap();
+        w.journal = Some(recovery::Journal::new(
+            directory.path().join("missing/draft.json"),
+        ));
+        let view = apply_confirmed_shape_delete(&mut w, &selected).unwrap();
+        assert!(view.warning.is_some());
+        assert!(w.has_unsaved_work());
+        assert!(workspace_shapes(&w, 0).unwrap().shapes.is_empty());
     }
 
     fn note_workspace() -> (Workspace, tempfile::TempDir) {
@@ -1398,8 +1481,11 @@ fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentVie
             | Edit::DeletePages { .. }
             | Edit::DeletePage { .. }
             | Edit::DeleteNote { .. }
+            | Edit::DeleteShape { .. }
     ) {
-        return Err("批量旋转、页面删除和便笺删除必须使用对应的原生确认入口。".into());
+        return Err(
+            "批量旋转、页面删除和便笺删除必须使用对应的原生确认入口。图形删除也须原生确认。".into(),
+        );
     }
     workspace
         .session
@@ -1430,6 +1516,94 @@ fn apply_confirmed_delete(
         return Err("确认期间文档已改变，请重新选择页面；文档未修改。".into());
     }
     apply_page_batch(workspace, range, PageBatchOperation::Delete, Some(count))
+}
+
+struct PreparedShapeDelete {
+    document_epoch: u64,
+    page: usize,
+    expected: pdfmaster_core::ShapeAnnotation,
+    snapshot: Vec<u8>,
+}
+
+fn prepare_shape_delete(
+    workspace: &Workspace,
+    page: usize,
+    expected: pdfmaster_core::ShapeAnnotation,
+) -> Reply<PreparedShapeDelete> {
+    workspace.ensure_editor_idle()?;
+    let snapshot = workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .bytes()
+        .map_err(|e| e.to_string())?;
+    let mut candidate = Session::open(&snapshot).map_err(|e| e.to_string())?;
+    candidate
+        .apply(Edit::DeleteShape {
+            page,
+            expected: expected.clone(),
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(PreparedShapeDelete {
+        document_epoch: workspace.document_epoch,
+        page,
+        expected,
+        snapshot,
+    })
+}
+
+fn apply_confirmed_shape_delete(
+    workspace: &mut Workspace,
+    selected: &PreparedShapeDelete,
+) -> Reply<DocumentView> {
+    workspace.ensure_editor_idle()?;
+    if workspace.document_epoch != selected.document_epoch {
+        return Err("确认期间已切换文档，请重新选择图形；文档未修改。".into());
+    }
+    let session = workspace.session.as_mut().ok_or("请先打开 PDF")?;
+    if session.bytes().map_err(|e| e.to_string())? != selected.snapshot {
+        return Err("确认期间文档已改变，请重新选择图形；文档未修改。".into());
+    }
+    session
+        .apply(Edit::DeleteShape {
+            page: selected.page,
+            expected: selected.expected.clone(),
+        })
+        .map_err(|e| e.to_string())?;
+    workspace.checkpoint()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn delete_shape_document(
+    app: tauri::AppHandle,
+    page: usize,
+    expected: pdfmaster_core::ShapeAnnotation,
+    state: State<'_, Store>,
+) -> Reply<Option<DocumentView>> {
+    let selected = {
+        let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+        prepare_shape_delete(&workspace, page, expected)?
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let dialog = app.dialog().message(format!("确认删除第 {} 页的选中图形批注？\n关联弹窗会一并移除。可通过撤销恢复；此操作不是安全擦除，保存仍需导出副本。", page + 1))
+        .title("删除图形批注")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("删除图形".into(), "取消".into()));
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let dialog = dialog.parent(
+        &app.get_webview_window("main")
+            .ok_or("确认窗口不存在；文档未修改。")?,
+    );
+    dialog.show(move |confirmed| {
+        let _ = sender.send(confirmed);
+    });
+    if !receiver
+        .await
+        .map_err(|_| "系统确认窗口不可用；文档未修改。")?
+    {
+        return Ok(None);
+    }
+    let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    apply_confirmed_shape_delete(&mut workspace, &selected).map(Some)
 }
 
 struct PreparedNoteDelete {
@@ -1598,6 +1772,12 @@ async fn render_page(page: usize, scale: f32, state: State<'_, Store>) -> Reply<
 async fn notes_document(page: usize, state: State<'_, Store>) -> Reply<pdfmaster_core::NoteList> {
     let workspace = state.lock().map_err(|_| "文档状态不可用")?;
     workspace_notes(&workspace, page)
+}
+
+#[tauri::command]
+async fn shapes_document(page: usize, state: State<'_, Store>) -> Reply<pdfmaster_core::ShapeList> {
+    let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    workspace_shapes(&workspace, page)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1928,7 +2108,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,shapes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

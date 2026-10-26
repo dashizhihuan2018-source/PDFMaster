@@ -211,8 +211,26 @@ fn annots_without_note(
             "annotation contents changed since it was read",
         ));
     }
+    annots_without_annotation(document, pages, page, annotation_index)
+}
+
+/// Ownership audit shared by Text and shape lifecycle. Removing membership
+/// remains copy-on-write; this never deletes shared indirect objects.
+pub(crate) fn annots_without_annotation(
+    document: &Document,
+    pages: &[PageInfo],
+    page: usize,
+    annotation_index: usize,
+) -> Result<Vec<Object>> {
+    validate_page_index(page, pages.len())?;
+    let page_id = page_object_ids(document)?[page];
     let annots = validated_annots_for_add(document, page_id, &pages[page])?;
-    let (target, target_id) = resolve_with_id(document, &annots[annotation_index])?;
+    let target = annots
+        .get(annotation_index)
+        .ok_or(PdfMasterError::InvalidOperation(
+            "annotation index is unavailable",
+        ))?;
+    let (target, target_id) = resolve_with_id(document, target)?;
     let target = target
         .as_dict()
         .map_err(|_| PdfMasterError::Malformed("annotation must be a dictionary".into()))?;
@@ -308,6 +326,7 @@ fn annots_without_note(
     };
     let mut remove = HashSet::from([annotation_index]);
     let mut owned_popups = popup_id.into_iter().collect::<HashSet<_>>();
+    let mut direct_popups = 0usize;
     for (index, value) in annots.iter().enumerate() {
         if index == annotation_index {
             continue;
@@ -348,6 +367,13 @@ fn annots_without_note(
                 remove.insert(index);
                 if let Some(id) = id {
                     owned_popups.insert(id);
+                } else {
+                    direct_popups += 1;
+                }
+                if owned_popups.len() + direct_popups > 1 {
+                    return Err(PdfMasterError::Malformed(
+                        "conflicting popup ownership".into(),
+                    ));
                 }
             }
         }
@@ -455,7 +481,7 @@ fn enumerate_notes(document: &Document, page_id: ObjectId, page: &PageInfo) -> R
     Ok(result)
 }
 
-fn parse_rect(
+pub(crate) fn parse_rect(
     document: &Document,
     annotation: &lopdf::Dictionary,
     page: &PageInfo,
@@ -496,7 +522,10 @@ fn parse_rect(
     })
 }
 
-fn parse_color(document: &Document, annotation: &lopdf::Dictionary) -> Result<Option<Color>> {
+pub(crate) fn parse_color(
+    document: &Document,
+    annotation: &lopdf::Dictionary,
+) -> Result<Option<Color>> {
     let Ok(color) = annotation.get(b"C") else {
         return Ok(None);
     };
@@ -562,11 +591,11 @@ fn decode_contents(document: &Document, object: &Object) -> Result<String> {
     })
 }
 
-fn resolve<'a>(document: &'a Document, object: &'a Object) -> Result<&'a Object> {
+pub(crate) fn resolve<'a>(document: &'a Document, object: &'a Object) -> Result<&'a Object> {
     resolve_with_id(document, object).map(|(value, _)| value)
 }
 
-fn resolve_with_id<'a>(
+pub(crate) fn resolve_with_id<'a>(
     document: &'a Document,
     object: &'a Object,
 ) -> Result<(&'a Object, Option<ObjectId>)> {

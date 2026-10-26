@@ -61,6 +61,19 @@ pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit
             &expected_contents,
             &contents,
         ),
+        Edit::UpdateShape {
+            page,
+            expected,
+            bounds,
+            stroke,
+            fill,
+            line_width,
+        } => crate::shapes::update_shape(
+            document, pages, page, &expected, bounds, stroke, fill, line_width,
+        ),
+        Edit::DeleteShape { page, expected } => {
+            crate::shapes::delete_shape(document, pages, page, &expected)
+        }
         Edit::DeleteNote {
             page,
             annotation_index,

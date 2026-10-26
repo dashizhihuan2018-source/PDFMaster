@@ -76,6 +76,50 @@ pub fn shape_edit(
     )
 }
 
+pub fn shape_color_hex(color: &serde_json::Value) -> Option<String> {
+    let channel = |key| {
+        color[key]
+            .as_f64()
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            .map(|v| (v * 255.).round() as u8)
+    };
+    Some(format!(
+        "#{:02X}{:02X}{:02X}",
+        channel("r")?,
+        channel("g")?,
+        channel("b")?
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_shape_edit(
+    page: usize,
+    width: f32,
+    height: f32,
+    expected: &serde_json::Value,
+    bounds: &str,
+    stroke: &str,
+    fill: &str,
+    line: &str,
+) -> Result<serde_json::Value, String> {
+    let shape = expected["shape"].as_str().ok_or("选中图形类型无效。")?;
+    let mut edit = shape_edit(page, width, height, shape, bounds, stroke, fill, line)?;
+    // The hex form is a display/editor convenience, not permission to round
+    // imported RGB floats when the user has not changed a color field.
+    if shape_color_hex(&expected["stroke"]).is_some_and(|c| c.eq_ignore_ascii_case(stroke.trim())) {
+        edit["stroke"] = expected["stroke"].clone();
+    }
+    if shape_color_hex(&expected["fill"]).is_some_and(|c| c.eq_ignore_ascii_case(fill.trim())) {
+        edit["fill"] = expected["fill"].clone();
+    }
+    edit["kind"] = serde_json::json!("update_shape");
+    edit["expected"] = expected.clone();
+    edit.as_object_mut()
+        .expect("shape edit object")
+        .remove("shape");
+    Ok(edit)
+}
+
 /// A page move has a destination only for an existing adjacent page. Return
 /// its new index as well so selection follows the moved page, not its neighbor.
 pub fn page_move_edit(
@@ -327,6 +371,41 @@ pub fn raster_plan(width: f32, height: f32, rotation: i32, zoom: f32, density: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shape_update_preserves_unmodified_imported_colors_and_snapshot() {
+        let expected = serde_json::json!({"annotation_index":4,"shape":"ellipse","bounds":{"x":10.,"y":20.,"width":100.,"height":60.},"stroke":{"r":0.1,"g":0.4,"b":0.8},"fill":null,"line_width":2.});
+        let edit =
+            super::update_shape_edit(0, 200., 120., &expected, "20,30,110,70", "#1A66CC", "", "4")
+                .unwrap();
+        assert_eq!(edit["kind"], "update_shape");
+        assert_eq!(edit["expected"], expected);
+        assert_eq!(edit["stroke"], expected["stroke"]);
+        assert_eq!(edit["fill"], serde_json::Value::Null);
+        assert!(edit.get("shape").is_none());
+        assert_eq!(edit["bounds"]["width"], 110.);
+        assert!(
+            super::update_shape_edit(0, 200., 120., &expected, "20,30,110,70", "#1A66CC", "", "0")
+                .is_err()
+        );
+        let mut bad = expected.clone();
+        bad["shape"] = serde_json::json!("line");
+        assert!(
+            super::update_shape_edit(0, 200., 120., &bad, "20,30,110,70", "#1A66CC", "", "4")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn shape_lifecycle_workspace_wires_list_update_and_native_delete_and_clears_selection() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains("\"shapes_document\""));
+        assert!(source.contains("\"delete_shape_document\""));
+        assert!(source.contains("update_shape_edit("));
+        assert!(source.contains("self.selected_shape.set(None)"));
+        assert!(source.contains("当前页图形批注"));
+        assert!(source.contains("应用图形修改"));
+    }
+
     #[test]
     fn shape_request_uses_source_geometry_and_full_rgb_style() {
         let edit = super::shape_edit(
@@ -759,6 +838,27 @@ mod tests {
         assert!(css.contains(".statusbar{flex-wrap:wrap"));
         assert!(css.contains(".statusbar [role=status]{flex:1 0 100%"));
         assert!(css.contains(".statusbar>.flex{display:none}"));
+    }
+    #[test]
+    fn mobile_tools_use_a_single_vertical_flow_without_clipped_groups() {
+        // Source contract only. Real WebKit scrolling and hit targets need simulator QA.
+        let css = include_str!("../styles.css");
+        let mobile = css
+            .split("/* Mobile tools: one vertical scroll region. */")
+            .nth(1)
+            .expect("mobile tools must not remain a clipped horizontal strip");
+        assert!(mobile.contains(".workspace .inspector{display:block;"));
+        assert!(
+            mobile.contains("max-height:36dvh;min-height:0;overflow-x:hidden;overflow-y:auto;")
+        );
+        assert!(mobile.contains(".workspace .tool-group{min-width:0;"));
+        assert!(mobile.contains(".workspace .inspector h2,.workspace .tool-group h3,.workspace .tool-group .muted{display:block;"));
+        assert!(mobile.contains(".workspace .note-list{max-height:none;overflow:visible}"));
+        assert!(
+            mobile.contains(
+                ".workspace .tool-group button{white-space:normal;overflow-wrap:anywhere}"
+            )
+        );
     }
     #[test]
     fn mobile_editable_fields_do_not_trigger_small_font_focus_zoom() {

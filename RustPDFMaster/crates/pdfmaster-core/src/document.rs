@@ -133,6 +133,18 @@ pub enum Edit {
         fill: Option<Color>,
         line_width: f32,
     },
+    UpdateShape {
+        page: usize,
+        expected: crate::shapes::ShapeAnnotation,
+        bounds: Rect,
+        stroke: Color,
+        fill: Option<Color>,
+        line_width: f32,
+    },
+    DeleteShape {
+        page: usize,
+        expected: crate::shapes::ShapeAnnotation,
+    },
     UpdateNote {
         page: usize,
         annotation_index: usize,

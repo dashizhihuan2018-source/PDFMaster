@@ -4,8 +4,8 @@ use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::{
     RasterPlan, adjacent_page, command_status_message, fit_width_zoom, note_edit, page_batch_args,
     page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
-    search_conditions_message, search_response_is_current, search_status_message, shape_edit,
-    step_zoom, update_note_edit, visible_status,
+    search_conditions_message, search_response_is_current, search_status_message, shape_color_hex,
+    shape_edit, step_zoom, update_note_edit, update_shape_edit, visible_status,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -53,6 +53,12 @@ struct TextNote {
 #[derive(Clone, Debug, Deserialize)]
 struct NoteList {
     notes: Vec<TextNote>,
+    unsupported_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ShapeList {
+    shapes: Vec<Value>,
     unsupported_count: usize,
 }
 
@@ -116,6 +122,8 @@ struct Model {
     shape_stroke: RwSignal<String>,
     shape_fill: RwSignal<String>,
     shape_line: RwSignal<String>,
+    shapes: RwSignal<Option<Result<ShapeList, String>>>,
+    selected_shape: RwSignal<Option<Value>>,
 }
 
 impl Model {
@@ -179,6 +187,7 @@ impl Model {
                             | "new_document"
                             | "edit_document"
                             | "delete_note_document"
+                            | "delete_shape_document"
                             | "insert_pdf_document"
                             | "insert_pdfs_document"
                             | "undo_document"
@@ -216,6 +225,8 @@ impl Model {
     }
     async fn render(self) {
         self.notes.set(None);
+        self.shapes.set(None);
+        self.selected_shape.set(None);
         if !self.loaded() {
             return;
         }
@@ -231,6 +242,13 @@ impl Model {
             }
         }
         self.refresh_notes().await;
+        self.shapes.set(Some(
+            bridge::call::<ShapeList>(
+                "shapes_document",
+                &json!({"page":self.page.get_untracked()}),
+            )
+            .await,
+        ));
     }
     async fn refresh_notes(self) {
         self.notes.set(Some(
@@ -426,6 +444,61 @@ impl Model {
             .unwrap_or((595., 842.));
         self.edit(json!({"kind":"add_text","page":self.page.get_untracked(),"bounds":{"x":36.,"y":height*0.5,"width":(width-72.).max(20.),"height":60.},"text":text,"font_size":18.,"color":{"r":0.1,"g":0.1,"b":0.1}}));
     }
+    fn select_shape(self, shape: Value) {
+        if self.blocked() {
+            return;
+        }
+        let b = &shape["bounds"];
+        self.shape_bounds.set(format!(
+            "{},{},{},{}",
+            b["x"], b["y"], b["width"], b["height"]
+        ));
+        self.shape_stroke
+            .set(shape_color_hex(&shape["stroke"]).unwrap_or_default());
+        self.shape_fill
+            .set(shape_color_hex(&shape["fill"]).unwrap_or_default());
+        self.shape_line.set(shape["line_width"].to_string());
+        self.selected_shape.set(Some(shape));
+        self.message
+            .set("已选择图形；参数未应用前不会保存。应用后仍需导出 PDF。".into());
+    }
+    fn update_shape(self) {
+        if self.blocked() {
+            return;
+        }
+        let Some(expected) = self.selected_shape.get_untracked() else {
+            return;
+        };
+        let page = self.page.get_untracked();
+        let edit = self.document.with_untracked(|d| {
+            d.as_ref().and_then(|d| d.info.pages.get(page)).map(|p| {
+                update_shape_edit(
+                    page,
+                    p.width,
+                    p.height,
+                    &expected,
+                    &self.shape_bounds.get_untracked(),
+                    &self.shape_stroke.get_untracked(),
+                    &self.shape_fill.get_untracked(),
+                    &self.shape_line.get_untracked(),
+                )
+            })
+        });
+        match edit {
+            Some(Ok(edit)) => self.edit(edit),
+            Some(Err(e)) => self.message.set(e),
+            None => self.message.set("请先打开 PDF。".into()),
+        }
+    }
+    fn delete_shape(self, expected: Value) {
+        if self.blocked() {
+            return;
+        }
+        self.command(
+            "delete_shape_document",
+            json!({"page":self.page.get_untracked(),"expected":expected}),
+        );
+    }
     fn add_shape(self, shape: &'static str) {
         if self.blocked() {
             return;
@@ -601,6 +674,8 @@ pub fn Workspace() -> impl IntoView {
         shape_stroke: RwSignal::new("#4F46E5".into()),
         shape_fill: RwSignal::new(String::new()),
         shape_line: RwSignal::new("2".into()),
+        shapes: RwSignal::new(None),
+        selected_shape: RwSignal::new(None),
     };
     m.command("document_info", json!({}));
     view! {
@@ -705,13 +780,27 @@ pub fn Workspace() -> impl IntoView {
                     <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。仅支持受限 Text 便笺；标签、回复线程及歧义弹窗关系暂不编辑或删除。关系检查最多 16384 条。定位和弹窗显示仍在迁移；修改和删除均不是安全擦除。"</p>
                 </div>
                 <div class="tool-group shape-panel"><h3>"图形批注"</h3>
+                    <div class="note-list" aria-label="当前页图形批注">{move||match m.shapes.get() {
+                        None=>view!{<p class="note-meta">"打开 PDF 后显示当前页受支持样式的图形。"</p>}.into_any(),
+                        Some(Err(e))=>view!{<p class="note-error">{format!("无法读取图形：{e}")}</p>}.into_any(),
+                        Some(Ok(list))=>view!{
+                            <p class="note-meta">{format!("当前页 {} 个受支持样式的图形；{} 条其他或暂不支持样式的批注未列入。标签、回复和弹窗关系仍需操作时检查。",list.shapes.len(),list.unsupported_count)}</p>
+                            {list.shapes.into_iter().map(|shape|{let selected=shape.clone();view!{
+                                <article class="note-item"><strong>{format!("{} · 批注 {}",if shape["shape"]=="ellipse"{"椭圆"}else{"矩形"},shape["annotation_index"].as_u64().unwrap_or(0)+1)}</strong>
+                                <button disabled=move||m.blocked() on:click=move|_|m.select_shape(selected.clone())>"选择图形参数"</button>
+                                <button class="danger" disabled=move||m.blocked() on:click=move|_|m.delete_shape(shape.clone())>"删除图形…"</button></article>
+                            }}).collect_view()}
+                        }.into_any(),
+                    }}</div>
                     <label class="shape-label">"范围 x,y,宽,高 (pt)"<input aria-label="图形范围 x,y,宽,高" disabled=move||m.blocked() prop:value=move||m.shape_bounds.get() on:input=move|e|m.shape_bounds.set(event_target_value(&e))/></label>
                     <label class="shape-label">"描边 #RRGGBB"<input aria-label="图形描边颜色" disabled=move||m.blocked() prop:value=move||m.shape_stroke.get() on:input=move|e|m.shape_stroke.set(event_target_value(&e))/></label>
                     <label class="shape-label">"填充（留空透明）"<input aria-label="图形填充颜色" disabled=move||m.blocked() prop:value=move||m.shape_fill.get() on:input=move|e|m.shape_fill.set(event_target_value(&e))/></label>
                     <label class="shape-label">"线宽 (pt)"<input aria-label="图形线宽" inputmode="decimal" disabled=move||m.blocked() prop:value=move||m.shape_line.get() on:input=move|e|m.shape_line.set(event_target_value(&e))/></label>
                     <button disabled=move||m.blocked() on:click=move|_|m.add_shape("rectangle")>"添加矩形批注"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.add_shape("ellipse")>"添加椭圆批注"</button>
-                    <p class="shape-label">"原始页面坐标，左下角为原点；旋转页也使用未旋转坐标。保存为独立 PDF 批注，可撤销；拖拽、选中修改和线条／手绘仍在迁移。"</p>
+                    <button disabled=move||m.blocked()||m.selected_shape.get().is_none() on:click=move|_|m.update_shape()>"应用图形修改"</button>
+                    <button disabled=move||m.blocked()||m.selected_shape.get().is_none() on:click=move|_|m.selected_shape.set(None)>"取消图形选择"</button>
+                    <p class="shape-label">"原始页面坐标，左下角为原点；旋转页也使用未旋转坐标。参数未应用前不保存，切页或重新渲染后需重新选择。独立批注可撤销；修改和删除不是安全擦除。标签、回复、特殊样式暂不修改；拖拽和线条／手绘仍在迁移。"</p>
                 </div>
                 <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
             </aside>
