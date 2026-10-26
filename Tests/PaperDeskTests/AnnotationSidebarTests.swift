@@ -5,6 +5,43 @@ import XCTest
 
 @MainActor
 final class AnnotationSidebarTests: XCTestCase {
+    func testAnnotationRowsAreCompactAndRenderRecordedTimeAtNarrowWidths() throws {
+        let (sidebar, document) = try fixture()
+        let shape = annotation(.square)
+        shape.modificationDate = Date(timeIntervalSince1970: 1_798_410_000)
+        document.page(at: 0)?.addAnnotation(shape)
+        let note = annotation(.text, contents: String(repeating: "Long comment ", count: 30))
+        note.modificationDate = nil
+        document.page(at: 1)?.addAnnotation(note)
+        sidebar.show(.annotations)
+        for width: CGFloat in [176, 240, 300] {
+            sidebar.view.frame = CGRect(x: 0, y: 0, width: width, height: 700)
+            sidebar.view.layoutSubtreeIfNeeded()
+            sidebar.table.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(sidebar.table.rect(ofRow: 0).height, 44)
+            XCTAssertLessThanOrEqual(sidebar.table.rect(ofRow: 1).height, 60)
+            for row in 0..<2 {
+                let cell = try XCTUnwrap(sidebar.table.view(atColumn: 0, row: row, makeIfNecessary: true))
+                cell.layoutSubtreeIfNeeded()
+                let labels = cell.subviews.compactMap { $0 as? NSTextField }
+                let timestamp = try XCTUnwrap(labels.first { $0.identifier?.rawValue == "annotation-time" })
+                if row == 0 {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "zh_CN")
+                    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+                    XCTAssertEqual(timestamp.stringValue, formatter.string(from: try XCTUnwrap(shape.modificationDate)))
+                } else { XCTAssertEqual(timestamp.stringValue, "时间未记录") }
+                XCTAssertGreaterThan(timestamp.frame.height, 9)
+                XCTAssertGreaterThanOrEqual(timestamp.frame.minX, 0)
+                XCTAssertLessThanOrEqual(timestamp.frame.maxX, cell.bounds.width + 0.5)
+                XCTAssertLessThanOrEqual(timestamp.frame.maxY, cell.bounds.height + 0.5)
+            }
+        }
+        XCTAssertNil(note.modificationDate, "Viewing old annotations must not invent a date")
+        sidebar.show(.search)
+        XCTAssertEqual(sidebar.table.rowHeight, 54, "Other sidebar modes retain their layout")
+    }
+
     func testAnnotationModeAppendsWithoutChangingExistingRawValues() {
         XCTAssertEqual(ReaderSidebarMode.thumbnails.rawValue, 0)
         XCTAssertEqual(ReaderSidebarMode.outline.rawValue, 1)

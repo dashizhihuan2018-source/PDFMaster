@@ -15,13 +15,30 @@ spec.loader.exec_module(audit)
 PUBLIC_ROOT = audit.ROOT
 UI_PATH = "CanvasWeb/src/components/agent/agent-chat-inline-tokens.ts"
 UI_LINE = (PUBLIC_ROOT / UI_PATH).read_text().splitlines()[2]
+RUST_PATH = "RustPDFMaster/crates/pdfmaster-core/tests/document_contract.rs"
+RUST_LINE = next(line for line in (PUBLIC_ROOT / RUST_PATH).read_text().splitlines() if "owner_password:" in line)
 
 
 class PublicationAuditTests(unittest.TestCase):
-    def scan(self, line):
+    def test_nested_product_tools_are_scanned_but_root_build_tools_are_excluded(self):
+        with tempfile.TemporaryDirectory(prefix="pdfmaster-manifest-") as directory:
+            root = pathlib.Path(directory)
+            for relative in ("tools/local-build/cache.txt", "RustPDFMaster/tools/baseline.rs"):
+                path = root / relative
+                path.parent.mkdir(parents=True)
+                path.write_text("synthetic fixture\n")
+            previous = audit.ROOT
+            audit.ROOT = root
+            try:
+                self.assertEqual([p.relative_to(root).as_posix() for p in audit.files()],
+                                 ["RustPDFMaster/tools/baseline.rs"])
+            finally:
+                audit.ROOT = previous
+
+    def scan(self, line, path=UI_PATH):
         with tempfile.TemporaryDirectory(prefix="pdfmaster-audit-") as directory:
             root = pathlib.Path(directory)
-            target = root / UI_PATH
+            target = root / path
             target.parent.mkdir(parents=True)
             target.write_text(line + "\n")
             previous = audit.ROOT
@@ -41,6 +58,13 @@ class PublicationAuditTests(unittest.TestCase):
 
     def test_changed_reviewed_line_requires_review_again(self):
         failed, result = self.scan(UI_LINE + " // changed")
+        self.assertTrue(failed)
+        self.assertIn("credential_literal_review", {item["kind"] for item in result["unexpected_matches"]})
+
+    def test_exact_synthetic_rust_fixture_is_reviewed_without_exempting_rust_tests(self):
+        failed, _ = self.scan(RUST_LINE, RUST_PATH)
+        self.assertFalse(failed)
+        failed, result = self.scan(RUST_LINE + " // changed", RUST_PATH)
         self.assertTrue(failed)
         self.assertIn("credential_literal_review", {item["kind"] for item in result["unexpected_matches"]})
 

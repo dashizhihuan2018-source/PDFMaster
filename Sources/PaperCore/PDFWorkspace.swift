@@ -802,7 +802,10 @@ public final class PDFWorkspace: ObservableObject {
                   target.bounds(for: .cropBox).contains(bounds) else { throw PDFWorkspaceError.invalidSelection }
             let annotation = target.annotations[index]
             if text.isEmpty { target.removeAnnotation(annotation) }
-            else { applyFreeText(text, bounds: bounds, font: font, color: color, rotation: rotation, to: annotation) }
+            else {
+                applyFreeText(text, bounds: bounds, font: font, color: color, rotation: rotation, to: annotation)
+                annotation.modificationDate = Date()
+            }
             forceFreeTextAppearanceWrite(candidate)
         }
     }
@@ -1015,6 +1018,7 @@ public final class PDFWorkspace: ObservableObject {
                 annotation.bounds = bounds
             }
             apply(style, to: annotation)
+            annotation.modificationDate = Date()
         }
     }
 
@@ -1046,6 +1050,7 @@ public final class PDFWorkspace: ObservableObject {
                 annotation.add(path)
             }
             apply(style,to:annotation)
+            annotation.modificationDate = Date()
         }
     }
 
@@ -1063,6 +1068,7 @@ public final class PDFWorkspace: ObservableObject {
             if let contents { annotation.contents = contents }
             if let bounds { annotation.bounds = bounds }
             if let color { annotation.color = color }
+            annotation.modificationDate = Date()
         }
     }
 

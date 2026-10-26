@@ -315,7 +315,8 @@ public struct ReaderAnnotationItem {
         annotationHeader.isHidden = mode != .annotations
         annotationEmptyView.isHidden = !isAnnotationEmptyStateVisible
         status.isHidden = mode == .annotations
-        table.rowHeight = mode == .annotations ? 78 : 54
+        table.rowHeight = mode == .annotations ? 44 : 54
+        table.intercellSpacing = .zero
         table.setAccessibilityLabel(mode == .annotations ? "批注列表" : "大纲或搜索结果列表")
         updateAnnotationTools()
         searchField.isHidden = mode != .search; searchNavigation.isHidden = mode != .search
@@ -362,6 +363,11 @@ public struct ReaderAnnotationItem {
         }
         return label
     }
+    public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard mode == .annotations, annotationRows.indices.contains(row) else { return 54 }
+        let item = annotationRows[row]
+        return item.contents.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.excerpt.isEmpty ? 44 : 60
+    }
     public func tableViewSelectionDidChange(_ notification: Notification) {
         guard !syncSelection else { return }
         if mode == .outline { navigateToOutlineRow(table.selectedRow) }
@@ -386,20 +392,44 @@ public struct ReaderAnnotationItem {
         let heading = NSTextField(labelWithString: "第 \(item.pageIndex + 1) 页 · \(item.typeTitle)")
         heading.font = .systemFont(ofSize: 11, weight: .medium)
         heading.lineBreakMode = .byTruncatingTail
-        let detail = NSTextField(wrappingLabelWithString: [item.contents, item.excerpt].filter { !$0.isEmpty }.joined(separator: "\n"))
-        detail.font = .systemFont(ofSize: 11); detail.maximumNumberOfLines = 3
+        let detailText = [item.contents, item.excerpt].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: " · ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let detail = NSTextField(labelWithString: detailText)
+        detail.font = .systemFont(ofSize: 11); detail.maximumNumberOfLines = 1
         detail.textColor = .secondaryLabelColor; detail.lineBreakMode = .byTruncatingTail
-        for child in [dot, heading, detail] { child.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(child) }
+        let time = NSTextField(labelWithString: item.modificationDate.map(Self.annotationDateFormatter.string(from:)) ?? "时间未记录")
+        time.identifier = NSUserInterfaceItemIdentifier("annotation-time")
+        time.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+        time.textColor = .secondaryLabelColor; time.lineBreakMode = .byTruncatingTail
+        time.toolTip = item.modificationDate == nil ? "此批注未保存修改时间" : "修改时间（本地时区）：\(time.stringValue)"
+        var children: [NSView] = [dot, heading, time]
+        if !detailText.isEmpty { children.append(detail) }
+        for child in children { child.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(child) }
         NSLayoutConstraint.activate([
             dot.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), dot.topAnchor.constraint(equalTo: cell.topAnchor, constant: 10),
             dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8),
             heading.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 6), heading.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
             heading.topAnchor.constraint(equalTo: cell.topAnchor, constant: 6),
-            detail.leadingAnchor.constraint(equalTo: heading.leadingAnchor), detail.trailingAnchor.constraint(equalTo: heading.trailingAnchor),
-            detail.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 4), detail.bottomAnchor.constraint(lessThanOrEqualTo: cell.bottomAnchor, constant: -4)
+            time.leadingAnchor.constraint(equalTo: heading.leadingAnchor), time.trailingAnchor.constraint(equalTo: heading.trailingAnchor),
+            time.topAnchor.constraint(equalTo: detailText.isEmpty ? heading.bottomAnchor : detail.bottomAnchor, constant: 3),
+            time.bottomAnchor.constraint(lessThanOrEqualTo: cell.bottomAnchor, constant: -4)
         ])
-        cell.setAccessibilityLabel(heading.stringValue + " " + detail.stringValue)
+        if !detailText.isEmpty {
+            NSLayoutConstraint.activate([
+                detail.leadingAnchor.constraint(equalTo: heading.leadingAnchor), detail.trailingAnchor.constraint(equalTo: heading.trailingAnchor),
+                detail.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 2)
+            ])
+        }
+        cell.toolTip = [heading.stringValue, detailText, time.toolTip ?? time.stringValue].filter { !$0.isEmpty }.joined(separator: "\n")
+        cell.setAccessibilityLabel(heading.stringValue + " " + detailText + " " + time.stringValue)
         return cell
+    }
+    private static var annotationDateFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
     }
     @objc private func activateAnnotationTool(_ sender: ToolStripButton) { onAnnotationTool?(sender.toolID) }
     @objc private func showAnnotationOptions(_ sender: NSButton) {

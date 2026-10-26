@@ -9,12 +9,13 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REVIEWED_UI = json.loads((ROOT / "scripts" / "reviewed-ui-literals.json").read_text())
-EXCLUDED = {"dist", "output", "work", "tools", ".git", ".swiftpm", "__pycache__", "node_modules"}
+EXCLUDED = {"dist", "output", "work", ".git", ".swiftpm", "__pycache__", "node_modules"}
 
 
 def files():
     return sorted(p for p in ROOT.rglob("*") if p.is_file()
                   and not any(part in EXCLUDED or part.startswith(".build") for part in p.relative_to(ROOT).parts)
+                  and p.relative_to(ROOT).parts[0] != "tools"
                   and p.relative_to(ROOT).parts[:2] != ("Resources", "CanvasWeb")
                   and not p.name.endswith(".tsbuildinfo")
                   and p.name != "SOURCE-MANIFEST.sha256")

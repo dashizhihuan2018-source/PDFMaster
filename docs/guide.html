@@ -17,16 +17,16 @@
   <a class="skip" href="#main">跳到正文</a>
   <header class="nav wrap"><a class="brand" href="./"><img class="app-icon" src="media/pdfmaster-icon.png" width="40" height="40" alt="PDF Master 软件图标"><span>PDF Master</span></a><nav aria-label="主导航"><a href="./">首页</a><a href="features.html">功能详解</a><a href="./#download">下载与说明</a><a href="https://github.com/dashizhihuan2018-source/PDFMaster">GitHub ↗</a></nav></header>
   <main class="wrap" id="main">
-    <div class="doc-intro"><p class="eyebrow">使用教程 / 从第一份文档开始</p><h1>把 PDF 用起来，<br>一步一步来。</h1><p>先用一份不含隐私的副本练习，再处理正式文件。下文使用应用实际菜单名称，并写明每一步会得到什么；完整兼容范围见<a href="features.html">功能详解</a>。</p><div class="doc-notice">版本提醒：当前公开下载为 V0.1.20 / build42，本教程对应独立原生内容引擎；本地组件随包提供，无需另装 Python。复杂结构仍可能拒绝处理，建议先用副本练习。请先核对<a href="./#download">下载页</a>的版本、系统要求与限制。不要为了打开应用关闭 macOS 安全设置。</div></div>
+    <div class="doc-intro"><p class="eyebrow">使用教程 / 从第一份文档开始</p><h1>把 PDF 用起来，<br>一步一步来。</h1><p>先用一份不含隐私的副本练习，再处理正式文件。下文使用应用实际菜单名称，并写明每一步会得到什么；完整兼容范围见<a href="features.html">功能详解</a>。</p><div class="doc-notice">版本提醒：当前公开下载为 V0.1.21 / build43，本教程对应独立原生内容引擎；本地组件随包提供，无需另装 Python。复杂结构仍可能拒绝处理，建议先用副本练习。请先核对<a href="./#download">下载页</a>的版本、系统要求与限制。不要为了打开应用关闭 macOS 安全设置。</div></div>
     <div class="doc-grid">
       <nav class="doc-toc" aria-label="教程目录"><strong>按任务查找</strong><a href="#start">开始与界面</a><a href="#reading">阅读 / 搜索 / 书签</a><a href="#annotations">批注与绘图</a><a href="#signature">签名与图章说明</a><a href="#editing">文本 / 图像 / 链接</a><a href="#redaction">移除敏感区域</a><a href="#pages">管理与提取页面</a><a href="#import">导入文件</a><a href="#export">导出图片与文字</a><a href="#compression">压缩 PDF</a><a href="#ocr">识别扫描文字</a><a href="#numbers">添加页码</a><a href="#save">保存与撤销</a><a href="#local-board">无边记</a><a href="#infinite-canvas">无限画布</a><a href="#ai">AI 设置与费用</a><a href="#troubleshooting">问题与限制</a></nav>
       <div class="doc-article">
         <aside class="doc-notice" id="install" aria-labelledby="install-title">
           <h2 id="install-title">首次安装：不需要开发环境，也不关闭全局保护</h2>
-          <p>适用于 Apple 芯片、macOS 14 或更新版本。当前 V0.1.20 / build42 是未获 Apple 公证的开发预览；这不是 App Store 审核或安全认证。运行未经公证的软件有风险，是否信任由你自己决定。</p>
+          <p>适用于 Apple 芯片、macOS 14 或更新版本。当前 V0.1.21 / build43 是未获 Apple 公证的开发预览；这不是 App Store 审核或安全认证。运行未经公证的软件有风险，是否信任由你自己决定。</p>
           <ol>
-            <li>从<a href="./#download">本网站下载区</a>进入 GitHub Release，取得 <strong>PDFMaster-V0.1.20-arm64.dmg</strong>，不要使用不明镜像或他人重打包的副本。软件免费，安装时不要求购买会员、安装 Python 或填写 AI Key。</li>
-            <li>可选核对下载：在 macOS 自带“终端”输入 <code>shasum -a 256 </code>（末尾留一个空格），把刚下载的 DMG 拖入终端再按回车。结果应与下方完整值一致；不一致就停止。校验只证明与公开包字节一致，不证明没有恶意软件。<details><summary>V0.1.20 安装包 SHA-256</summary><p style="overflow-wrap:anywhere"><code>309884f872f9520a0ef85aea69335075c549528a63e056236118986b2c8755c8</code></p></details></li>
+            <li>从<a href="./#download">本网站下载区</a>进入 GitHub Release，取得 <strong>PDFMaster-V0.1.21-arm64.dmg</strong>，不要使用不明镜像或他人重打包的副本。软件免费，安装时不要求购买会员、安装 Python 或填写 AI Key。</li>
+            <li>可选核对下载：在 macOS 自带“终端”输入 <code>shasum -a 256 </code>（末尾留一个空格），把刚下载的 DMG 拖入终端再按回车。结果应与下方完整值一致；不一致就停止。校验只证明与公开包字节一致，不证明没有恶意软件。<details><summary>V0.1.21 安装包 SHA-256</summary><p style="overflow-wrap:anywhere"><code>0f2101ae434e8fcc07f6f5658a67d6a25fac08c446f31d438b1bd7c86f98e1e9</code></p></details></li>
             <li>保存已有文档并正常退出旧版。打开 DMG，把 <strong>PDF Master.app</strong> 拖到“应用程序”；确认不会丢失自己的旧文档后再替换同名旧版。随后从“应用程序”打开 App，无需保留挂载的安装磁盘。</li>
             <li>如提示开发者无法验证或 Apple 无法检查，先停下来阅读警告。<strong>仅在你确认是可信来源、未遭篡改，并接受风险时</strong>，按 <a href="https://support.apple.com/zh-cn/102445">Apple 官方说明</a>，在刚尝试打开后进入“系统设置 → 隐私与安全性”，选择针对该 App 的“仍要打开”，再确认“打开”。这是一项单应用例外，不是关闭全局保护。</li>
             <li>如果提示“已损坏”“将损坏”或恶意软件，或系统没有该按钮，<strong>不要强行放行</strong>，保留警告并<a href="https://github.com/dashizhihuan2018-source/PDFMaster/issues">反馈</a>。受管理的 Mac 请联系系统管理员，不绕过组织限制。</li>
