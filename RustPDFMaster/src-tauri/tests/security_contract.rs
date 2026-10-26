@@ -51,3 +51,23 @@ fn ios_readback_requires_scope_and_coordinates_only_the_staged_move_on_a_worker(
     assert!(source.contains("verify_completion(true, Some(&bytes), &expected)"));
     assert!(!source.contains("File::open"));
 }
+
+#[test]
+fn all_native_exit_paths_include_editor_state_and_history_export_require_idle_editor() {
+    // Source-wiring regression, complementary to real Workspace state tests.
+    let source = include_str!("../src/lib.rs");
+    let cocoa = include_str!("../src/macos_termination.rs");
+    assert!(cocoa.contains("workspace.has_unsaved_work()"));
+    assert!(source.matches("|w| w.has_unsaved_work()").count() >= 1);
+    assert!(source.contains("|w|w.has_unsaved_work()"));
+    for command in ["undo_document", "redo_document", "export_document"] {
+        let body = source
+            .split(&format!("async fn {command}("))
+            .nth(1)
+            .unwrap()
+            .split("#[tauri::command")
+            .next()
+            .unwrap();
+        assert!(body.contains("ensure_editor_idle()?"), "{command}");
+    }
+}

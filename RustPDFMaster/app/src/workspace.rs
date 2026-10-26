@@ -31,6 +31,8 @@ struct Document {
     restored: bool,
     #[serde(default)]
     warning: Option<String>,
+    #[serde(default)]
+    note_editor: Option<NoteDraft>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -54,8 +56,9 @@ struct NoteList {
     unsupported_count: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 struct NoteDraft {
+    id: u32,
     page: usize,
     original: TextNote,
 }
@@ -154,8 +157,16 @@ impl Model {
                             .unwrap_or(*p)
                             .min(doc.info.page_count.saturating_sub(1))
                     });
-                    let status =
+                    let mut status =
                         command_status_message(command, doc.restored, doc.warning.as_deref());
+                    if let Some(editor) = &doc.note_editor {
+                        self.page.set(editor.page);
+                        self.note_edit_text.set(editor.original.contents.clone());
+                        if doc.warning.is_none() {
+                            status = "便笺编辑尚未结束；当前显示原始内容。编辑框输入未持久化，请核对后保存或取消。".into();
+                        }
+                    }
+                    self.note_draft.set(doc.note_editor.clone());
                     let page_count = doc.info.page_count;
                     self.document.set(Some(doc));
                     if matches!(
@@ -437,21 +448,44 @@ impl Model {
         if self.blocked() {
             return;
         }
-        self.note_edit_text.set(note.contents.clone());
-        self.note_draft.set(Some(NoteDraft {
-            page: self.page.get_untracked(),
-            original: note,
-        }));
-        self.message
-            .set("编辑便笺中；保存修改后仍需导出 PDF。".into());
+        self.busy.set(true);
+        let args = json!({"page":self.page.get_untracked(),"annotation_index":note.annotation_index,"expected_contents":note.contents});
+        spawn_local(async move {
+            // Expose input only after the native guard acknowledges this snapshot.
+            match bridge::call::<NoteDraft>("begin_note_editor", &args).await {
+                Ok(editor) => {
+                    self.note_edit_text.set(editor.original.contents.clone());
+                    self.note_draft.set(Some(editor));
+                    self.message
+                        .set("编辑便笺中；保存修改后仍需导出 PDF。".into());
+                }
+                Err(error) => self.message.set(error),
+            }
+            self.busy.set(false);
+        });
     }
     fn cancel_note_edit(self) {
         if self.busy.get_untracked() {
             return;
         }
-        self.note_draft.set(None);
-        self.note_edit_text.set(String::new());
-        self.message.set("已取消便笺编辑，PDF 保持不变。".into());
+        let Some(draft) = self.note_draft.get_untracked() else {
+            return;
+        };
+        self.busy.set(true);
+        spawn_local(async move {
+            match bridge::call::<Document>("cancel_note_editor", &json!({"id":draft.id})).await {
+                Ok(document) => {
+                    self.document.set(Some(document));
+                    self.note_draft.set(None);
+                    self.note_edit_text.set(String::new());
+                    self.message
+                        .set("已取消便笺编辑；当前 PDF 会话已刷新。".into());
+                    self.render().await;
+                }
+                Err(error) => self.message.set(error),
+            }
+            self.busy.set(false);
+        });
     }
     fn save_note(self) {
         if self.busy.get_untracked() || !self.loaded() {
@@ -465,21 +499,24 @@ impl Model {
                 .set("页面已改变；请取消后重新选择便笺。".into());
             return;
         }
-        let edit = match update_note_edit(
+        let contents = self.note_edit_text.get_untracked();
+        if let Err(error) = update_note_edit(
             draft.page,
             draft.original.annotation_index,
             &draft.original.contents,
-            &self.note_edit_text.get_untracked(),
+            &contents,
         ) {
-            Ok(edit) => edit,
-            Err(error) => {
-                self.message.set(error);
-                return;
-            }
-        };
+            self.message.set(error);
+            return;
+        }
         self.busy.set(true);
         spawn_local(async move {
-            match bridge::call::<Document>("edit_document", &json!({"edit":edit})).await {
+            match bridge::call::<Document>(
+                "commit_note_editor",
+                &json!({"id":draft.id,"contents":contents}),
+            )
+            .await
+            {
                 Ok(document) => {
                     self.message.set(
                         document
@@ -610,8 +647,12 @@ pub fn Workspace() -> impl IntoView {
                             <textarea aria-label="编辑便笺内容" disabled=move||m.busy.get() prop:value=move||m.note_edit_text.get() on:input=move|event|m.note_edit_text.set(event_target_value(&event))></textarea>
                             <button disabled=move||m.busy.get() on:click=move|_|m.save_note()>"保存便笺修改"</button>
                             <button disabled=move||m.busy.get() on:click=move|_|m.cancel_note_edit()>"取消便笺编辑"</button>
-                            <p class="note-meta">"编辑框草稿不自动持久化；保存修改后仍需导出 PDF。"</p>
+                            <p class="note-meta">"编辑期间阻止正常关闭；输入未自动持久化，崩溃或强制退出仍可能丢失。保存后需导出 PDF。"</p>
                         </div>
+                    </Show>
+                    <Show when=move||m.loaded()&&!m.has_note_draft()>
+                        <button disabled=move||m.busy.get() on:click=move|_|m.command("document_info",json!({}))>"同步便笺编辑状态"</button>
+                        <p class="note-meta">"编辑确认未返回时，可恢复当前进程的编辑入口；不会恢复未持久化的输入。"</p>
                     </Show>
                     <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。删除、定位和弹窗仍在迁移；内容修改不是安全擦除。"</p>
                 </div>

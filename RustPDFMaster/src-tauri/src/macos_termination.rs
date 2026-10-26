@@ -39,7 +39,7 @@ fn guard_state() -> GuardState {
         return GuardState::Unavailable;
     };
     match store.try_lock() {
-        Ok(workspace) if workspace.dirty() => GuardState::Dirty,
+        Ok(workspace) if workspace.has_unsaved_work() => GuardState::Dirty,
         Ok(_) => GuardState::Clean,
         Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => GuardState::Unavailable,
     }
@@ -51,7 +51,7 @@ fn show_cancellation(state: GuardState) {
     };
     let message = match state {
         GuardState::Dirty => {
-            "文档尚未保存。请先导出副本，再退出 PDF Master。未保存修改仍保留在当前进程。"
+            "存在未保存文档、便笺编辑或尚未完成的导出。请先完成或取消当前操作，再导出 PDF 后退出。当前输入仍保留在窗口内。"
         }
         GuardState::Unavailable => {
             "暂时无法确认文档是否已安全保存。为避免丢失修改，本次退出已取消，请稍后重试。"

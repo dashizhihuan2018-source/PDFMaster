@@ -208,6 +208,7 @@ class ThirdPartyNoticeContract(unittest.TestCase):
                 "if [ \"$1\" = \"--version\" ]; then echo 'cargo-about 0.9.2'; exit 0; fi\n"
                 "exit 99\n",
                 encoding="utf-8",
+                newline="\n",
             )
             fake_about.chmod(0o755)
             # Windows CreateProcess cannot execute a .sh file directly. Let Bash
@@ -226,7 +227,10 @@ class ThirdPartyNoticeContract(unittest.TestCase):
                 check=False,
                 timeout=15,
             )
-            self.assertEqual(result.returncode, 2)
+            self.assertEqual(
+                result.returncode, 2,
+                f"generator fixture failed: stdout={result.stdout!r}; stderr={result.stderr!r}",
+            )
             self.assertIn("symbolic link component", result.stderr)
 
     def test_validator_rejects_paths_secrets_active_html_and_unsafe_links(self) -> None:

@@ -279,6 +279,28 @@ mod tests {
         assert!(!source.contains("inner_html"));
     }
     #[test]
+    fn note_editor_acquires_native_guard_before_exposing_input_and_releases_by_id() {
+        // Source-wiring regression only; native unit and GUI tests verify behavior.
+        let source = include_str!("workspace.rs");
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("bridge::call::<NoteDraft>(\"begin_note_editor\""));
+        assert!(compact.contains("bridge::call::<Document>(\"cancel_note_editor\""));
+        assert!(compact.contains("bridge::call::<Document>(\"commit_note_editor\""));
+        assert!(compact.contains("\"id\":draft.id"));
+        assert!(source.contains("note_editor: Option<NoteDraft>"));
+        assert!(source.contains("self.note_draft.set(doc.note_editor.clone())"));
+    }
+    #[test]
+    fn lost_editor_ack_has_an_explicit_sync_route_without_replacing_local_input() {
+        // UI wiring only: the native view carries the active editor and its ID.
+        // Hide this route while local input exists so syncing cannot discard it.
+        let source = include_str!("workspace.rs");
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("<Showwhen=move||m.loaded()&&!m.has_note_draft()>"));
+        assert!(compact.contains("on:click=move|_|m.command(\"document_info\",json!({}))"));
+        assert!(source.contains("同步便笺编辑状态"));
+    }
+    #[test]
     fn note_creation_supports_unicode_and_adapts_to_small_pages_without_clipping() {
         let edit = note_edit(2, 595., 842., 0, " 中文便笺 🦀 ").unwrap();
         assert_eq!(edit["kind"], "add_note");

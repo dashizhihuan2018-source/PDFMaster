@@ -23,6 +23,16 @@ struct Workspace {
     restored: bool,
     recovery_fault: bool,
     recovery_warning: Option<String>,
+    note_editor: Option<NoteEditor>,
+    next_editor_id: u32,
+    export_reservation: Option<u32>,
+    next_export_id: u32,
+}
+#[derive(Clone, Serialize)]
+struct NoteEditor {
+    id: u32,
+    page: usize,
+    original: pdfmaster_core::TextNote,
 }
 #[derive(Clone, Serialize)]
 struct DocumentView {
@@ -30,6 +40,7 @@ struct DocumentView {
     info: DocumentInfo,
     restored: bool,
     warning: Option<String>,
+    note_editor: Option<NoteEditor>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -56,6 +67,21 @@ enum PageBatchReply {
 type Store = Mutex<Workspace>;
 type Reply<T> = Result<T, String>;
 
+// Never hold the workspace mutex across a picker/provider await. This scope
+// keeps mutations mutually exclusive and releases only its own token on every
+// return path, including cancellation, failure and future cancellation.
+struct ExportReservation<'a> {
+    store: &'a Store,
+    id: u32,
+}
+impl Drop for ExportReservation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut workspace) = self.store.lock() {
+            workspace.release_export(self.id);
+        }
+    }
+}
+
 fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::NoteList> {
     workspace
         .session
@@ -68,6 +94,278 @@ fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+    fn note_workspace() -> (Workspace, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = Session::blank(100., 100., 1).unwrap();
+        session
+            .apply(Edit::AddNote {
+                page: 0,
+                bounds: pdfmaster_core::Rect {
+                    x: 10.,
+                    y: 10.,
+                    width: 20.,
+                    height: 20.,
+                },
+                contents: "原便笺 🦀".into(),
+                color: pdfmaster_core::Color {
+                    r: 1.,
+                    g: 1.,
+                    b: 0.,
+                },
+            })
+            .unwrap();
+        session.mark_saved();
+        let journal = recovery::Journal::new(directory.path().join("draft.json"));
+        (
+            Workspace {
+                session: Some(session),
+                journal: Some(journal),
+                ..Default::default()
+            },
+            directory,
+        )
+    }
+
+    #[test]
+    fn editor_guard_blocks_exit_without_claiming_pdf_bytes_are_dirty() {
+        let (mut w, _directory) = note_workspace();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        assert!(!w.has_unsaved_work());
+        assert!(w.begin_note_editor(0, 0, "stale").is_err());
+        assert!(!w.has_unsaved_work());
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        assert!(w.has_unsaved_work());
+        assert!(w.clean().is_err());
+        assert!(!w.dirty());
+        assert!(!w.view().unwrap().info.dirty);
+        assert_eq!(w.view().unwrap().note_editor.unwrap().id, editor.id);
+        assert!(w.begin_note_editor(0, 0, "原便笺 🦀").is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+    }
+
+    #[test]
+    fn stale_editor_ids_cannot_cancel_or_commit_a_new_editor() {
+        let (mut w, _directory) = note_workspace();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let first = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        assert!(w.cancel_note_editor(first.id + 1).is_err());
+        w.cancel_note_editor(first.id).unwrap();
+        assert!(!w.has_unsaved_work());
+        let second = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        assert_ne!(first.id, second.id);
+        assert!(w.cancel_note_editor(first.id).is_err());
+        assert!(w.commit_note_editor(first.id, "stale".into()).is_err());
+        assert!(w.has_unsaved_work());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        w.cancel_note_editor(second.id).unwrap();
+        assert!(!w.has_unsaved_work());
+    }
+
+    #[test]
+    fn document_view_recovers_an_unacknowledged_editor_id_without_mutating_pdf() {
+        let (mut w, _directory) = note_workspace();
+        let bytes = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        // Simulate losing the begin reply: recover only through the same view
+        // serialized by document_info, never through the original return value.
+        w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        let reply = serde_json::to_value(w.view().unwrap()).unwrap();
+        let id = reply["note_editor"]["id"].as_u64().unwrap() as u32;
+        assert_eq!(reply["note_editor"]["page"], 0);
+        assert_eq!(reply["note_editor"]["original"]["contents"], "原便笺 🦀");
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), bytes);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+        assert!(w.has_unsaved_work());
+        assert!(w.cancel_note_editor(id).unwrap().note_editor.is_none());
+        assert!(!w.has_unsaved_work());
+    }
+
+    #[test]
+    fn retry_after_lost_cancel_or_commit_ack_refreshes_view_without_reapplying() {
+        let (mut w, _directory) = note_workspace();
+        let original = w.session.as_ref().unwrap().bytes().unwrap();
+        let cancelled = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        w.cancel_note_editor(cancelled.id).unwrap(); // Reply deliberately discarded.
+        let reply = w.cancel_note_editor(cancelled.id).unwrap();
+        assert!(reply.note_editor.is_none());
+        assert!(!reply.info.dirty);
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), original);
+
+        let committed = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        w.commit_note_editor(committed.id, "已提交 🦀".into())
+            .unwrap();
+        let updated = w.session.as_ref().unwrap().bytes().unwrap();
+        let reply = w.cancel_note_editor(committed.id).unwrap();
+        assert!(reply.note_editor.is_none());
+        assert!(reply.info.dirty);
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), updated);
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), original);
+    }
+
+    #[test]
+    fn invalid_or_conflicting_operations_keep_editor_guard_and_pdf_unchanged() {
+        let (mut w, _directory) = note_workspace();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        for contents in [
+            String::new(),
+            " \n\t".into(),
+            "原便笺 🦀".into(),
+            "x".repeat(65537),
+        ] {
+            assert!(w.commit_note_editor(editor.id, contents).is_err());
+            assert!(w.has_unsaved_work());
+        }
+        assert!(
+            apply_single_edit(
+                &mut w,
+                Edit::Rotate {
+                    page: 0,
+                    degrees: 90
+                }
+            )
+            .is_err()
+        );
+        assert!(apply_page_batch(&mut w, "1", PageBatchOperation::Rotate90, None).is_err());
+        assert!(w.finish_verified_export(&before).is_err());
+        assert!(w.ensure_editor_idle().is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+        assert_eq!(w.view().unwrap().note_editor.unwrap().id, editor.id);
+    }
+
+    #[test]
+    fn editor_commit_is_one_undo_and_clears_only_its_own_guard() {
+        let (mut w, _directory) = note_workspace();
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        let view = w
+            .commit_note_editor(editor.id, "修改 🦀\n<script>literal</script>".into())
+            .unwrap();
+        assert!(view.note_editor.is_none());
+        assert!(view.info.dirty);
+        assert!(w.has_unsaved_work());
+        assert!(w.ensure_editor_idle().is_ok());
+        assert_eq!(
+            workspace_notes(&w, 0).unwrap().notes[0].contents,
+            "修改 🦀\n<script>literal</script>"
+        );
+        assert!(w.commit_note_editor(editor.id, "again".into()).is_err());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(
+            workspace_notes(&w, 0).unwrap().notes[0].contents,
+            "原便笺 🦀"
+        );
+        assert!(!w.has_unsaved_work());
+    }
+
+    #[test]
+    fn editor_commit_journal_failure_keeps_pdf_dirty_and_exit_blocked() {
+        let (mut w, directory) = note_workspace();
+        w.journal = Some(recovery::Journal::new(
+            directory.path().join("missing/draft.json"),
+        ));
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        let view = w.commit_note_editor(editor.id, "仍在内存".into()).unwrap();
+        assert!(view.note_editor.is_none());
+        assert!(view.info.dirty);
+        assert!(view.warning.is_some());
+        assert!(w.has_unsaved_work());
+        assert!(w.clean().is_err());
+        assert_eq!(
+            workspace_notes(&w, 0).unwrap().notes[0].contents,
+            "仍在内存"
+        );
+    }
+
+    #[test]
+    fn core_rejection_keeps_the_same_editor_and_current_bytes() {
+        let (mut w, _directory) = note_workspace();
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        // Simulate an internal mutation outside guarded IPC. The core expected
+        // contents binding must still reject this now-stale editor atomically.
+        w.session
+            .as_mut()
+            .unwrap()
+            .apply(Edit::UpdateNote {
+                page: 0,
+                annotation_index: 0,
+                expected_contents: "原便笺 🦀".into(),
+                contents: "外部内部更新".into(),
+            })
+            .unwrap();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        assert!(w.commit_note_editor(editor.id, "不能覆盖".into()).is_err());
+        assert_eq!(w.view().unwrap().note_editor.unwrap().id, editor.id);
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+    }
+
+    #[test]
+    fn export_reservation_excludes_editors_mutation_and_parallel_exports() {
+        let (mut w, _directory) = note_workspace();
+        let (id, _, bytes) = w.begin_export().unwrap();
+        assert!(w.has_unsaved_work());
+        assert!(!w.dirty());
+        assert!(w.begin_note_editor(0, 0, "原便笺 🦀").is_err());
+        assert!(w.begin_export().is_err());
+        assert!(w.clean().is_err());
+        assert!(
+            apply_single_edit(
+                &mut w,
+                Edit::Rotate {
+                    page: 0,
+                    degrees: 90
+                }
+            )
+            .is_err()
+        );
+        assert!(w.finish_verified_export(&bytes).is_err());
+        w.release_export(id + 1);
+        assert!(w.has_unsaved_work());
+        w.release_export(id);
+        assert!(!w.has_unsaved_work());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), bytes);
+    }
+
+    #[test]
+    fn stale_export_completion_cannot_release_a_new_reservation() {
+        let (mut w, _directory) = note_workspace();
+        let (first, _, bytes) = w.begin_export().unwrap();
+        w.release_export(first);
+        let (second, _, _) = w.begin_export().unwrap();
+        assert_ne!(first, second);
+        assert!(w.finish_reserved_export(first, &bytes).is_err());
+        w.release_export(first);
+        assert!(w.has_unsaved_work());
+        let view = w.finish_reserved_export(second, &bytes).unwrap();
+        assert!(!view.info.dirty);
+        assert!(!w.has_unsaved_work());
+    }
+
+    #[test]
+    fn export_scope_releases_reservation_on_early_error_or_cancel() {
+        let (w, _directory) = note_workspace();
+        let store = Mutex::new(w);
+        let (id, _, _) = store.lock().unwrap().begin_export().unwrap();
+        {
+            let _reservation = ExportReservation { store: &store, id };
+            assert!(store.lock().unwrap().has_unsaved_work());
+        }
+        assert!(!store.lock().unwrap().has_unsaved_work());
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .begin_note_editor(0, 0, "原便笺 🦀")
+                .is_ok()
+        );
+    }
+
     #[test]
     fn notes_read_current_memory_without_checkpointing_or_changing_history() {
         let mut w = Workspace::default();
@@ -402,6 +700,112 @@ mod workspace_tests {
 }
 
 impl Workspace {
+    fn has_unsaved_work(&self) -> bool {
+        self.dirty() || self.note_editor.is_some() || self.export_reservation.is_some()
+    }
+    fn ensure_editor_idle(&self) -> Reply<()> {
+        if self.export_reservation.is_some() {
+            Err("正在导出 PDF，请等待保存面板和回读完成或取消导出。".into())
+        } else if self.note_editor.is_some() {
+            Err("请先保存或取消便笺编辑；编辑框内容尚未写入 PDF。".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn begin_export(&mut self) -> Reply<(u32, String, Vec<u8>)> {
+        self.ensure_editor_idle()?;
+        let bytes = self
+            .session
+            .as_ref()
+            .ok_or("请先打开 PDF")?
+            .bytes()
+            .map_err(|error| error.to_string())?;
+        let id = self
+            .next_export_id
+            .checked_add(1)
+            .ok_or("导出会话编号已耗尽，请先安全保存并重启应用。")?;
+        self.next_export_id = id;
+        self.export_reservation = Some(id);
+        Ok((id, self.name.clone(), bytes))
+    }
+    fn release_export(&mut self, id: u32) {
+        if self.export_reservation == Some(id) {
+            self.export_reservation = None;
+        }
+    }
+    fn finish_reserved_export(&mut self, id: u32, bytes: &[u8]) -> Reply<DocumentView> {
+        if self.export_reservation != Some(id) {
+            return Err("导出会话已改变，不能确认本次保存。".into());
+        }
+        self.release_export(id);
+        // Still holding the same mutex: no editor/mutation can start between
+        // releasing this token and acknowledging the exact exported snapshot.
+        self.finish_verified_export(bytes)
+    }
+    fn begin_note_editor(
+        &mut self,
+        page: usize,
+        annotation_index: usize,
+        expected: &str,
+    ) -> Reply<NoteEditor> {
+        self.ensure_editor_idle()?;
+        if expected.len() > 1024 * 1024 {
+            return Err("便笺原始内容超出预算。".into());
+        }
+        let original = workspace_notes(self, page)?
+            .notes
+            .into_iter()
+            .find(|note| note.annotation_index == annotation_index && note.contents == expected)
+            .ok_or("便笺已改变，请重新选择。")?;
+        let id = self
+            .next_editor_id
+            .checked_add(1)
+            .ok_or("编辑会话编号已耗尽，请先安全保存并重启应用。")?;
+        let editor = NoteEditor { id, page, original };
+        self.next_editor_id = id;
+        self.note_editor = Some(editor.clone());
+        Ok(editor)
+    }
+    fn active_editor(&self, id: u32) -> Reply<NoteEditor> {
+        self.note_editor
+            .as_ref()
+            .filter(|editor| editor.id == id)
+            .cloned()
+            .ok_or_else(|| "便笺编辑会话已改变，请刷新当前文档。".into())
+    }
+    fn cancel_note_editor(&mut self, id: u32) -> Reply<DocumentView> {
+        // An acknowledgement can be lost after commit/cancel. Releasing the
+        // same finished ID is safe, but can never release a later editor.
+        if self.note_editor.is_none() && id != 0 && id == self.next_editor_id {
+            return self.view();
+        }
+        self.active_editor(id)?;
+        self.note_editor = None;
+        self.view()
+    }
+    fn commit_note_editor(&mut self, id: u32, contents: String) -> Reply<DocumentView> {
+        let editor = self.active_editor(id)?;
+        if contents.trim().is_empty()
+            || contents.len() > 64 * 1024
+            || contents == editor.original.contents
+        {
+            return Err("便笺修改不能为空、超过64KiB或与原内容相同。".into());
+        }
+        self.session
+            .as_mut()
+            .ok_or("请先打开 PDF")?
+            .apply(Edit::UpdateNote {
+                page: editor.page,
+                annotation_index: editor.original.annotation_index,
+                expected_contents: editor.original.contents,
+                contents,
+            })
+            .map_err(|error| error.to_string())?;
+        // The PDF is already dirty if the subsequent journal write fails.
+        // Clear the editor only after the atomic core mutation succeeded.
+        self.note_editor = None;
+        self.checkpoint()
+    }
     fn view(&self) -> Reply<DocumentView> {
         let mut info = self.session.as_ref().ok_or("请先打开 PDF")?.info();
         info.dirty = self.dirty();
@@ -410,9 +814,11 @@ impl Workspace {
             info,
             restored: self.restored,
             warning: self.recovery_warning.clone(),
+            note_editor: self.note_editor.clone(),
         })
     }
     fn clean(&self) -> Reply<()> {
+        self.ensure_editor_idle()?;
         if self.dirty() {
             Err("当前文档尚未保存。请先导出副本，再打开或新建文档。".into())
         } else {
@@ -449,6 +855,7 @@ impl Workspace {
         self.view()
     }
     fn finish_verified_export(&mut self, bytes: &[u8]) -> Reply<DocumentView> {
+        self.ensure_editor_idle()?;
         if let Some(session) = self.session.as_mut()
             && session.bytes().map_err(|e| e.to_string())? == bytes
         {
@@ -472,6 +879,7 @@ fn apply_page_batch(
     operation: PageBatchOperation,
     confirmed_count: Option<usize>,
 ) -> Reply<PageBatchReply> {
+    workspace.ensure_editor_idle()?;
     let page_count = workspace
         .session
         .as_ref()
@@ -514,6 +922,7 @@ fn apply_page_batch(
 }
 
 fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentView> {
+    workspace.ensure_editor_idle()?;
     if matches!(
         edit,
         Edit::RotatePages { .. } | Edit::DeletePages { .. } | Edit::DeletePage { .. }
@@ -621,6 +1030,39 @@ async fn notes_document(page: usize, state: State<'_, Store>) -> Reply<pdfmaster
 }
 
 #[tauri::command(rename_all = "snake_case")]
+async fn begin_note_editor(
+    page: usize,
+    annotation_index: usize,
+    expected_contents: String,
+    state: State<'_, Store>,
+) -> Reply<NoteEditor> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .begin_note_editor(page, annotation_index, &expected_contents)
+}
+
+#[tauri::command]
+async fn cancel_note_editor(id: u32, state: State<'_, Store>) -> Reply<DocumentView> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .cancel_note_editor(id)
+}
+
+#[tauri::command]
+async fn commit_note_editor(
+    id: u32,
+    contents: String,
+    state: State<'_, Store>,
+) -> Reply<DocumentView> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .commit_note_editor(id, contents)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 async fn search_document(
     query: String,
     case_sensitive: bool,
@@ -694,6 +1136,7 @@ async fn batch_pages(
 #[tauri::command]
 async fn undo_document(state: State<'_, Store>) -> Reply<Option<DocumentView>> {
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
+    w.ensure_editor_idle()?;
     w.session
         .as_mut()
         .ok_or("请先打开 PDF")?
@@ -704,6 +1147,7 @@ async fn undo_document(state: State<'_, Store>) -> Reply<Option<DocumentView>> {
 #[tauri::command]
 async fn redo_document(state: State<'_, Store>) -> Reply<Option<DocumentView>> {
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
+    w.ensure_editor_idle()?;
     w.session
         .as_mut()
         .ok_or("请先打开 PDF")?
@@ -717,16 +1161,14 @@ async fn export_document(
     app: tauri::AppHandle,
     state: State<'_, Store>,
 ) -> Reply<Option<DocumentView>> {
-    let (name, bytes) = {
-        let w = state.lock().map_err(|_| "文档状态不可用")?;
-        (
-            w.name.clone(),
-            w.session
-                .as_ref()
-                .ok_or("请先打开 PDF")?
-                .bytes()
-                .map_err(|e| e.to_string())?,
-        )
+    let (id, name, bytes) = {
+        let mut w = state.lock().map_err(|_| "文档状态不可用")?;
+        w.ensure_editor_idle()?;
+        w.begin_export()?
+    };
+    let reservation = ExportReservation {
+        store: state.inner(),
+        id,
     };
     let copy_name = format!(
         "{}-副本.pdf",
@@ -759,8 +1201,12 @@ async fn export_document(
             return Err("导出回读不一致，文档仍保留未保存状态。".into());
         }
     }
-    let mut w = state.lock().map_err(|_| "文档状态不可用")?;
-    w.finish_verified_export(&bytes).map(Some)
+    let view = {
+        let mut w = state.lock().map_err(|_| "文档状态不可用")?;
+        w.finish_reserved_export(reservation.id, &bytes)?
+    };
+    drop(reservation);
+    Ok(Some(view))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -803,13 +1249,13 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,search_document,edit_document,batch_pages,undo_document,redo_document,export_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();
-                if state.lock().map_or(true,|w|w.dirty()) {
+                if state.lock().map_or(true,|w|w.has_unsaved_work()) {
                     api.prevent_close();
-                    let dialog = window.dialog().message("文档尚未保存。请先导出副本，再关闭窗口。未保存的修改已保留在当前窗口。").title("保留未保存修改");
+                    let dialog = window.dialog().message("存在未保存文档、便笺编辑或尚未完成的导出。请先完成或取消当前操作，再导出 PDF 后关闭。当前输入仍保留在窗口内。").title("保留未保存修改");
                     #[cfg(desktop)] let dialog = dialog.parent(window);
                     dialog.show(|_|{});
                 }
@@ -818,12 +1264,17 @@ pub fn run() {
         .build(tauri::generate_context!()).expect("unable to initialize PDF Master Rust");
     app.run(|app, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event
-            && app.state::<Store>().lock().map_or(true, |w| w.dirty())
+            && app
+                .state::<Store>()
+                .lock()
+                .map_or(true, |w| w.has_unsaved_work())
         {
             api.prevent_exit();
             let dialog = app
                 .dialog()
-                .message("文档尚未保存，请先导出副本再退出。")
+                .message(
+                    "存在未保存文档、便笺编辑或尚未完成的导出。请先完成或取消当前操作，再导出 PDF 后退出。",
+                )
                 .title("保留未保存修改");
             #[cfg(desktop)]
             let dialog = if let Some(window) = app.get_webview_window("main") {
