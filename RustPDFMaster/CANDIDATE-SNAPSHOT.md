@@ -1,6 +1,20 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 820d10f5 (2026-10-27)
+## Current snapshot: development dbc9b6a4 (2026-10-27)
+
+Exactly **140 tracked Rust/workflow files** from development `dbc9b6a4110fc3511e71bd8c7644e4e34b3165b4`, plus this record. Only reviewed candidate source is synchronized; private history, user files/screenshots, memory, credentials and generated/build files are excluded. Formal Swift releases, website and installation remain unchanged.
+
+The original-sized 124×164 sidebar now displays real native PNG page rasters, not number-only placeholders. Visible rows and cache are bounded to16, source density to2 and each data URI to256KiB. One thumbnail request runs at a time. Document replacement invalidates the generation without releasing an unfinished request; stale/offscreen/duplicate completions cannot repaint. Explicit errors can be retried; a native-observation timeout pauses loading rather than queuing more work behind an unobserved request. Resize remeasures the viewport, removes its listener on cleanup and preserves a height-bounded flex scroller on narrow screens.
+
+Local checks passed for the initial thumbnail source: **175 core +3 drawing, 76 UI, 74 native +4 security, 30 tools**, full three-workspace formatting/host-Clippy and locked release WASM build, plus separate WASM Clippy. The subsequent narrow-window grid-position fix adds a tenth thumbnail regression, for **77 UI tests**; those and host/WASM Clippy passed again. Independent read-only review rechecked both CSS fixes; no remaining Critical/Important issue in this bounded slice. Source-wiring tests are not visual or runtime proof.
+
+A separate Mac QA build of preceding development d2dd9a56 used an explicit alternate application name/identifier and isolated draft directory, leaving the running preceding candidate untouched. Its arm64/ad-hoc signature and five notices were verified. On a synthetic 24-page PDF, actual Mac checks covered real thumbnails, 90-degree pages, scrolling to later pages, thumbnail-to-page navigation, last-page reveal, native window zoom/viewport remeasurement, rotation and Undo refresh, clean document replacement without old thumbnails and normal exit. A 430px Mac window then exposed a double toolbar offset and fixed-footer assumption in the narrow sidebar. This snapshot anchors it directly to the reader grid area instead. The rebuilt 430px QA executable SHA-256 is `c8e22eb6bde5961ee698921cfb82225f06c105b8423e3b8a39dd424987fc7690`; actual Mac checks now show sidebar top/bottom aligned to the reader area, bounded scrolling to the final real page rasters, page24 navigation/selection and normal exit. These are isolated QA configurations, not a rebuilt formal candidate or accepted original UI parity; narrow Mac verification does not establish iOS touch/safe-area correctness.
+
+The same-source default unsigned iOS simulator archive built with executable SHA-256 `8c5f33025bc3e54dee7c1babb7005e72a38b74e6f2de54cfaa355fcca8c48335`, arm64/IOSSIMULATOR/min16/SDK27 and all five exact bundled notices verified. This new archive was not installed or run; existing simulator sessions/installations remain untouched. New iOS/Windows runtime, exact-source hosted artifacts and complete three-platform verification remain pending.
+
+Preceding hosted run `40361846479` targets public `c881b2168306ac610a01525945f79e99761d99a5` (development820d10f5), **not this thumbnail source**. Its result must be checked separately; no hosted success is inferred from the local tests. Inventory remains **24 partial /46 unsupported /0 complete**, with **801 frozen legacy contracts pending**. Overview/sidebar modes, thumbnail multiselect/reorder, exact icons, real multi-tabs, inline editing, actual Windows runtime, physical iOS, formal releases and final Rustall/public skill delivery remain unfinished.
+
+## Historical snapshot: development 820d10f5 (superseded)
 
 Exactly **137 tracked Rust/workflow files** from development `820d10f5d440e48e19f9900546ccb5ca02b12e17`, plus this record. Only reviewed candidate source is synchronized; private history, user files/screenshots, memory, credentials and generated/build files are excluded. Formal Swift releases, website and installation remain unchanged.
 

@@ -6,6 +6,7 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
 }
 pub mod ink;
 pub mod shell;
+pub mod thumbnails;
 pub mod workbench;
 
 #[allow(clippy::too_many_arguments)]

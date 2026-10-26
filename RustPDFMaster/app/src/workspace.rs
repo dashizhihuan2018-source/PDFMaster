@@ -2,6 +2,8 @@
 mod bridge;
 #[path = "home.rs"]
 mod home;
+#[path = "thumbnail_view.rs"]
+mod thumbnail_view;
 #[path = "workbench_view.rs"]
 mod workbench;
 use leptos::{prelude::*, task::spawn_local};
@@ -165,6 +167,8 @@ struct Model {
     route: RwSignal<Route>,
     chrome: RwSignal<Chrome>,
     document: RwSignal<Option<Document>>,
+    thumbnail_cache: RwSignal<pdfmaster_ui::thumbnails::Cache>,
+    thumbnail_window: RwSignal<pdfmaster_ui::thumbnails::Window>,
     page: RwSignal<usize>,
     zoom: RwSignal<f32>,
     image: RwSignal<String>,
@@ -196,6 +200,12 @@ struct Model {
 }
 
 impl Model {
+    fn replace_document_view(self, document: Option<Document>) {
+        self.thumbnail_cache.update(|cache| {
+            cache.invalidate();
+        });
+        self.document.set(document);
+    }
     fn close_chrome_popups(self) {
         if let Some(document) = web_sys::window().and_then(|w| w.document()) {
             // There are exactly two local menus. Bound the DOM work even if a
@@ -595,7 +605,7 @@ impl Model {
             match result {
                 Ok(Some(doc)) => {
                     let request = doc.ink_editor.as_ref().map(|e| e.request.clone());
-                    self.document.set(Some(doc));
+                    self.replace_document_view(Some(doc));
                     if let Some(request) = request {
                         self.ink_action(InkAction::CancelRequest { request });
                     } else {
@@ -607,7 +617,7 @@ impl Model {
                 }
                 Ok(None) => {
                     self.ink_gesture.set(None);
-                    self.document.set(None);
+                    self.replace_document_view(None);
                 }
                 Err(e) => self.message.set(e),
             }
@@ -628,7 +638,7 @@ impl Model {
         spawn_local(async move {
             match bridge::call_bounded::<Document>(command, &args).await {
                 Ok(doc) => {
-                    self.document.set(Some(doc));
+                    self.replace_document_view(Some(doc));
                     self.search_result.set(None);
                     self.ink_handoff.set(true);
                     self.message.set(
@@ -738,7 +748,7 @@ impl Model {
                             matches!(command, "open_document" | "new_document"),
                         )
                     });
-                    self.document.set(Some(doc));
+                    self.replace_document_view(Some(doc));
                     self.route
                         .update(|route| *route = document_reply_route(*route, command, true));
                     if matches!(
@@ -928,7 +938,7 @@ impl Model {
                     } else {
                         format!("已顺时针旋转 {affected_count} 页。")
                     });
-                    self.document.set(Some(*document));
+                    self.replace_document_view(Some(*document));
                     self.render().await;
                 }
                 Ok(PageBatchReply::Cancelled) => {
@@ -1231,7 +1241,7 @@ impl Model {
         spawn_local(async move {
             match bridge::call::<Document>("cancel_note_editor", &json!({"id":draft.id})).await {
                 Ok(document) => {
-                    self.document.set(Some(document));
+                    self.replace_document_view(Some(document));
                     self.note_draft.set(None);
                     self.note_edit_text.set(String::new());
                     self.message
@@ -1280,7 +1290,7 @@ impl Model {
                             .clone()
                             .unwrap_or_else(|| "便笺已修改；请导出副本保存。".into()),
                     );
-                    self.document.set(Some(document));
+                    self.replace_document_view(Some(document));
                     self.note_draft.set(None);
                     self.note_edit_text.set(String::new());
                     self.search_result.set(None);
@@ -1305,6 +1315,8 @@ pub fn Workspace() -> impl IntoView {
             ..Chrome::default()
         }),
         document: RwSignal::new(None),
+        thumbnail_cache: RwSignal::new(pdfmaster_ui::thumbnails::Cache::default()),
+        thumbnail_window: RwSignal::new(pdfmaster_ui::thumbnails::Window::new(0., 600., 0)),
         page: RwSignal::new(0),
         zoom: RwSignal::new(1.),
         image: RwSignal::new(String::new()),
@@ -1347,15 +1359,7 @@ pub fn Workspace() -> impl IntoView {
         <main class="workspace" class:reader-sidebar-hidden=move||!m.chrome.get().sidebar class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
             <workbench::Toolbar model=m/>
             <workbench::SecondaryTools model=m/>
-            <aside class="pages" aria-label="页面列表（缩略图尚未迁移）" hidden=move||!m.chrome.get().sidebar>
-                <div class="section-label">"页面"<span>{move||m.count()}</span></div>
-                <For each={move || (0..m.count()).collect::<Vec<_>>()} key=|p|*p children=move|p|view!{
-                    <button class="page-entry" class:selected=move||m.page.get()==p disabled=move||m.busy.get() on:click=move|_|m.navigate(p)>
-                        <span class="page-symbol">{p+1}</span><span>{format!("第 {} 页",p+1)}</span>
-                    </button>
-                }/>
-                <Show when=move||!m.loaded()><p class="muted sidebar-hint">"打开文档后，在这里切换页面。"</p></Show>
-            </aside>
+            <thumbnail_view::Sidebar model=m/>
             <section id="pdf-reader" class="reader" aria-label="PDF 阅读区域" aria-busy=move||m.busy.get().to_string()>
                 <Show when=move||m.loaded() fallback=move||view!{
                     <div class="empty-state"><div class="paper-emblem">"PDF"</div><h1>"让文档回到工作中心。"</h1><p>"打开一份 PDF，或从空白页开始。"</p><button class="primary" disabled=move||m.busy.get() on:click=move|_|m.command("open_document",json!({}))>"选择 PDF 文件"</button><div class="safety-note">"仅在会话副本中编辑，原文件不会自动覆盖。"</div></div>
