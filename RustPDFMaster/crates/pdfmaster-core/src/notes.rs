@@ -101,7 +101,34 @@ pub(crate) fn update_note(
         .and_then(Object::as_dict_mut)
         .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
         .set("Annots", annots_id);
-    Ok(())
+    validate_notes_page(document, page_id, &pages[page])
+}
+
+pub(crate) fn validated_annots_for_add(
+    document: &Document,
+    page_id: ObjectId,
+    page: &PageInfo,
+) -> Result<Vec<Object>> {
+    validate_notes_page(document, page_id, page)?;
+    let page_dictionary = document
+        .get_object(page_id)
+        .and_then(Object::as_dict)
+        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+    match page_dictionary.get(b"Annots") {
+        Ok(annots) => resolve(document, annots)?
+            .as_array()
+            .cloned()
+            .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into())),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+pub(crate) fn validate_notes_page(
+    document: &Document,
+    page_id: ObjectId,
+    page: &PageInfo,
+) -> Result<()> {
+    enumerate_notes(document, page_id, page).map(|_| ())
 }
 
 fn enumerate_notes(document: &Document, page_id: ObjectId, page: &PageInfo) -> Result<NoteList> {

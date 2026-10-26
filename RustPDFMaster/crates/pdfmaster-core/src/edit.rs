@@ -7,7 +7,7 @@ use crate::document::{
     Color, Edit, MAX_PAGES, MAX_TEXT_BYTES, PageInfo, PdfMasterError, Rect, Result, add_blank_page,
     materialize_page_attributes, page_object_ids, validate_page_index, validate_page_size,
 };
-use crate::notes::update_note;
+use crate::notes::{update_note, validate_notes_page, validated_annots_for_add};
 
 pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit) -> Result<()> {
     match edit {
@@ -334,6 +334,9 @@ fn add_note(
     }
     reject_rotated_edit(&pages[page])?;
 
+    let page_id = page_object_ids(document)?[page];
+    let mut annots = validated_annots_for_add(document, page_id, &pages[page])?;
+
     let appearance_content = format!(
         "q {} {} {} rg 0 0 {} {} re f 0 0 0 RG 1 w 0.5 0.5 {} {} re S Q\n",
         color.r,
@@ -372,15 +375,13 @@ fn add_note(
         "AP" => dictionary! { "N" => appearance_id },
     });
 
-    let page_id = page_object_ids(document)?[page];
-    let mut annots = existing_array(document, page_id, b"Annots")?;
     annots.push(annotation_id.into());
     document
         .get_object_mut(page_id)
         .and_then(Object::as_dict_mut)
         .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
         .set("Annots", annots);
-    Ok(())
+    validate_notes_page(document, page_id, &pages[page])
 }
 
 fn validate_rect(bounds: Rect, page: &PageInfo) -> Result<()> {
@@ -616,23 +617,4 @@ fn effective_resources(document: &Document, mut id: ObjectId) -> Result<Dictiona
     Err(PdfMasterError::Malformed(
         "page resource inheritance depth exceeded".into(),
     ))
-}
-
-fn existing_array(document: &Document, owner: ObjectId, key: &[u8]) -> Result<Vec<Object>> {
-    let dictionary = document
-        .get_object(owner)
-        .and_then(Object::as_dict)
-        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
-    match dictionary.get(key) {
-        Ok(Object::Array(values)) => Ok(values.clone()),
-        Ok(Object::Reference(id)) => document
-            .get_object(*id)
-            .and_then(Object::as_array)
-            .cloned()
-            .map_err(|error| PdfMasterError::Malformed(error.to_string())),
-        Ok(_) => Err(PdfMasterError::Malformed(
-            "array entry has invalid type".into(),
-        )),
-        Err(_) => Ok(Vec::new()),
-    }
 }

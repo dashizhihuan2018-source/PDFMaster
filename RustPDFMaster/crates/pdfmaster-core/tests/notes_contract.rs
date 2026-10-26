@@ -117,7 +117,7 @@ fn annotation_dictionary(document: &Document, page_number: u32, index: usize) ->
     annotation.as_dict().unwrap().clone()
 }
 
-fn assert_update_unchanged(session: &mut Session, edit: Edit) {
+fn assert_apply_unchanged(session: &mut Session, edit: Edit) {
     let before_bytes = session.bytes().unwrap();
     let before_info = session.info();
     assert!(session.apply(edit).is_err());
@@ -456,7 +456,7 @@ fn update_note_rejects_stale_invalid_unsupported_malformed_and_oversized_inputs_
             contents: "x".repeat(64 * 1024 + 1),
         },
     ] {
-        assert_update_unchanged(&mut stale, edit);
+        assert_apply_unchanged(&mut stale, edit);
     }
 
     let unsupported = Object::Dictionary(dictionary! {
@@ -466,7 +466,7 @@ fn update_note_rejects_stale_invalid_unsupported_malformed_and_oversized_inputs_
     });
     let mut unsupported =
         Session::open(&document_with_annots(1, vec![unsupported].into())).unwrap();
-    assert_update_unchanged(
+    assert_apply_unchanged(
         &mut unsupported,
         Edit::UpdateNote {
             page: 0,
@@ -478,7 +478,7 @@ fn update_note_rejects_stale_invalid_unsupported_malformed_and_oversized_inputs_
 
     let malformed = text_annotation(Some(Object::Integer(7)), valid_rect(), None);
     let mut malformed = Session::open(&document_with_annots(1, vec![malformed].into())).unwrap();
-    assert_update_unchanged(
+    assert_apply_unchanged(
         &mut malformed,
         Edit::UpdateNote {
             page: 0,
@@ -507,7 +507,7 @@ fn update_note_rejects_stale_invalid_unsupported_malformed_and_oversized_inputs_
         ),
     ];
     let mut oversized_old = Session::open(&document_with_annots(1, oversized_old.into())).unwrap();
-    assert_update_unchanged(
+    assert_apply_unchanged(
         &mut oversized_old,
         Edit::UpdateNote {
             page: 0,
@@ -516,6 +516,203 @@ fn update_note_rejects_stale_invalid_unsupported_malformed_and_oversized_inputs_
             contents: "new".into(),
         },
     );
+}
+
+#[test]
+fn update_note_enforces_post_edit_total_and_accepts_exact_mib_and_64k_boundaries() {
+    let annots = vec![
+        text_annotation(
+            Some(Object::String(
+                "a".repeat(MIB - 1).into_bytes(),
+                StringFormat::Literal,
+            )),
+            valid_rect(),
+            None,
+        ),
+        text_annotation(
+            None,
+            vec![60.into(), 10.into(), 90.into(), 40.into()].into(),
+            None,
+        ),
+    ];
+    let mut boundary = Session::open(&document_with_annots(1, annots.into())).unwrap();
+    boundary
+        .apply(Edit::UpdateNote {
+            page: 0,
+            annotation_index: 1,
+            expected_contents: String::new(),
+            contents: "x".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        boundary
+            .notes(0)
+            .unwrap()
+            .notes
+            .iter()
+            .map(|note| note.contents.len())
+            .sum::<usize>(),
+        MIB
+    );
+    boundary.undo().unwrap();
+    assert!(boundary.info().can_redo);
+    assert_apply_unchanged(
+        &mut boundary,
+        Edit::UpdateNote {
+            page: 0,
+            annotation_index: 1,
+            expected_contents: String::new(),
+            contents: "xy".into(),
+        },
+    );
+    assert!(boundary.info().can_redo);
+
+    let mut max_text = Session::open(&document_with_annots(
+        1,
+        vec![text_annotation(None, valid_rect(), None)].into(),
+    ))
+    .unwrap();
+    let contents = "z".repeat(64 * 1024);
+    max_text
+        .apply(Edit::UpdateNote {
+            page: 0,
+            annotation_index: 0,
+            expected_contents: String::new(),
+            contents: contents.clone(),
+        })
+        .unwrap();
+    assert_eq!(max_text.notes(0).unwrap().notes[0].contents, contents);
+}
+
+#[test]
+fn add_note_preserves_readable_annotation_count_and_content_postconditions() {
+    let unsupported = || {
+        Object::Dictionary(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Link",
+            "Rect" => vec![0.into(), 0.into(), 1.into(), 1.into()],
+        })
+    };
+    let add = |contents: &str| Edit::AddNote {
+        page: 0,
+        bounds: Rect {
+            x: 100.0,
+            y: 60.0,
+            width: 20.0,
+            height: 20.0,
+        },
+        contents: contents.into(),
+        color: Color {
+            r: 1.0,
+            g: 0.8,
+            b: 0.0,
+        },
+    };
+
+    let mut exact_count = Session::open(&document_with_annots(
+        1,
+        (0..1023).map(|_| unsupported()).collect::<Vec<_>>().into(),
+    ))
+    .unwrap();
+    exact_count.apply(add("count boundary")).unwrap();
+    let exact = exact_count.notes(0).unwrap();
+    assert_eq!(exact.unsupported_count, 1023);
+    assert_eq!(exact.notes.len(), 1);
+
+    let mut over_count = Session::open(&document_with_annots(
+        1,
+        (0..1024).map(|_| unsupported()).collect::<Vec<_>>().into(),
+    ))
+    .unwrap();
+    over_count
+        .apply(Edit::Rotate {
+            page: 0,
+            degrees: 90,
+        })
+        .unwrap();
+    over_count.undo().unwrap();
+    assert!(over_count.info().can_redo);
+    assert_apply_unchanged(&mut over_count, add("one too many"));
+    assert!(over_count.info().can_redo);
+
+    let almost_mib = text_annotation(
+        Some(Object::String(
+            "a".repeat(MIB - 1).into_bytes(),
+            StringFormat::Literal,
+        )),
+        valid_rect(),
+        None,
+    );
+    let mut exact_contents =
+        Session::open(&document_with_annots(1, vec![almost_mib.clone()].into())).unwrap();
+    exact_contents.apply(add("x")).unwrap();
+    assert_eq!(
+        exact_contents
+            .notes(0)
+            .unwrap()
+            .notes
+            .iter()
+            .map(|note| note.contents.len())
+            .sum::<usize>(),
+        MIB
+    );
+
+    let mut over_contents =
+        Session::open(&document_with_annots(1, vec![almost_mib].into())).unwrap();
+    over_contents
+        .apply(Edit::Rotate {
+            page: 0,
+            degrees: 90,
+        })
+        .unwrap();
+    over_contents.undo().unwrap();
+    assert_apply_unchanged(&mut over_contents, add("xy"));
+    assert!(over_contents.info().can_redo);
+
+    let malformed = Object::Dictionary(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Link",
+        "Rect" => vec![10.into(), 10.into(), 10.into(), 20.into()],
+    });
+    let mut malformed = Session::open(&document_with_annots(1, vec![malformed].into())).unwrap();
+    assert_apply_unchanged(
+        &mut malformed,
+        add("must not bypass malformed existing entry"),
+    );
+}
+
+#[test]
+fn add_note_uses_the_same_64_reference_limit_and_rejects_bad_array_entries() {
+    let add = || Edit::AddNote {
+        page: 0,
+        bounds: Rect {
+            x: 100.0,
+            y: 60.0,
+            width: 20.0,
+            height: 20.0,
+        },
+        contents: "new note".into(),
+        color: Color {
+            r: 1.0,
+            g: 0.8,
+            b: 0.0,
+        },
+    };
+
+    let mut at_limit = Session::open(&document_with_annots_reference_chain(64)).unwrap();
+    at_limit.apply(add()).unwrap();
+    assert_eq!(at_limit.notes(0).unwrap().notes.len(), 1);
+
+    let mut too_deep = Session::open(&document_with_annots_reference_chain(65)).unwrap();
+    assert_apply_unchanged(&mut too_deep, add());
+
+    for annots in [
+        vec![Object::Integer(7)].into(),
+        vec![Object::Reference((9999, 0))].into(),
+    ] {
+        let mut malformed = Session::open(&document_with_annots(1, annots)).unwrap();
+        assert_apply_unchanged(&mut malformed, add());
+    }
 }
 
 #[test]
