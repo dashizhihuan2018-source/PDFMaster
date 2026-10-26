@@ -11,5 +11,6 @@ mod render;
 pub use document::{
     Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session, TextReader,
 };
+pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};
 pub use notes::{NoteList, TextNote};
 pub use ranges::{PageRange, PageRangeError};

@@ -96,6 +96,8 @@ pub fn command_status_message(command: &str, restored: bool, warning: Option<&st
         } else {
             "页面已提取并回读验证；原文与未保存状态保持不变。".into()
         }
+    } else if command == "insert_pdfs_document" {
+        "所选 PDF 已按文件面板返回顺序插入，可整批一次撤销；请导出完整副本保存修改。".into()
     } else if command == "insert_pdf_document" {
         "PDF 页面已插入，可一次撤销；请导出完整副本保存修改。".into()
     } else if restored {
@@ -254,6 +256,24 @@ pub fn raster_plan(width: f32, height: f32, rotation: i32, zoom: f32, density: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn batch_insertion_ui_preserves_single_entry_and_exposes_one_transaction_status() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains(
+            "m.command(\"insert_pdfs_document\",json!({\"index\":m.page.get_untracked()+1}))"
+        ));
+        assert!(source.contains("批量插入 PDF"));
+        assert!(source.contains("| \"insert_pdfs_document\""));
+        assert_eq!(
+            super::command_status_message("insert_pdfs_document", false, None),
+            "所选 PDF 已按文件面板返回顺序插入，可整批一次撤销；请导出完整副本保存修改。"
+        );
+        assert_eq!(
+            super::command_status_message("insert_pdfs_document", true, Some("草稿故障")),
+            "草稿故障"
+        );
+        assert!(source.contains("在当前页后插入 PDF"));
+    }
     #[test]
     fn insertion_ui_uses_current_page_native_picker_and_marks_unsaved() {
         let source = include_str!("workspace.rs");

@@ -5,107 +5,149 @@ use crate::edit::flatten_page_tree;
 use lopdf::{Dictionary, Object, ObjectId};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
+pub const MAX_INSERT_FILES: usize = 32;
+pub const MAX_INSERT_BYTES: usize = 64 * 1024 * 1024;
+
 impl Session {
     /// Inserts every admitted incoming page as one undoable transaction. The
     /// caller's source bytes and this session remain unchanged on any failure.
     pub fn insert_pdf(&mut self, bytes: &[u8], index: usize) -> Result<()> {
+        self.insert_pdfs(&[bytes], index)
+    }
+
+    /// Inserts files in the supplied order. All preparation is disposable and
+    /// only the final serialized/reparsed document enters the session history.
+    pub fn insert_pdfs(&mut self, files: &[&[u8]], index: usize) -> Result<()> {
         if index > self.pages.len() {
             return Err(PdfMasterError::InvalidPage {
                 index,
                 page_count: self.pages.len(),
             });
         }
-        let incoming = Session::open(bytes)?;
-        if self.pages.len().saturating_add(incoming.pages.len()) > MAX_PAGES {
-            return Err(PdfMasterError::Budget("inserted page count"));
+        if files.is_empty() {
+            return Err(PdfMasterError::InvalidOperation("no PDF files selected"));
         }
-        let catalog = incoming.document.catalog().map_err(malformed)?;
-        if [b"AcroForm".as_slice(), b"StructTreeRoot", b"MarkInfo"]
-            .iter()
-            .any(|key| catalog.has(key))
-        {
-            return Err(PdfMasterError::InvalidOperation(
-                "global form/tagged insertion needs relationship migration",
-            ));
+        if files.len() > MAX_INSERT_FILES {
+            return Err(PdfMasterError::Budget("insert file count"));
         }
-        // These are document-wide appearance policies, not per-page resources.
-        // Do not silently change existing pages by adopting the incoming policy.
-        if catalog.has(b"OCProperties") || catalog.has(b"OutputIntents") {
-            return Err(PdfMasterError::InvalidOperation(
-                "document-wide color/layer insertion policy is not yet supported",
-            ));
+        let total = files.iter().try_fold(0usize, |total, bytes| {
+            total
+                .checked_add(bytes.len())
+                .ok_or(PdfMasterError::Budget("insert input bytes"))
+        })?;
+        if total > MAX_INSERT_BYTES {
+            return Err(PdfMasterError::Budget("insert input bytes"));
         }
-        // Catalog language cannot be preserved by inventing Page /Lang entries.
-        // A mixed-language document needs tagged/marked-content migration.
-        if catalog_language(&incoming.document)? != catalog_language(&self.document)? {
-            return Err(PdfMasterError::InvalidOperation(
-                "mixed document language insertion needs tagged language migration",
-            ));
-        }
-        let selected: Vec<_> = (0..incoming.pages.len()).collect();
-        let mut imported = Session::open(&incoming.extract_pages(&selected)?)?.document;
-        let page_ids = page_object_ids(&imported)?;
-        materialize_page_attributes(&mut imported, &page_ids)?;
-        let retired_catalog = imported
-            .trailer
-            .get(b"Root")
-            .and_then(Object::as_reference)
-            .map_err(malformed)?;
-        let retired_pages = imported
-            .catalog()
-            .and_then(|c| c.get(b"Pages"))
-            .and_then(Object::as_reference)
-            .map_err(malformed)?;
-        for &id in &page_ids {
-            imported
-                .get_object_mut(id)
-                .and_then(Object::as_dict_mut)
-                .map_err(malformed)?
-                .remove(b"Parent");
-        }
-        // Serialized/reloaded PDFs include XRef/ObjStm container objects. Copy
-        // only page-reachable objects, not stale file-format containers/roots.
-        let reachable = page_reachable(&imported, &page_ids)?;
-        imported.objects.retain(|id, _| reachable.contains(id));
-        validate_retired_roots(&imported, &[retired_catalog, retired_pages])?;
         let mut candidate = self.document.clone();
-        let start = candidate
-            .max_id
-            .checked_add(1)
-            .ok_or(PdfMasterError::Budget("insert object IDs"))?;
-        let length = u32::try_from(imported.objects.len())
-            .map_err(|_| PdfMasterError::Budget("insert object count"))?;
-        let end = start
-            .checked_add(length)
-            .ok_or(PdfMasterError::Budget("insert object IDs"))?;
-        let map: HashMap<_, _> = imported
-            .objects
-            .keys()
-            .copied()
-            .zip((start..end).map(|id| (id, 0)))
-            .collect();
-        let mut remap = Remap {
-            map: &map,
-            items: 0,
-        };
-        let mapped = |id: &ObjectId| {
-            map.get(id).copied().ok_or_else(|| {
-                PdfMasterError::Malformed("insert object ID mapping is missing".into())
-            })
-        };
-        let imported_ids: Vec<_> = page_ids.iter().map(mapped).collect::<Result<_>>()?;
-        for (old_id, object) in &imported.objects {
-            candidate
-                .objects
-                .insert(mapped(old_id)?, remap.object(object, 0)?);
+        let mut count = self.pages.len();
+        let mut cursor = index;
+        for bytes in files {
+            let (next, added) = insert_document(&candidate, count, bytes, cursor)?;
+            candidate = next;
+            count += added;
+            cursor += added;
         }
-        candidate.max_id = candidate.max_id.max(end - 1);
-        let mut ids = page_object_ids(&self.document)?;
-        ids.splice(index..index, imported_ids);
-        flatten_page_tree(&mut candidate, &ids)?;
-        candidate.version = candidate.version.max(imported.version);
         self.commit_document(candidate)
     }
+}
+
+fn insert_document(
+    target: &lopdf::Document,
+    count: usize,
+    bytes: &[u8],
+    index: usize,
+) -> Result<(lopdf::Document, usize)> {
+    let incoming = Session::open(bytes)?;
+    let incoming_count = incoming.info().page_count;
+    if count.saturating_add(incoming_count) > MAX_PAGES {
+        return Err(PdfMasterError::Budget("inserted page count"));
+    }
+    let catalog = incoming.document.catalog().map_err(malformed)?;
+    if [b"AcroForm".as_slice(), b"StructTreeRoot", b"MarkInfo"]
+        .iter()
+        .any(|key| catalog.has(key))
+    {
+        return Err(PdfMasterError::InvalidOperation(
+            "global form/tagged insertion needs relationship migration",
+        ));
+    }
+    // These are document-wide appearance policies, not per-page resources.
+    // Do not silently change existing pages by adopting the incoming policy.
+    if catalog.has(b"OCProperties") || catalog.has(b"OutputIntents") {
+        return Err(PdfMasterError::InvalidOperation(
+            "document-wide color/layer insertion policy is not yet supported",
+        ));
+    }
+    // Catalog language cannot be preserved by inventing Page /Lang entries.
+    // A mixed-language document needs tagged/marked-content migration.
+    if catalog_language(&incoming.document)? != catalog_language(target)? {
+        return Err(PdfMasterError::InvalidOperation(
+            "mixed document language insertion needs tagged language migration",
+        ));
+    }
+    let selected: Vec<_> = (0..incoming.pages.len()).collect();
+    let mut imported = Session::open(&incoming.extract_pages(&selected)?)?.document;
+    let page_ids = page_object_ids(&imported)?;
+    materialize_page_attributes(&mut imported, &page_ids)?;
+    let retired_catalog = imported
+        .trailer
+        .get(b"Root")
+        .and_then(Object::as_reference)
+        .map_err(malformed)?;
+    let retired_pages = imported
+        .catalog()
+        .and_then(|c| c.get(b"Pages"))
+        .and_then(Object::as_reference)
+        .map_err(malformed)?;
+    for &id in &page_ids {
+        imported
+            .get_object_mut(id)
+            .and_then(Object::as_dict_mut)
+            .map_err(malformed)?
+            .remove(b"Parent");
+    }
+    // Serialized/reloaded PDFs include XRef/ObjStm container objects. Copy
+    // only page-reachable objects, not stale file-format containers/roots.
+    let reachable = page_reachable(&imported, &page_ids)?;
+    imported.objects.retain(|id, _| reachable.contains(id));
+    validate_retired_roots(&imported, &[retired_catalog, retired_pages])?;
+    let mut candidate = target.clone();
+    let start = candidate
+        .max_id
+        .checked_add(1)
+        .ok_or(PdfMasterError::Budget("insert object IDs"))?;
+    let length = u32::try_from(imported.objects.len())
+        .map_err(|_| PdfMasterError::Budget("insert object count"))?;
+    let end = start
+        .checked_add(length)
+        .ok_or(PdfMasterError::Budget("insert object IDs"))?;
+    let map: HashMap<_, _> = imported
+        .objects
+        .keys()
+        .copied()
+        .zip((start..end).map(|id| (id, 0)))
+        .collect();
+    let mut remap = Remap {
+        map: &map,
+        items: 0,
+    };
+    let mapped = |id: &ObjectId| {
+        map.get(id)
+            .copied()
+            .ok_or_else(|| PdfMasterError::Malformed("insert object ID mapping is missing".into()))
+    };
+    let imported_ids: Vec<_> = page_ids.iter().map(mapped).collect::<Result<_>>()?;
+    for (old_id, object) in &imported.objects {
+        candidate
+            .objects
+            .insert(mapped(old_id)?, remap.object(object, 0)?);
+    }
+    candidate.max_id = candidate.max_id.max(end - 1);
+    let mut ids = page_object_ids(target)?;
+    ids.splice(index..index, imported_ids);
+    flatten_page_tree(&mut candidate, &ids)?;
+    candidate.version = candidate.version.max(imported.version);
+    Ok((candidate, incoming_count))
 }
 
 fn page_reachable(document: &lopdf::Document, pages: &[ObjectId]) -> Result<BTreeSet<ObjectId>> {

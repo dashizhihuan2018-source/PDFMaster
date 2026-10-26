@@ -1,6 +1,18 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 0f2ec54f (2026-10-26)
+## Current snapshot: development 67ba929d (2026-10-26)
+
+Exactly **117 tracked Rust/workflow files** from development `67ba929de7660ee379f2c8077569abf02451299e`, plus this manifest. Older sections below are historical. Incomplete candidate source only; formal installed software and Releases remain unchanged. No private development history, documents, screenshots, credentials, memory or generated/build files are included.
+
+Single-PDF insertion is retained. A separate native multi-select entry prepares the selected files in returned picker order on disposable document graphs, then serializes/reparses and commits once. Any malformed/unsupported/oversized input leaves current bytes/history/redo/text cache and durable journal unchanged; a persistence failure after a successful edit remains dirty with a warning. Temporary limits: 32 files, 32MiB per file, 64MiB combined input, 4096 total pages and 32MiB final PDF. Native file metadata is preflighted and opened handles/actual aggregate bytes rechecked. IPC accepts only the insertion index, not filesystem paths or PDF bytes. Reorderable merge UI, broader forms/tagged/color/layer/language migration and secure erasure are not implemented.
+
+Local verification: **145 core, 33 UI, 65 native +4 security, 29 tools** passed; three workspace fmt and core/host/WASM/iOS-simulator clippy passed. New contracts cover real text/raster/order/reopen, repeated inputs, one undo/redo, late failure, preserved journal/redo and byte/page/count admission. Static review covered pasted production logic and reported evidence only; a claimed size-limit bypass was withdrawn after inspecting the existing parse-time 32MiB guard. No independent checkout/test review is claimed.
+
+macOS GUI verified native multi-selection, cancellation without change, one-to-four-page insertion, one-step undo, rejection of a batch containing a synthetic malformed file with the prior redo preserved, redo to four pages, text search on pages 2/4 and full export/readback. Independent PDF tools confirmed four pages and blank/text/blank/text order; input hashes stayed unchanged. The later reopen attempt was not accepted: the tool reported external UI changes and the candidate process/session changed, so further UI actions stopped. No diagnosis of an application crash or successful reopen is claimed. Final Mac arm64 binary SHA-256 `b7de21ef804ee3e0632527ec18e7af52a719308dfa4f5f51a49e11800cf39bee`; five notices match. The iOS simulator archive built (arm64/IOSSIMULATOR/min16/SDK27), binary SHA-256 `74ab54b1c2bcb2aa1fe9ecac71401f50778bfe1fcdbf1e827c6df147325b87a5`; five notices match. It was not installed/run on simulator or device in this batch.
+
+Hosted run `40277738310` is still bound to preceding public `7d1294f33640387205d4326e5d03bac2b3ec4fc5`, not this batch source. At observation Mac was verifying workspaces and Windows installing tools; no replacement run is dispatched while live. Earlier run `40274044269` succeeded on `e344432` with three downloaded/hash-checked candidate artifacts, not this source. Inventory remains **22 partial /48 unsupported /0 complete**, 801 legacy rows pending. Complete replica, Windows install/runtime, physical iOS, signing/notarization, formal three-platform publication and final Rustall skill/public skill delivery remain unfinished.
+
+## Historical snapshot: development 0f2ec54f (superseded)
 
 Exactly **117 tracked Rust/workflow files** from development `0f2ec54f343b2281265940b8ca4cd999a7ad46b0`, plus this manifest. Historical sections below do not certify this source. This remains incomplete candidate source, not a formal Release; existing formal software and Releases are unchanged. Private history, documents, credentials, memory and generated/build files are excluded.
 

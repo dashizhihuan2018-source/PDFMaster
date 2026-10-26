@@ -91,9 +91,122 @@ fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::
         .map_err(|error| error.to_string())
 }
 
+fn read_insertion_files(paths: &[std::path::PathBuf]) -> Reply<Vec<Vec<u8>>> {
+    if paths.is_empty() || paths.len() > pdfmaster_core::MAX_INSERT_FILES {
+        return Err("请选择 1–32 份 PDF；整批未修改当前文档。".into());
+    }
+    let mut declared = 0u64;
+    for path in paths {
+        let metadata =
+            std::fs::metadata(path).map_err(|_| "无法检查所选 PDF；整批未修改当前文档。")?;
+        if !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
+            return Err("所选 PDF 须为普通文件且每份不超过 32MiB；整批未修改当前文档。".into());
+        }
+        declared = declared
+            .checked_add(metadata.len())
+            .ok_or("批量 PDF 总输入超过 64MiB；文档未修改。")?;
+        if declared > pdfmaster_core::MAX_INSERT_BYTES as u64 {
+            return Err("批量 PDF 总输入超过 64MiB；文档未修改。".into());
+        }
+    }
+    let mut files = Vec::with_capacity(paths.len());
+    let mut actual = 0usize;
+    for path in paths {
+        // Metadata is only a preflight. The opened handle and actual read size
+        // are checked again; a changed file cannot bypass the aggregate bound.
+        let bytes = export_staging::readback_pdf(path)
+            .map_err(|_| "无法读取所选 PDF；整批未修改当前文档。")?;
+        actual = actual
+            .checked_add(bytes.len())
+            .ok_or("批量 PDF 总输入超过 64MiB；文档未修改。")?;
+        if actual > pdfmaster_core::MAX_INSERT_BYTES {
+            return Err("批量 PDF 总输入超过 64MiB；文档未修改。".into());
+        }
+        files.push(bytes);
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+    #[test]
+    fn batch_insertion_checkpoints_once_and_keeps_late_failure_atomic() {
+        let (mut w, directory) = note_workspace();
+        w.checkpoint().unwrap();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let first = Session::blank(120., 100., 2).unwrap().bytes().unwrap();
+        let second = Session::blank(150., 100., 1).unwrap().bytes().unwrap();
+        let journal_before = std::fs::read(directory.path().join("draft.json")).unwrap();
+        let id = w.begin_insertion(1).unwrap();
+        assert!(
+            w.finish_insertions(id, 1, &[first.as_slice(), b"bad PDF"])
+                .is_err()
+        );
+        assert!(w.export_reservation.is_none());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(
+            std::fs::read(directory.path().join("draft.json")).unwrap(),
+            journal_before
+        );
+        let id = w.begin_insertion(1).unwrap();
+        let view = w.finish_insertions(id, 1, &[&first, &second]).unwrap();
+        assert_eq!(view.info.page_count, 4);
+        assert!(view.info.dirty);
+        assert!(view.warning.is_none());
+        assert_eq!(view.info.pages[1].width, 120.);
+        assert_eq!(view.info.pages[3].width, 150.);
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn native_batch_reader_keeps_returned_order_and_rejects_missing_files_or_count() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("中文 first.pdf");
+        let second = directory.path().join("second.pdf");
+        let a = Session::blank(120., 100., 1).unwrap().bytes().unwrap();
+        let b = Session::blank(150., 100., 2).unwrap().bytes().unwrap();
+        std::fs::write(&first, &a).unwrap();
+        std::fs::write(&second, &b).unwrap();
+        assert_eq!(
+            read_insertion_files(&[second.clone(), first.clone(), second.clone()]).unwrap(),
+            vec![b.clone(), a.clone(), b.clone()]
+        );
+        assert!(read_insertion_files(&[]).is_err());
+        assert!(read_insertion_files(&vec![first.clone(); 33]).is_err());
+        assert!(
+            read_insertion_files(&[first.clone(), directory.path().join("missing.pdf")]).is_err()
+        );
+        assert!(read_insertion_files(&[directory.path().to_path_buf()]).is_err());
+        assert_eq!(std::fs::read(&first).unwrap(), a);
+        assert_eq!(std::fs::read(&second).unwrap(), b);
+    }
+
+    #[test]
+    fn native_batch_reader_rejects_aggregate_size_before_reading_payloads() {
+        let directory = tempfile::tempdir().unwrap();
+        let large = directory.path().join("large.pdf");
+        std::fs::File::create(&large)
+            .unwrap()
+            .set_len(32 * 1024 * 1024)
+            .unwrap();
+        let tiny = directory.path().join("tiny.pdf");
+        std::fs::write(&tiny, b"x").unwrap();
+        assert!(
+            read_insertion_files(&[large.clone(), large.clone(), tiny])
+                .unwrap_err()
+                .contains("64MiB")
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&large)
+            .unwrap()
+            .set_len(32 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(read_insertion_files(&[large]).is_err());
+    }
+
     #[test]
     fn insertion_is_reserved_checkpointed_and_one_undo_transaction() {
         let (mut w, directory) = note_workspace();
@@ -1047,6 +1160,9 @@ impl Workspace {
         Ok(id)
     }
     fn finish_insertion(&mut self, id: u32, index: usize, bytes: &[u8]) -> Reply<DocumentView> {
+        self.finish_insertions(id, index, &[bytes])
+    }
+    fn finish_insertions(&mut self, id: u32, index: usize, files: &[&[u8]]) -> Reply<DocumentView> {
         if self.export_reservation != Some(id) {
             return Err("插入会话已改变，文档未修改。".into());
         }
@@ -1056,7 +1172,7 @@ impl Workspace {
         self.session
             .as_mut()
             .ok_or("请先打开 PDF")?
-            .insert_pdf(bytes, index)
+            .insert_pdfs(files, index)
             .map_err(|error| error.to_string())?;
         self.checkpoint()
     }
@@ -1677,6 +1793,46 @@ async fn insert_pdf_document(
     Ok(Some(view))
 }
 
+#[tauri::command(rename_all = "snake_case")]
+async fn insert_pdfs_document(
+    app: tauri::AppHandle,
+    state: State<'_, Store>,
+    index: usize,
+) -> Reply<Option<DocumentView>> {
+    let id = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .begin_insertion(index)?;
+    let reservation = ExportReservation {
+        store: state.inner(),
+        id,
+    };
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .set_title("批量插入 PDF（按文件面板返回顺序）")
+        .add_filter("PDF 文档", &["pdf"])
+        .blocking_pick_files()
+    else {
+        return Ok(None);
+    };
+    if selected.is_empty() || selected.len() > pdfmaster_core::MAX_INSERT_FILES {
+        return Err("请选择 1–32 份 PDF；整批未修改当前文档。".into());
+    }
+    let paths = selected
+        .into_iter()
+        .map(|file| file.into_path().map_err(|_| "不能访问所选 PDF"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let files = read_insertion_files(&paths)?;
+    let bytes: Vec<_> = files.iter().map(Vec::as_slice).collect();
+    let view = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .finish_insertions(id, index, &bytes)?;
+    drop(reservation);
+    Ok(Some(view))
+}
+
 async fn publish_pdf_copy(app: &tauri::AppHandle, copy_name: &str, bytes: &[u8]) -> Reply<bool> {
     // Validate before either platform publishes; use the same picker/provider
     // and exact bounded readback for full exports and derived extraction.
@@ -1746,7 +1902,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

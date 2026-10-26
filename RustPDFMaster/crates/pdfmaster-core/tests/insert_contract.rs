@@ -36,6 +36,132 @@ fn with_catalog(session: &Session, key: &str, value: Object) -> Vec<u8> {
 }
 
 #[test]
+fn batch_insertion_keeps_file_and_page_order_as_one_reopenable_transaction() {
+    let first = source("first", 2, 120.);
+    let second = source("second", 1, 150.);
+    let first_bytes = first.bytes().unwrap();
+    let second_bytes = second.bytes().unwrap();
+    let mut target = Session::open(&source("target", 2, 180.).bytes().unwrap()).unwrap();
+    let before = target.bytes().unwrap();
+    target
+        .insert_pdfs(&[&first_bytes, &second_bytes, &first_bytes], 1)
+        .unwrap();
+    let expected = [
+        "target-0", "first-0", "first-1", "second-0", "first-0", "first-1", "target-1",
+    ];
+    assert_eq!(target.info().page_count, expected.len());
+    for (page, text) in expected.into_iter().enumerate() {
+        assert!(target.text(page).unwrap().contains(text));
+    }
+    for (page, input, original) in [
+        (1, &first, 0),
+        (2, &first, 1),
+        (3, &second, 0),
+        (4, &first, 0),
+        (5, &first, 1),
+    ] {
+        assert_eq!(
+            target.render_png(page, 1.).unwrap(),
+            input.render_png(original, 1.).unwrap()
+        );
+    }
+    let after = target.bytes().unwrap();
+    let reopened = Session::open(&after).unwrap();
+    assert_eq!(reopened.info().pages, target.info().pages);
+    assert!(reopened.text(3).unwrap().contains("second-0"));
+    target.undo().unwrap();
+    assert_eq!(target.bytes().unwrap(), before);
+    assert!(!target.info().can_undo);
+    target.redo().unwrap();
+    assert_eq!(target.bytes().unwrap(), after);
+    assert_eq!(first.bytes().unwrap(), first_bytes);
+    assert_eq!(second.bytes().unwrap(), second_bytes);
+}
+
+#[test]
+fn late_batch_failure_keeps_bytes_history_redo_and_existing_text_reader() {
+    let first = source("incoming", 1, 120.).bytes().unwrap();
+    let bad_language = with_catalog(
+        &source("lang", 1, 130.),
+        "Lang",
+        Object::string_literal("fr-FR"),
+    );
+    let mut target = source("target", 1, 180.);
+    target
+        .apply(Edit::Rotate {
+            page: 0,
+            degrees: 90,
+        })
+        .unwrap();
+    target.undo().unwrap();
+    let before = target.bytes().unwrap();
+    let info = target.info();
+    let reader = target.text_reader().unwrap();
+    for bad in [b"broken PDF".as_slice(), bad_language.as_slice()] {
+        assert!(target.insert_pdfs(&[&first, bad], 1).is_err());
+        assert_eq!(target.bytes().unwrap(), before);
+        assert_eq!(target.info(), info);
+        assert!(reader.text(0).unwrap().contains("target-0"));
+    }
+    target.redo().unwrap();
+    assert_eq!(target.info().pages[0].rotation, 90);
+}
+
+#[test]
+fn batch_empty_count_bytes_and_index_guards_are_atomic() {
+    use pdfmaster_core::PdfMasterError;
+    let incoming = source("incoming", 1, 120.).bytes().unwrap();
+    let mut target = Session::open(&source("target", 1, 180.).bytes().unwrap()).unwrap();
+    let before = target.bytes().unwrap();
+    assert!(target.insert_pdfs(&[], 0).is_err());
+    assert!(matches!(
+        target.insert_pdfs(&[&incoming], usize::MAX),
+        Err(PdfMasterError::InvalidPage { .. })
+    ));
+    assert!(matches!(
+        target.insert_pdfs(&[incoming.as_slice(); 33], 0),
+        Err(PdfMasterError::Budget(_))
+    ));
+    let bytes = vec![0u8; 32 * 1024 * 1024];
+    assert!(matches!(
+        target.insert_pdfs(&[bytes.as_slice(), bytes.as_slice(), &[0]], 0),
+        Err(PdfMasterError::Budget(_))
+    ));
+    assert_eq!(target.bytes().unwrap(), before);
+    assert!(!target.info().can_undo);
+}
+
+#[test]
+fn late_batch_page_budget_failure_never_publishes_the_first_file() {
+    let first = Session::blank(100., 100., 1).unwrap().bytes().unwrap();
+    let large = Session::blank(100., 100., 4095).unwrap().bytes().unwrap();
+    let mut target = Session::open(&first).unwrap();
+    let before = target.bytes().unwrap();
+    assert!(target.insert_pdfs(&[&first, &large], 1).is_err());
+    assert_eq!(target.bytes().unwrap(), before);
+    assert!(!target.info().can_undo);
+}
+
+#[test]
+fn padded_oversize_pdf_is_rejected_by_single_and_batch_core_admission() {
+    use pdfmaster_core::PdfMasterError;
+    let first = Session::blank(100., 100., 1).unwrap().bytes().unwrap();
+    let mut padded = first.clone();
+    padded.resize(32 * 1024 * 1024 + 1, b' ');
+    let mut target = Session::open(&first).unwrap();
+    for batch in [false, true] {
+        let result = if batch {
+            target.insert_pdfs(&[&first, &padded], 1)
+        } else {
+            target.insert_pdf(&padded, 1)
+        };
+        assert!(matches!(result, Err(PdfMasterError::Budget("input size"))));
+        assert_eq!(target.bytes().unwrap(), first);
+        assert!(!target.info().can_undo);
+    }
+}
+
+#[test]
 fn insertion_preserves_document_language_without_invalid_page_language_or_amplification() {
     let base = source("language", 1, 120.);
     let same = with_catalog(&base, "Lang", Object::string_literal("en-US"));
