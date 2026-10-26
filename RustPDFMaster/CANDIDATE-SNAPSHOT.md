@@ -1,6 +1,14 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development cbc00012 (2026-10-26)
+## Current snapshot: development 85ab4255 (2026-10-26)
+
+Exactly **133 tracked Rust/workflow files** from development `85ab4255b0dd23921962dd200eb375f4623342ec`, plus this record. This includes the original-derived home slice below and a bounded host-CI repair. Only candidate source is synchronized; private development history, user documents/screenshots, memory, credentials and build outputs are excluded. Formal Swift releases, website and installation remain unchanged.
+
+Hosted run `40339823241`, exact preceding head `5622cd16e3e0de054eab6bbe5b65523a0fba2c5f`, completed **failure** on both Mac and Windows: UI host Clippy rejected an inline large `Document` in `PageBatchReply`. WASM-only Clippy had not exposed this 64-bit host layout. A real host-size regression failed first; boxing the reply payload and unboxing at consumption fixes the layout without changing the Serde/native JSON wire shape or disabling warnings. Applied/cancelled decode contracts retain the existing protocol. CI now runs app `--all-targets`, including the two binary reply tests and seven shell integration contracts; its wiring contract also failed before the change. Independent read-only source review found no remaining issue within this bounded repair; reported test results were not independently rerun by that reviewer.
+
+Current local checks: **57 UI tests** (48 library +2 binary +7 integration), **30 tool tests**, all three workspace formatting/test/host-Clippy gates and the locked release WASM build via the complete `tools/ci-check.sh` passed. UI WASM all-target Clippy with warnings denied also passed. This is local verification, not a new hosted success or native platform/UI acceptance. The runtime hashes below belong specifically to preceding development `cbc00012`, not a rebuilt repair package. **Full original UI and functional parity remain unaccepted**, with 24 partial /46 unsupported /0 complete features and 801 legacy contracts pending. Real multi-document tabs, original mode toolbar and page-based editing remain required. Actual Windows runtime, physical iOS, signing/formal three-platform publication and final Rustall/public skill delivery remain unfinished.
+
+## Historical snapshot: development cbc00012 (superseded)
 
 Exactly **133 tracked Rust/workflow files** from development `cbc00012b9d37bcacff4187b1d182f8421cab383`, plus this snapshot record. Only the reviewed Rust subtree and candidate workflow are imported; private development history, user files/screenshots, memory, credentials, generated projects and build outputs are excluded. The existing formal Swift release, website and immutable Release assets are preserved. The repository source manifest is mechanically refreshed for changed/new candidate files, not a new formal product release.
 

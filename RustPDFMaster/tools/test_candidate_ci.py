@@ -296,7 +296,7 @@ class CandidateCiContract(unittest.TestCase):
 
     def test_ci_executes_home_shell_route_contracts_not_only_library_tests(self):
         script = self.read_required(TOOLS / "ci-check.sh")
-        self.assertIn("test --locked --manifest-path app/Cargo.toml --lib --test shell_routes", script)
+        self.assertIn("test --locked --manifest-path app/Cargo.toml --all-targets", script)
 
     def test_artifact_guard_hash_zip_and_pe_contracts(self):
         guard = TOOLS / "ci-artifact-guard.py"

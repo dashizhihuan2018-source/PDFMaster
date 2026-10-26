@@ -25,7 +25,7 @@ cargo "+$rust_version" clippy --locked --manifest-path crates/pdfmaster-core/Car
   --all-targets -- -D warnings
 
 cargo "+$rust_version" fmt --manifest-path app/Cargo.toml --all -- --check
-cargo "+$rust_version" test --locked --manifest-path app/Cargo.toml --lib --test shell_routes
+cargo "+$rust_version" test --locked --manifest-path app/Cargo.toml --all-targets
 cargo "+$rust_version" clippy --locked --manifest-path app/Cargo.toml --all-targets -- -D warnings
 
 cargo "+$rust_version" fmt --manifest-path src-tauri/Cargo.toml --all -- --check

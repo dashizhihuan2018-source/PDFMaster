@@ -23,7 +23,7 @@ rustup target add wasm32-unknown-unknown aarch64-apple-ios-sim aarch64-apple-ios
 cargo install trunk --version 0.21.14 --locked
 cargo install tauri-cli --version 2.12.4 --locked
 cargo test -p pdfmaster-core
-cargo test --manifest-path app/Cargo.toml --lib --test shell_routes
+cargo test --locked --manifest-path app/Cargo.toml --all-targets
 cargo test --manifest-path src-tauri/Cargo.toml --lib --test security_contract
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 NO_COLOR=true cargo tauri build --debug --bundles app

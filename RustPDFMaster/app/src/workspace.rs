@@ -116,9 +116,45 @@ struct SearchResponse {
 enum PageBatchReply {
     Cancelled,
     Applied {
-        document: Document,
+        document: Box<Document>,
         affected_count: usize,
     },
+}
+
+#[cfg(test)]
+mod batch_reply_contract {
+    use super::*;
+
+    #[test]
+    fn native_batch_reply_keeps_stack_size_bounded() {
+        assert!(
+            std::mem::size_of::<PageBatchReply>() <= 64,
+            "The host build must not inline the entire document in the applied variant"
+        );
+    }
+
+    #[test]
+    fn batch_reply_decodes_the_existing_native_wire_shape() {
+        let reply: PageBatchReply = serde_json::from_value(json!({
+            "kind":"applied", "affected_count":1,
+            "document":{"name":"sample.pdf", "restored":false,
+                "info":{"page_count":1,"pages":[{"width":595.,"height":842.,"rotation":0}],"dirty":true,"can_undo":true,"can_redo":false}}
+        })).unwrap();
+        let PageBatchReply::Applied {
+            document,
+            affected_count,
+        } = reply
+        else {
+            panic!("expected applied reply")
+        };
+        assert_eq!(affected_count, 1);
+        assert_eq!(document.name, "sample.pdf");
+        assert!(document.info.dirty);
+        assert!(matches!(
+            serde_json::from_value::<PageBatchReply>(json!({"kind":"cancelled"})).unwrap(),
+            PageBatchReply::Cancelled
+        ));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -776,7 +812,7 @@ impl Model {
                     } else {
                         format!("已顺时针旋转 {affected_count} 页。")
                     });
-                    self.document.set(Some(document));
+                    self.document.set(Some(*document));
                     self.render().await;
                 }
                 Ok(PageBatchReply::Cancelled) => {
