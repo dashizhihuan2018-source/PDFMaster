@@ -2,8 +2,8 @@
 mod bridge;
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::{
-    RasterPlan, adjacent_page, command_status_message, fit_width_zoom, note_edit, page_batch_args,
-    page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
+    RasterPlan, adjacent_page, command_status_message, fit_width_zoom, line_edit, note_edit,
+    page_batch_args, page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
     search_conditions_message, search_response_is_current, search_status_message, shape_color_hex,
     shape_edit, step_zoom, update_note_edit, update_shape_edit, visible_status,
 };
@@ -122,6 +122,7 @@ struct Model {
     shape_stroke: RwSignal<String>,
     shape_fill: RwSignal<String>,
     shape_line: RwSignal<String>,
+    line_points: RwSignal<String>,
     shapes: RwSignal<Option<Result<ShapeList, String>>>,
     selected_shape: RwSignal<Option<Value>>,
 }
@@ -527,6 +528,31 @@ impl Model {
             None => self.message.set("请先打开 PDF。".into()),
         }
     }
+    fn add_line(self, mode: &'static str) {
+        if self.blocked() {
+            return;
+        }
+        let page = self.page.get_untracked();
+        let edit = self.document.with_untracked(|d| {
+            d.as_ref().and_then(|d| d.info.pages.get(page)).map(|p| {
+                line_edit(
+                    page,
+                    p.width,
+                    p.height,
+                    &self.line_points.get_untracked(),
+                    &self.shape_stroke.get_untracked(),
+                    &self.shape_fill.get_untracked(),
+                    &self.shape_line.get_untracked(),
+                    mode,
+                )
+            })
+        });
+        match edit {
+            Some(Ok(edit)) => self.edit(edit),
+            Some(Err(e)) => self.message.set(e),
+            None => self.message.set("请先打开 PDF。".into()),
+        }
+    }
     fn add_note(self) {
         if self.blocked() {
             return;
@@ -674,6 +700,7 @@ pub fn Workspace() -> impl IntoView {
         shape_stroke: RwSignal::new("#4F46E5".into()),
         shape_fill: RwSignal::new(String::new()),
         shape_line: RwSignal::new("2".into()),
+        line_points: RwSignal::new("72,200,300,300".into()),
         shapes: RwSignal::new(None),
         selected_shape: RwSignal::new(None),
     };
@@ -786,7 +813,7 @@ pub fn Workspace() -> impl IntoView {
                         Some(Ok(list))=>view!{
                             <p class="note-meta">{format!("当前页 {} 个受支持样式的图形；{} 条其他或暂不支持样式的批注未列入。标签、回复和弹窗关系仍需操作时检查。",list.shapes.len(),list.unsupported_count)}</p>
                             {list.shapes.into_iter().map(|shape|{let selected=shape.clone();view!{
-                                <article class="note-item"><strong>{format!("{} · 批注 {}",if shape["shape"]=="ellipse"{"椭圆"}else{"矩形"},shape["annotation_index"].as_u64().unwrap_or(0)+1)}</strong>
+                                <article class="note-item"><strong>{format!("{} · 批注 {}",match shape["shape"].as_str(){Some("line")=>"直线／箭头",Some("ellipse")=>"椭圆",_=>"矩形"},shape["annotation_index"].as_u64().unwrap_or(0)+1)}</strong>
                                 <button disabled=move||m.blocked() on:click=move|_|m.select_shape(selected.clone())>"选择图形参数"</button>
                                 <button class="danger" disabled=move||m.blocked() on:click=move|_|m.delete_shape(shape.clone())>"删除图形…"</button></article>
                             }}).collect_view()}
@@ -798,9 +825,14 @@ pub fn Workspace() -> impl IntoView {
                     <label class="shape-label">"线宽 (pt)"<input aria-label="图形线宽" inputmode="decimal" disabled=move||m.blocked() prop:value=move||m.shape_line.get() on:input=move|e|m.shape_line.set(event_target_value(&e))/></label>
                     <button disabled=move||m.blocked() on:click=move|_|m.add_shape("rectangle")>"添加矩形批注"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.add_shape("ellipse")>"添加椭圆批注"</button>
+                    <label class="shape-label">"直线端点 x1,y1,x2,y2 (pt)"<input aria-label="直线端点 x1,y1,x2,y2" disabled=move||m.blocked() prop:value=move||m.line_points.get() on:input=move|e|m.line_points.set(event_target_value(&e))/></label>
+                    <button disabled=move||m.blocked() on:click=move|_|m.add_line("line")>"添加直线批注"</button>
+                    <button disabled=move||m.blocked() on:click=move|_|m.add_line("arrow")>"添加单箭头批注"</button>
+                    <button disabled=move||m.blocked() on:click=move|_|m.add_line("double_arrow")>"添加双箭头批注"</button>
+                    <p class="note-meta">"新线使用独立端点和上方颜色／线宽（0.25–32 pt）。选中已有线后修改范围会按比例移动／缩放原端点，保留端点样式与虚线；外观范围必要时自动扩展以容纳粗线／箭头，页边仍按页面裁切。新线端点输入不用于修改已有线。"</p>
                     <button disabled=move||m.blocked()||m.selected_shape.get().is_none() on:click=move|_|m.update_shape()>"应用图形修改"</button>
                     <button disabled=move||m.blocked()||m.selected_shape.get().is_none() on:click=move|_|m.selected_shape.set(None)>"取消图形选择"</button>
-                    <p class="shape-label">"原始页面坐标，左下角为原点；旋转页也使用未旋转坐标。参数未应用前不保存，切页或重新渲染后需重新选择。独立批注可撤销；修改和删除不是安全擦除。标签、回复、特殊样式暂不修改；拖拽和线条／手绘仍在迁移。"</p>
+                    <p class="shape-label">"原始页面坐标，左下角为原点；旋转页也使用未旋转坐标。参数未应用前不保存，切页或重新渲染后需重新选择。独立批注可撤销；修改和删除不是安全擦除。标签、回复、特殊样式暂不修改；画布拖拽和手绘仍在迁移。"</p>
                 </div>
                 <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
             </aside>

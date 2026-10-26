@@ -4,6 +4,7 @@ mod document;
 mod edit;
 mod extract;
 mod insert;
+mod lines;
 mod notes;
 mod ranges;
 mod render;
@@ -14,6 +15,7 @@ pub use document::{
     TextReader,
 };
 pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};
+pub use lines::{LineEnding, LineGeometry, Point};
 pub use notes::{NoteList, TextNote};
 pub use ranges::{PageRange, PageRangeError};
 pub use shapes::{ShapeAnnotation, ShapeList};

@@ -1,6 +1,18 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development c68a7c50 (2026-10-26)
+## Current snapshot: development 352ff12a (2026-10-26)
+
+Exactly **122 tracked Rust/workflow files** from development `352ff12a15cf2e484f7aaca2a99c06438a9505ac`, plus this manifest. Incomplete candidate source only, not a product Release or formal installation replacement. Private development history, user files/screenshots, memory, credentials, generated projects and build outputs are excluded.
+
+Independent PDF Line annotations add explicit numeric endpoints and plain/single/double-arrow creation with widths 0.25–32pt inclusive. Numeric bounds updates retain original direction, ten standard ending styles and bounded BS/legacy Border dash patterns. Existing COW, full selected snapshot, native-confirmed epoch/bytes deletion, atomic history, save/reopen/extraction/insertion safeguards apply. Captions, leaders, opacity and measurement/intent semantics remain unsupported instead of being silently repainted. Endpoints may lie on page edges; appearance padding expands when needed for thicker strokes/endings, while visible-page clipping remains. No canvas dragging, persistent unapplied parameters, ink or full drawing parity is implied.
+
+Local verification: **171 core, 42 UI, 70 native +4 security, 29 tools** passed; three-workspace formatting and core/host/WASM/iOS-simulator Clippy with warnings denied passed. Four original line contracts were observed failing before implementation; later opacity/legacy-dash regressions also failed first. An independent reviewer inspected the actual checkout and ran 8 line contracts. Its Important finding (1pt→32pt update clipping inside the old appearance bounds) was reproduced by a failing pixel assertion and fixed; review confirmed no remaining Critical/Important findings. Additional final ending-specific wing/direction/fill pixel assertions pass locally (9 line contracts total). These are bounded automated tests, not full product or GUI acceptance.
+
+Mac ARM64 debug app built with ad-hoc signature, strict/deep integrity and five exact notices checked. Main executable SHA-256: `900e0c8d877adc8e8fd9992a5cee3fca3f4b0a10a7975997d99593d4e1275501`. New iOS simulator archive built for arm64/IOSSIMULATOR/min16.0/SDK27.0; executable SHA-256: `edcd01d749706cd919c632b9008cf173252cc1db1e7481c4c9634040b57a3ffc`; five bundled notices match. Initial notice check used the wrong directory and failed; the actual `assets/third-party-notices` path was then verified. No new simulator install or candidate GUI pass is claimed: the host was locked when native UI verification was attempted. Existing running simulator sessions/formal apps were preserved. No signed device IPA, App Store/TestFlight upload or notarization occurred.
+
+Hosted run `40302392639` remains live on preceding public `00f6184fc2b1ebee2d2053475776d00cbe49d44a`, not this source. Last observation: Mac packaging and Windows tool installation in progress. No replacement run was dispatched to cancel that live work. Feature inventory remains **24 partial /46 unsupported /0 complete** and **801 legacy contracts pending**. Full replica, actual Windows runtime, physical iOS, formal three-platform release and final Rustall/public skill delivery remain unfinished.
+
+## Historical snapshot: development c68a7c50 (superseded)
 
 Exactly **120 tracked Rust/workflow files** from development `c68a7c50e8b1a79bde956769d48ab55693dd8ba6`, plus this manifest. Includes shape lifecycle revision `b91bf5921f34d602bc38a720c0b0ac526585e4db` and the phone layout fix. Incomplete candidate source only; installed formal software, version tags and Releases are unchanged. Private development history, user files/screenshots, memory, credentials and generated/build files are excluded.
 

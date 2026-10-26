@@ -80,6 +80,7 @@ pub struct Color {
 pub enum ShapeKind {
     Rectangle,
     Ellipse,
+    Line,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -129,6 +130,15 @@ pub enum Edit {
         page: usize,
         bounds: Rect,
         shape: ShapeKind,
+        stroke: Color,
+        fill: Option<Color>,
+        line_width: f32,
+    },
+    AddLine {
+        page: usize,
+        start: crate::lines::Point,
+        end: crate::lines::Point,
+        endings: [crate::lines::LineEnding; 2],
         stroke: Color,
         fill: Option<Color>,
         line_width: f32,

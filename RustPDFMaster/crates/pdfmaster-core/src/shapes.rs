@@ -20,6 +20,8 @@ pub struct ShapeAnnotation {
     pub stroke: Color,
     pub fill: Option<Color>,
     pub line_width: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<crate::lines::LineGeometry>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -53,6 +55,7 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
         {
             b"Square" => ShapeKind::Rectangle,
             b"Circle" => ShapeKind::Ellipse,
+            b"Line" => ShapeKind::Line,
             _ => {
                 list.unsupported_count += 1;
                 continue;
@@ -80,10 +83,11 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
                 let bs = resolve(document, bs)?
                     .as_dict()
                     .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
-                if bs.has(b"D")
-                    || bs.get(b"S").ok().is_some_and(|s| {
-                        resolve(document, s).ok().and_then(|s| s.as_name().ok()) != Some(b"S")
-                    })
+                if shape != ShapeKind::Line
+                    && (bs.has(b"D")
+                        || bs.get(b"S").ok().is_some_and(|s| {
+                            resolve(document, s).ok().and_then(|s| s.as_name().ok()) != Some(b"S")
+                        }))
                 {
                     return Err(PdfMasterError::InvalidOperation(
                         "non-solid shape border is not yet editable",
@@ -99,7 +103,7 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
                 let border = resolve(document, border)?
                     .as_array()
                     .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
-                if border.len() != 3
+                if !(border.len() == 3 || (shape == ShapeKind::Line && border.len() == 4))
                     || resolve(document, &border[0])?.as_float().ok() != Some(0.)
                     || resolve(document, &border[1])?.as_float().ok() != Some(0.)
                 {
@@ -113,7 +117,9 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
             } else {
                 1.
             };
-            if !line.is_finite() || line <= 0. || line >= bounds.width.min(bounds.height) {
+            if shape == ShapeKind::Line {
+                crate::lines::validate_width(line)?;
+            } else if !line.is_finite() || line <= 0. || line >= bounds.width.min(bounds.height) {
                 return Err(PdfMasterError::InvalidGeometry(
                     "shape line width is unsupported",
                 ));
@@ -121,14 +127,28 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
             Ok((stroke, fill, line))
         })();
         match style {
-            Ok((stroke, fill, line_width)) => list.shapes.push(ShapeAnnotation {
-                annotation_index,
-                shape,
-                bounds,
-                stroke,
-                fill,
-                line_width,
-            }),
+            Ok((stroke, fill, line_width)) => {
+                let line = if shape == ShapeKind::Line {
+                    match crate::lines::parse(document, a, bounds) {
+                        Ok(line) => Some(line),
+                        Err(_) => {
+                            list.unsupported_count += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                list.shapes.push(ShapeAnnotation {
+                    annotation_index,
+                    shape,
+                    bounds,
+                    stroke,
+                    fill,
+                    line_width,
+                    line,
+                });
+            }
             Err(_) => list.unsupported_count += 1,
         }
     }
@@ -190,7 +210,11 @@ pub(crate) fn update_shape(
     if let Some(c) = fill {
         validate_color(c)?;
     }
-    if !line_width.is_finite() || line_width <= 0. || line_width >= bounds.width.min(bounds.height)
+    if expected.shape == ShapeKind::Line {
+        crate::lines::validate_width(line_width)?;
+    } else if !line_width.is_finite()
+        || line_width <= 0.
+        || line_width >= bounds.width.min(bounds.height)
     {
         return Err(PdfMasterError::InvalidGeometry(
             "shape line width is unsupported",
@@ -204,14 +228,28 @@ pub(crate) fn update_shape(
         .as_dict()
         .map_err(|e| PdfMasterError::Malformed(e.to_string()))?
         .clone();
-    let content = appearance(
-        bounds.width,
-        bounds.height,
-        expected.shape,
-        stroke,
-        fill,
-        line_width,
-    )?;
+    let resized_line = expected
+        .line
+        .as_ref()
+        .map(|line| crate::lines::resized(line, expected.bounds, bounds))
+        .transpose()?;
+    let bounds = if let Some(line) = &resized_line {
+        crate::lines::expanded_bounds(line, &pages[page], line_width, Some(bounds))
+    } else {
+        bounds
+    };
+    let content = if let Some(line) = &resized_line {
+        crate::lines::appearance(line, bounds, stroke, fill, line_width)?
+    } else {
+        appearance(
+            bounds.width,
+            bounds.height,
+            expected.shape,
+            stroke,
+            fill,
+            line_width,
+        )?
+    };
     let ap=document.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Form","FormType"=>1_i64,"BBox"=>vec![0.into(),0.into(),bounds.width.into(),bounds.height.into()],"Resources"=>Dictionary::new()},content));
     annotation.set(
         "Rect",
@@ -228,6 +266,9 @@ pub(crate) fn update_shape(
         dictionary! {"Type"=>"Border","W"=>line_width,"S"=>"S"},
     );
     annotation.set("Border", vec![0.into(), 0.into(), line_width.into()]);
+    if let Some(line) = &resized_line {
+        crate::lines::write_geometry(&mut annotation, line, line_width);
+    }
     annotation.set("AP", dictionary! {"N"=>ap});
     if let Some(c) = fill {
         annotation.set("IC", vec![c.r.into(), c.g.into(), c.b.into()]);
@@ -314,6 +355,11 @@ pub(crate) fn add_shape(
     fill: Option<Color>,
     line_width: f32,
 ) -> Result<()> {
+    if shape == ShapeKind::Line {
+        return Err(PdfMasterError::InvalidOperation(
+            "use add_line with explicit endpoints",
+        ));
+    }
     validate_page_index(page, pages.len())?;
     validate_rect(bounds, &pages[page])?;
     validate_color(stroke)?;
@@ -338,7 +384,7 @@ pub(crate) fn add_shape(
         content,
     ));
     let mut annotation = dictionary! {
-        "Type"=>"Annot", "Subtype"=>match shape {ShapeKind::Rectangle=>"Square", ShapeKind::Ellipse=>"Circle"},
+        "Type"=>"Annot", "Subtype"=>match shape {ShapeKind::Rectangle=>"Square", ShapeKind::Ellipse=>"Circle", ShapeKind::Line=>return Err(PdfMasterError::InvalidOperation("use add_line with explicit endpoints"))},
         "Rect"=>vec![bounds.x.into(),bounds.y.into(),(bounds.x+bounds.width).into(),(bounds.y+bounds.height).into()],
         "P"=>page_id, "F"=>4_i64,
         "C"=>vec![stroke.r.into(),stroke.g.into(),stroke.b.into()],
@@ -388,6 +434,11 @@ fn appearance(
     let w = width - line;
     let h = height - line;
     match shape {
+        ShapeKind::Line => {
+            return Err(PdfMasterError::InvalidOperation(
+                "line appearance requires endpoints",
+            ));
+        }
         ShapeKind::Rectangle => operations.push(Operation::new(
             "re",
             vec![inset.into(), inset.into(), w.into(), h.into()],

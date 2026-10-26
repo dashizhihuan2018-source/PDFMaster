@@ -6,6 +6,69 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn line_edit(
+    page: usize,
+    width: f32,
+    height: f32,
+    points: &str,
+    stroke: &str,
+    fill: &str,
+    line: &str,
+    mode: &str,
+) -> Result<serde_json::Value, String> {
+    let endings = match mode {
+        "line" => ["none", "none"],
+        "arrow" => ["none", "open_arrow"],
+        "double_arrow" => ["open_arrow", "open_arrow"],
+        _ => return Err("直线类型无效。".into()),
+    };
+    if points.len() > 256 {
+        return Err("端点输入过长。".into());
+    }
+    let values = points
+        .split(',')
+        .map(|v| v.trim().parse::<f32>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "端点须为 x1,y1,x2,y2。")?;
+    let [x1, y1, x2, y2] = values.as_slice() else {
+        return Err("端点需要四个逗号分隔的数值。".into());
+    };
+    if values.iter().any(|v| !v.is_finite())
+        || *x1 < 0.
+        || *x2 < 0.
+        || *y1 < 0.
+        || *y2 < 0.
+        || *x1 > width
+        || *x2 > width
+        || *y1 > height
+        || *y2 > height
+        || (x1 == x2 && y1 == y2)
+    {
+        return Err("端点须不同且位于页面内。".into());
+    }
+    // Reuse page/style admission only; creation always sends actual endpoints,
+    // never a bounding rectangle interpreted as a line direction.
+    let mut edit = shape_parameters(
+        page,
+        width,
+        height,
+        "line",
+        &format!("0,0,{width},{height}"),
+        stroke,
+        fill,
+        line,
+    )?;
+    edit["kind"] = serde_json::json!("add_line");
+    edit["start"] = serde_json::json!({"x":x1,"y":y1});
+    edit["end"] = serde_json::json!({"x":x2,"y":y2});
+    edit["endings"] = serde_json::json!(endings);
+    let object = edit.as_object_mut().expect("shape parameters object");
+    object.remove("shape");
+    object.remove("bounds");
+    Ok(edit)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn shape_edit(
     page: usize,
     width: f32,
@@ -16,7 +79,24 @@ pub fn shape_edit(
     fill: &str,
     line: &str,
 ) -> Result<serde_json::Value, String> {
-    if !matches!(shape, "rectangle" | "ellipse")
+    if !matches!(shape, "rectangle" | "ellipse") {
+        return Err("添加直线须指定独立端点。".into());
+    }
+    shape_parameters(page, width, height, shape, bounds, stroke, fill, line)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shape_parameters(
+    page: usize,
+    width: f32,
+    height: f32,
+    shape: &str,
+    bounds: &str,
+    stroke: &str,
+    fill: &str,
+    line: &str,
+) -> Result<serde_json::Value, String> {
+    if !matches!(shape, "rectangle" | "ellipse" | "line")
         || !width.is_finite()
         || !height.is_finite()
         || width <= 0.
@@ -51,7 +131,11 @@ pub fn shape_edit(
         return Err("图形须完整位于页面内，宽高必须为正数。".into());
     }
     let line = line.trim().parse::<f32>().map_err(|_| "请输入有效线宽。")?;
-    if !line.is_finite() || line <= 0. || line >= w.min(*h) {
+    if shape == "line" {
+        if !line.is_finite() || !(0.25..=32.).contains(&line) {
+            return Err("直线线宽须在 0.25–32 pt。".into());
+        }
+    } else if !line.is_finite() || line <= 0. || line >= w.min(*h) {
         return Err("线宽必须为正数且小于图形的宽和高。".into());
     }
     let parse_color = |value: &str| -> Result<serde_json::Value, String> {
@@ -103,7 +187,10 @@ pub fn update_shape_edit(
     line: &str,
 ) -> Result<serde_json::Value, String> {
     let shape = expected["shape"].as_str().ok_or("选中图形类型无效。")?;
-    let mut edit = shape_edit(page, width, height, shape, bounds, stroke, fill, line)?;
+    if shape == "line" && !expected["line"].is_object() {
+        return Err("选中直线缺少端点快照。".into());
+    }
+    let mut edit = shape_parameters(page, width, height, shape, bounds, stroke, fill, line)?;
     // The hex form is a display/editor convenience, not permission to round
     // imported RGB floats when the user has not changed a color field.
     if shape_color_hex(&expected["stroke"]).is_some_and(|c| c.eq_ignore_ascii_case(stroke.trim())) {
@@ -371,6 +458,76 @@ pub fn raster_plan(width: f32, height: f32, rotation: i32, zoom: f32, density: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn line_request_uses_explicit_endpoints_and_validates_edge_geometry() {
+        for mode in ["line", "arrow", "double_arrow"] {
+            let edit = super::line_edit(2, 200., 120., "200,0,200,120", "#FF0000", "", "32", mode)
+                .unwrap();
+            assert_eq!(edit["kind"], "add_line");
+            assert_eq!(edit["page"], 2);
+            assert_eq!(edit["start"], serde_json::json!({"x":200.,"y":0.}));
+            assert_eq!(edit["end"], serde_json::json!({"x":200.,"y":120.}));
+            assert_eq!(
+                edit["endings"],
+                match mode {
+                    "arrow" => serde_json::json!(["none", "open_arrow"]),
+                    "double_arrow" => serde_json::json!(["open_arrow", "open_arrow"]),
+                    _ => serde_json::json!(["none", "none"]),
+                }
+            );
+        }
+        for points in [
+            "0,0,0,0",
+            "-1,2,10,20",
+            "0,0,201,20",
+            "NaN,0,10,10",
+            "0,0,10",
+            "0,0,10,inf",
+        ] {
+            assert!(super::line_edit(0, 200., 120., points, "#000000", "", "1", "line").is_err());
+        }
+        for width in ["0", "0.1", "32.1", "NaN", "inf"] {
+            assert!(
+                super::line_edit(0, 200., 120., "0,0,10,10", "#000000", "", width, "line").is_err()
+            );
+        }
+        assert!(super::line_edit(0, 200., 120., "0,0,10,10", "bad", "", "1", "line").is_err());
+        assert!(super::line_edit(0, 200., 120., "0,0,10,10", "#000000", "", "1", "bad").is_err());
+    }
+
+    #[test]
+    fn line_update_retains_geometry_snapshot_and_allows_width_greater_than_bounds() {
+        let expected = serde_json::json!({"annotation_index":0,"shape":"line","bounds":{"x":190.,"y":0.,"width":10.,"height":120.},"stroke":{"r":0.1,"g":0.4,"b":0.8},"fill":null,"line_width":32.,"line":{"start":{"x":200.,"y":0.},"end":{"x":200.,"y":120.},"endings":["diamond","closed_arrow"],"dash_pattern":[3.,2.]}});
+        let edit = super::update_shape_edit(
+            0,
+            200.,
+            120.,
+            &expected,
+            "190,0,10,120",
+            "#1A66CC",
+            "",
+            "32",
+        )
+        .unwrap();
+        assert_eq!(edit["expected"], expected);
+        assert_eq!(edit["stroke"], expected["stroke"]);
+        assert_eq!(edit["kind"], "update_shape");
+        assert!(
+            super::shape_edit(0, 200., 120., "line", "190,0,10,120", "#000000", "", "2").is_err()
+        );
+    }
+
+    #[test]
+    fn line_workspace_exposes_separate_endpoints_and_three_creation_modes() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains("line_edit("));
+        assert!(source.contains("直线端点 x1,y1,x2,y2"));
+        for mode in ["line", "arrow", "double_arrow"] {
+            assert!(source.contains(&format!("m.add_line(\"{mode}\")")));
+        }
+        assert!(source.contains("端点样式与虚线"));
+        assert!(!source.contains("拖拽和线条／手绘仍在迁移"));
+    }
     #[test]
     fn shape_update_preserves_unmodified_imported_colors_and_snapshot() {
         let expected = serde_json::json!({"annotation_index":4,"shape":"ellipse","bounds":{"x":10.,"y":20.,"width":100.,"height":60.},"stroke":{"r":0.1,"g":0.4,"b":0.8},"fill":null,"line_width":2.});

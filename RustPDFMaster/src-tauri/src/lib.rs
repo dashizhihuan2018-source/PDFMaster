@@ -521,6 +521,33 @@ mod workspace_tests {
     }
 
     #[test]
+    fn line_edits_checkpoint_and_reuse_native_delete_epoch_snapshot_and_undo() {
+        let (mut w, directory) = note_workspace();
+        let original = w.session.as_ref().unwrap().bytes().unwrap();
+        let edit=serde_json::from_value(serde_json::json!({"kind":"add_line","page":0,"start":{"x":20.,"y":20.},"end":{"x":80.,"y":80.},"endings":["none","open_arrow"],"stroke":{"r":1.,"g":0.,"b":0.},"fill":null,"line_width":4.})).unwrap();
+        assert!(apply_single_edit(&mut w, edit).unwrap().info.dirty);
+        assert!(directory.path().join("draft.json").is_file());
+        let expected = workspace_shapes(&w, 0).unwrap().shapes[0].clone();
+        assert!(expected.line.is_some());
+        let selected = prepare_shape_delete(&w, 0, expected.clone()).unwrap();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        assert!(apply_single_edit(&mut w, Edit::DeleteShape { page: 0, expected }).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        apply_confirmed_shape_delete(&mut w, &selected).unwrap();
+        assert!(workspace_shapes(&w, 0).unwrap().shapes.is_empty());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        // Reopening is allowed only after the current synthetic revision is saved.
+        w.session.as_mut().unwrap().mark_saved();
+        w.checkpoint().unwrap();
+        w.replace_document(Session::open(&before).unwrap(), "reopened.pdf".into())
+            .unwrap();
+        assert!(apply_confirmed_shape_delete(&mut w, &selected).is_err());
+        assert_eq!(workspace_shapes(&w, 0).unwrap().shapes.len(), 1);
+        assert_ne!(original, before);
+    }
+
+    #[test]
     fn shape_delete_rejects_reopened_changed_exporting_and_editing_documents() {
         let (mut w, _directory) = shape_workspace();
         let expected = workspace_shapes(&w, 0).unwrap().shapes[0].clone();

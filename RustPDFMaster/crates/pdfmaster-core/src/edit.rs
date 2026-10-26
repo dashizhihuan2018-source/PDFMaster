@@ -48,6 +48,17 @@ pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit
         } => crate::shapes::add_shape(
             document, pages, page, bounds, shape, stroke, fill, line_width,
         ),
+        Edit::AddLine {
+            page,
+            start,
+            end,
+            endings,
+            stroke,
+            fill,
+            line_width,
+        } => crate::lines::add_line(
+            document, pages, page, start, end, endings, stroke, fill, line_width,
+        ),
         Edit::UpdateNote {
             page,
             annotation_index,
