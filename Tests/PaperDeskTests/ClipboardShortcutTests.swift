@@ -20,8 +20,11 @@ import XCTest
     func testSharedTypedClipboardExchangesPagesWithoutStaleFallback() throws {
         let pb = NSPasteboard.withUniqueName(); defer { pb.releaseGlobally() }
         let first = DocumentClipboard(pasteboard: pb), second = DocumentClipboard(pasteboard: pb)
-        XCTAssertTrue(first.write(Data([1, 2, 3]), type: DocumentClipboard.pagesType))
-        XCTAssertEqual(second.pages, Data([1, 2, 3]))
+        let pdf = PDFDocument(); let page = PDFPage()
+        page.setBounds(CGRect(x: 0, y: 0, width: 40, height: 40), for: .mediaBox); pdf.insert(page, at: 0)
+        let bytes = try XCTUnwrap(pdf.dataRepresentation())
+        XCTAssertTrue(first.write(bytes, type: DocumentClipboard.pagesType))
+        XCTAssertEqual(second.pages, bytes)
         XCTAssertNil(second.annotation)
         pb.clearContents(); pb.setString("new text", forType: .string)
         XCTAssertNil(first.pages)

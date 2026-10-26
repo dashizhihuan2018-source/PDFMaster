@@ -31,22 +31,22 @@ test('first installation is actionable without globally disabling macOS protecti
   assert.ok(guide.includes('id="install"'));
   for (const phrase of ['隐私与安全性', '仍要打开', '可信来源', '未遭篡改', '已损坏', '将损坏', '系统管理员', '另一台 Mac', 'shasum -a 256']) assert.ok(guide.includes(phrase), phrase);
   assert.ok(guide.includes('https://support.apple.com/zh-cn/102445'));
-  assert.ok(guide.includes('0f2101ae434e8fcc07f6f5658a67d6a25fac08c446f31d438b1bd7c86f98e1e9'));
+  assert.ok(guide.includes('b54acec6c9c0c645c39c9c9164e411c98b27704883548ebb5053c666acd94677'));
   assert.ok(!/spctl\s+--(?:master-disable|global-disable)|xattr\s+-[a-z]*d|sudo\s/.test(html + guide));
 });
 test('homepage pins the verified public installer and labels limitations', () => {
   if (!existsSync(new URL('index.html', root))) return assert.fail('missing download homepage');
   const html = readFileSync(new URL('index.html', root), 'utf8');
   const release = JSON.parse(readFileSync(new URL('release.json', root), 'utf8'));
-  assert.equal(release.version, 'V0.1.21');
-  assert.equal(release.build, 43);
-  assert.equal(release.sha256, '0f2101ae434e8fcc07f6f5658a67d6a25fac08c446f31d438b1bd7c86f98e1e9');
+  assert.equal(release.version, 'V0.1.22');
+  assert.equal(release.build, 44);
+  assert.equal(release.sha256, 'b54acec6c9c0c645c39c9c9164e411c98b27704883548ebb5053c666acd94677');
   assert.ok(html.includes(release.download));
   assert.ok(html.includes(release.checksum));
   assert.ok(html.includes('未获 Apple 公证'));
   assert.ok(html.includes('Python'));
   assert.ok(html.includes('对应项目源码已公开'));
-  assert.equal(release.sourceVersion, 'V0.1.21/build43');
+  assert.equal(release.sourceVersion, 'V0.1.22/build44');
   assert.equal(release.selfContainedContentEditing, true);
   assert.ok(html.includes('不再依赖外置 Python'));
   assert.ok(html.includes('不会上传'));
@@ -75,7 +75,7 @@ test('all local page and resource links resolve, including cross-page anchors', 
       }
     }
     if (page !== 'index.html') {
-      assert.ok(html.includes('V0.1.21 / build43'));
+      assert.ok(html.includes('V0.1.22 / build44'));
       assert.ok(!html.includes('尚未发布') && !html.includes('待发布预览'));
     }
   }

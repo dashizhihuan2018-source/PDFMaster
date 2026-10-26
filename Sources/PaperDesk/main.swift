@@ -137,6 +137,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private var eraserEnabled = false
     var clipboard = DocumentClipboard.shared
     private var paletteHeightConstraint: NSLayoutConstraint?
+    private var styleTopConstraints: [NSLayoutConstraint] = []
     private(set) var activeMode: WorkbenchMode?
     private var documentControls: [NSControl] = []
     private var copyingControls: [NSControl] = []
@@ -271,8 +272,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         pageOverview.collectionView.canClipboard = { [weak self] command in self?.canPageClipboard(command, overview: true) ?? false }
         readerSidebar.thumbnailView.onClipboard = { [weak self] command in self?.runPageClipboard(command, overview: false) }
         readerSidebar.thumbnailView.canClipboard = { [weak self] command in self?.canPageClipboard(command, overview: false) ?? false }
-        pdfView.onClipboard = { [weak self] command in self?.runAnnotationClipboard(command) ?? false }
-        pdfView.canClipboard = { [weak self] command in self?.canAnnotationClipboard(command) ?? false }
+        pdfView.onClipboard = { [weak self] command in self?.runReaderClipboard(command) ?? false }
+        pdfView.canClipboard = { [weak self] command in self?.canReaderClipboard(command) ?? false }
         pdfView.onDropFiles = { [weak self] urls in
             guard let self else { return false }
             return self.queueFileMerge(urls, at: self.currentPageIndex + 1)
@@ -333,11 +334,15 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             self.selectedShape = nil; self.selectedInk = nil; self.annotationSelection.clear()
             if !self.pdfView.inkEnabled { self.inkStyleBar.isHidden = true }
             if let tool = self.pdfView.shapeTool { self.shapeStyleBar.configure(tool: tool, style: self.drawingShapeStyle) }
-            else { self.shapeStyleBar.isHidden = true; if self.activeMode != nil { self.paletteHeightConstraint?.constant = self.pdfView.inkEnabled ? 84 : 34 } }
+            else { self.shapeStyleBar.isHidden = true }
+            self.updatePaletteLayout()
         }
         pdfView.onCancelPlacement = { [weak self] in self?.cancelPendingPlacement() }
         pdfView.onBlockedWidget = { [weak self] in self?.showError("暂不支持编辑交互式表单字段。文档未修改。") }
-        pdfView.onCopyDenied = { [weak self] in self?.showError("文档的原始权限不允许复制或剪切内容。") }
+        pdfView.onCopyDenied = { [weak self] in
+            guard let self else { return }
+            self.setInteractionStatus(self.workspace.allowsCopying ? "请选择要剪切的文字或批注；复制当前页可直接按 ⌘C" : "文档的原始权限不允许复制或剪切内容。")
+        }
         refreshDocument()
     }
 
@@ -402,6 +407,17 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         return bar
     }
 
+    private func updatePaletteLayout() {
+        secondaryTools.isHidden = activeMode == nil
+        let hasTools = activeMode != nil && !secondaryTools.arrangedSubviews.isEmpty
+        let hasRow = hasTools || !textStyleToolbarHost.isHidden
+        let hasStyle = !shapeStyleBar.isHidden || !inkStyleBar.isHidden
+        secondaryToolRow.isHidden = !hasRow
+        styleTopConstraints.forEach { $0.constant = hasRow ? 36 : 4 }
+        paletteHeightConstraint?.constant = (hasRow ? 34 : 0) + (hasStyle ? 50 : 0)
+        annotationPalette.isHidden = !hasRow && !hasStyle
+    }
+
     private func configureAnnotationPalette() {
         annotationPalette.wantsLayer = true; annotationPalette.layer?.backgroundColor = ShellPalette.top.cgColor; annotationPalette.isHidden = true
         secondaryTools.orientation = .horizontal; secondaryTools.spacing = 8; secondaryTools.alignment = .centerY
@@ -424,21 +440,21 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             if visible {
                 self.annotationPalette.isHidden = false
                 self.shapeStyleBar.isHidden = true; self.inkStyleBar.isHidden = true
-                self.paletteHeightConstraint?.constant = 34
-            } else {
-                self.annotationPalette.isHidden = self.activeMode == nil
-                self.paletteHeightConstraint?.constant = self.activeMode == nil ? 0 :
-                    (!self.shapeStyleBar.isHidden || !self.inkStyleBar.isHidden ? 84 : 34)
             }
+            self.updatePaletteLayout()
             self.view.layoutSubtreeIfNeeded()
         }
         shapeStyleBar.translatesAutoresizingMaskIntoConstraints = false; annotationPalette.addSubview(shapeStyleBar); shapeStyleBar.isHidden = true
-        NSLayoutConstraint.activate([shapeStyleBar.centerXAnchor.constraint(equalTo: annotationPalette.centerXAnchor), shapeStyleBar.topAnchor.constraint(equalTo: annotationPalette.topAnchor, constant: 36), shapeStyleBar.heightAnchor.constraint(equalToConstant: 42)])
+        let shapeTop = shapeStyleBar.topAnchor.constraint(equalTo: annotationPalette.topAnchor, constant: 4)
+        styleTopConstraints.append(shapeTop)
+        NSLayoutConstraint.activate([shapeStyleBar.centerXAnchor.constraint(equalTo: annotationPalette.centerXAnchor), shapeTop, shapeStyleBar.heightAnchor.constraint(equalToConstant: 42)])
         shapeStyleBar.onToolChange = { [weak self] tool in self?.beginShapeTool(tool) }
         shapeStyleBar.onStylePreview = { [weak self] style in self?.previewShapeStyle(style) }
         shapeStyleBar.onStyleChange = { [weak self] style in self?.changeShapeStyle(style) }
         inkStyleBar.translatesAutoresizingMaskIntoConstraints = false; annotationPalette.addSubview(inkStyleBar); inkStyleBar.isHidden = true
-        NSLayoutConstraint.activate([inkStyleBar.centerXAnchor.constraint(equalTo: annotationPalette.centerXAnchor), inkStyleBar.topAnchor.constraint(equalTo: annotationPalette.topAnchor, constant: 36), inkStyleBar.heightAnchor.constraint(equalToConstant: 42)])
+        let inkTop = inkStyleBar.topAnchor.constraint(equalTo: annotationPalette.topAnchor, constant: 4)
+        styleTopConstraints.append(inkTop)
+        NSLayoutConstraint.activate([inkStyleBar.centerXAnchor.constraint(equalTo: annotationPalette.centerXAnchor), inkTop, inkStyleBar.heightAnchor.constraint(equalToConstant: 42)])
         inkStyleBar.configure(tool: .line, style: drawingInkStyle)
         inkStyleBar.toolChooser.isHidden = true
         inkStyleBar.fillEnabledButton.isHidden = true; inkStyleBar.fillColorWell.isHidden = true
@@ -658,7 +674,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             pageOverview.refreshLayout(); pageOverview.revealSelection()
             view.window?.makeFirstResponder(pageOverview.collectionView)
         }
-        else if activeMode == .pages { activeMode = nil; annotationPalette.isHidden = true; paletteHeightConstraint?.constant = 0 }
+        else if activeMode == .pages { activeMode = nil; updatePaletteLayout() }
         if !visible, readerPresentationNeedsRefresh { refreshDocument(preservePage: pageOverview.selectedPages.first) }
     }
     @objc private func toggleSidebar() { _ = readerCommands.run(.toggleSidebar) }
@@ -686,7 +702,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             if tool.id == "paste-page" { button.isEnabled = clipboard.pages != nil; button.toolTip = "粘贴复制的页面" }
             secondaryTools.addArrangedSubview(button)
         }
-        annotationPalette.isHidden = false; paletteHeightConstraint?.constant = 34
+        updatePaletteLayout()
         setInteractionStatus("\(mode.statusTitle)模式 · 选择下方工具后才会修改文档")
     }
     @objc private func openOCR() { presentLocalTool("ocr") }
@@ -743,7 +759,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             let data = try workspace.copyPages(pages)
             guard clipboard.write(data, type: DocumentClipboard.pagesType) else { throw PDFWorkspaceError.writeFailed }
             secondaryTools.arrangedSubviews.compactMap { $0 as? ToolStripButton }.filter { $0.toolID == "paste-page" }.forEach { $0.isEnabled = true }
-            setInteractionStatus("已复制 \(pages.count) 页，可在 PDF 标签间粘贴")
+            setInteractionStatus("已复制 \(pages.count) 页：可粘贴到微信为图片，也可在 PDF 标签间粘贴原页面")
             return
         case "paste-page":
             guard let data = clipboard.pages, let incoming = PDFDocument(data: data) else { throw PDFWorkspaceError.invalidSelection }
@@ -793,7 +809,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             if command == .copy || command == .cut {
                 let data = try workspace.copyPages(pages)
                 guard clipboard.write(data, type: DocumentClipboard.pagesType) else { throw PDFWorkspaceError.writeFailed }
-                if command == .copy { setInteractionStatus("已复制 \(pages.count) 页"); return }
+                if command == .copy { setInteractionStatus("已复制 \(pages.count) 页：外部粘贴为图片，PDF 标签内保留原页面"); return }
                 try deleteSelectedPages(pages)
             } else {
                 guard let data = clipboard.pages, let incoming = PDFDocument(data: data) else { return }
@@ -807,6 +823,24 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             }
             view.window?.makeFirstResponder(overview ? pageOverview.collectionView : readerSidebar.thumbnailView)
         }
+    }
+
+    private func canReaderClipboard(_ command: ClipboardCommand) -> Bool {
+        if canAnnotationClipboard(command) { return true }
+        return command == .copy && !isOverviewVisible && workspace.document != nil &&
+            workspace.allowsCopying && workspace.allowsDocumentAssembly
+    }
+
+    private func runReaderClipboard(_ command: ClipboardCommand) -> Bool {
+        if runAnnotationClipboard(command) { return true }
+        guard command == .copy, pdfView.currentSelection?.string?.isEmpty != false,
+              canReaderClipboard(command) else { return false }
+        perform {
+            let data = try workspace.copyPages(IndexSet(integer: currentPageIndex))
+            guard clipboard.write(data, type: DocumentClipboard.pagesType) else { throw PDFWorkspaceError.writeFailed }
+            setInteractionStatus("已复制当前页：可粘贴到微信为图片，也可在 PDF 标签间粘贴原页面")
+        }
+        return true
     }
 
     func canAnnotationClipboard(_ command: ClipboardCommand) -> Bool {
@@ -1007,11 +1041,11 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             pdfView.inkStyle = drawingInkStyle
             inkStyleBar.configure(tool: .line, style: drawingInkStyle)
             inkStyleBar.isHidden = false; shapeStyleBar.isHidden = true
-            annotationPalette.isHidden = false; paletteHeightConstraint?.constant = 84
+            updatePaletteLayout()
             secondaryTools.arrangedSubviews.compactMap { $0 as? ToolStripButton }.forEach { $0.state = $0.toolID == "pen" ? .on : .off }
             setInteractionStatus("手绘模式 · 拖动时实时显示笔迹 · 属性栏调整颜色/线宽 · Esc 退出")
         } else {
-            inkStyleBar.isHidden = true; if activeMode != nil { paletteHeightConstraint?.constant = 34 }
+            inkStyleBar.isHidden = true; updatePaletteLayout()
             refreshPersistentDocumentStatus()
         }
     }
@@ -1162,7 +1196,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
         pdfView.shapeTool = tool; pdfView.shapeStyle = drawingShapeStyle
         shapeStyleBar.configure(tool: tool, style: drawingShapeStyle)
-        shapeStyleBar.isHidden = false; annotationPalette.isHidden = false; paletteHeightConstraint?.constant = 84
+        shapeStyleBar.isHidden = false; updatePaletteLayout()
         secondaryTools.arrangedSubviews.compactMap { $0 as? ToolStripButton }.forEach { $0.state = $0.toolID == "shapes" ? .on : .off }
         setInteractionStatus("拖动绘制形状 · 可调整颜色、线宽和透明度 · 选中形状可移动/缩放 · Esc 退出")
     }
@@ -1202,7 +1236,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         selectedInk = nil
         inkStyleBar.isHidden = true
         pdfView.shapeTool = nil; shapeStyleBar.isHidden = true; selectedShape = nil; pdfView.clearShapeSelection()
-        if activeMode != nil { paletteHeightConstraint?.constant = 34 }
+        updatePaletteLayout()
         pendingPlacement = placement
         pdfView.contentEditingEnabled = false; contentToolID = nil; eraserEnabled = false
         pdfView.inkEnabled = false
@@ -1213,6 +1247,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
 
     private func cancelPendingPlacement() {
+        annotationSelection.clear()
         _ = pdfView.finishInlineTextEditing(commit: false)
         pdfView.freeTextInputEnabled = false
         clearMarkupTool()
@@ -1222,7 +1257,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         pendingPlacement = nil
         pdfView.placementEnabled = false
         pdfView.shapeTool = nil; shapeStyleBar.isHidden = true; selectedShape = nil
-        if activeMode != nil { paletteHeightConstraint?.constant = 34 }
+        updatePaletteLayout()
         pdfView.setAccessibilityLabel("PDF 文档视图")
         syncInkMenuState()
         refreshPersistentDocumentStatus()
@@ -1244,6 +1279,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         pdfView.placementEnabled = false
         syncInkMenuState()
         pdfView.setCurrentSelection(nil, animate: false)
+        updatePaletteLayout()
         pdfView.setAccessibilityLabel("PDF 文档视图")
         refreshPersistentDocumentStatus()
     }
@@ -1329,7 +1365,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             selectedShape = (page, index, workspace.revision)
             pdfView.selectShape(page: page, index: index)
             shapeStyleBar.configure(tool: tool, style: AnnotationStyle(annotation: annotation), mode: pdfView.shapeTool == nil ? .selection : .drawing, enabled: workspace.allowsCommenting)
-            shapeStyleBar.isHidden = false; annotationPalette.isHidden = false; paletteHeightConstraint?.constant = 84
+            shapeStyleBar.isHidden = false
         } else if annotation.type == "Ink", let document = workspace.document {
             selectedShape = nil; pendingPlacement = nil
             pdfView.placementEnabled = false; pdfView.shapeTool = nil
@@ -1337,10 +1373,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             pdfView.selectInk(page:page,index:index)
             inkStyleBar.configure(tool:.line,style:AnnotationStyle(annotation:annotation),mode:.selection,enabled:workspace.allowsCommenting,selectionTitle:"所选笔迹")
             inkStyleBar.isHidden = false; shapeStyleBar.isHidden = true
-            annotationPalette.isHidden = false; paletteHeightConstraint?.constant = 84
-        } else { selectedShape = nil; selectedInk = nil; pdfView.clearShapeSelection(); shapeStyleBar.isHidden = true; inkStyleBar.isHidden = true; if activeMode != nil { paletteHeightConstraint?.constant = 34 }
+        } else { selectedShape = nil; selectedInk = nil; pdfView.clearShapeSelection(); shapeStyleBar.isHidden = true; inkStyleBar.isHidden = true
             if annotation.type == "FreeText", workspace.allowsCommenting { pdfView.selectShape(page: page, index: index) }
         }
+        updatePaletteLayout()
         status.stringValue = annotation.type == "FreeText" ? "文字已选中 · 拖动移动 · 方向键微调 · 双击修改文字与顶栏样式" : "已选中第 \(page + 1) 页的第 \(index + 1) 个批注（\(annotation.type ?? "Unknown")）"
     }
 
