@@ -47,7 +47,7 @@ EXPECTED_CLASSES = {
 }
 EXPECTED_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-WORKSPACE_PACKAGES = {"pdfmaster-core", "pdfmaster-app", "pdfmaster-ui"}
+WORKSPACE_PACKAGES = {"pdfmaster-core", "pdfmaster-app", "pdfmaster-ui", "pdfmaster-drawing"}
 PACKAGE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 PACKAGE_VERSION = re.compile(r"^[A-Za-z0-9.+-]+$")
 UNSAFE_STYLESHEET = re.compile(r"(?:url\s*\(|@import\b|expression\s*\()", re.IGNORECASE)

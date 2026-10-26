@@ -24,6 +24,10 @@ struct Workspace {
     recovery_fault: bool,
     recovery_warning: Option<String>,
     note_editor: Option<NoteEditor>,
+    ink_editor: Option<InkEditor>,
+    next_ink_id: u32,
+    finished_ink: Option<(u32, u64, bool)>,
+    cancelled_ink_requests: std::collections::BTreeSet<String>,
     next_editor_id: u32,
     export_reservation: Option<u32>,
     next_export_id: u32,
@@ -34,6 +38,34 @@ struct NoteEditor {
     page: usize,
     original: pdfmaster_core::TextNote,
 }
+struct InkEditor {
+    id: u32,
+    request: String,
+    page: usize,
+    color: pdfmaster_core::Color,
+    line_width: f32,
+    document_epoch: u64,
+    snapshot: Vec<u8>,
+}
+#[derive(Clone, Serialize)]
+struct InkEditorView {
+    id: u32,
+    request: String,
+    page: usize,
+    color: pdfmaster_core::Color,
+    line_width: f32,
+}
+impl InkEditor {
+    fn view(&self) -> InkEditorView {
+        InkEditorView {
+            id: self.id,
+            request: self.request.clone(),
+            page: self.page,
+            color: self.color,
+            line_width: self.line_width,
+        }
+    }
+}
 #[derive(Clone, Serialize)]
 struct DocumentView {
     name: String,
@@ -41,6 +73,7 @@ struct DocumentView {
     restored: bool,
     warning: Option<String>,
     note_editor: Option<NoteEditor>,
+    ink_editor: Option<InkEditorView>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -60,7 +93,7 @@ enum PageBatchReply {
         page_count: usize,
     },
     Applied {
-        document: DocumentView,
+        document: Box<DocumentView>,
         affected_count: usize,
     },
 }
@@ -139,6 +172,134 @@ fn read_insertion_files(paths: &[std::path::PathBuf]) -> Reply<Vec<Vec<u8>>> {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+    #[test]
+    fn ink_request_cancel_orders_before_or_after_begin_without_releasing_a_newer_stroke() {
+        let (mut w, _) = note_workspace();
+        let color = pdfmaster_core::Color {
+            r: 1.,
+            g: 0.,
+            b: 0.,
+        };
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        w.cancel_ink_request("unsettled-before").unwrap();
+        assert!(w.begin_ink("unsettled-before", 0, color, 4.).is_err());
+        let first = w.begin_ink("unsettled-after", 0, color, 4.).unwrap();
+        w.cancel_ink_request("unsettled-after").unwrap();
+        assert!(w.commit_ink(first.id, vec![]).is_err());
+        let next = w.begin_ink("current-stroke", 0, color, 4.).unwrap();
+        assert!(w.cancel_ink_request("unsettled-after").is_err());
+        assert_eq!(w.ink_editor.as_ref().unwrap().id, next.id);
+        w.cancel_ink_request("current-stroke").unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+    #[test]
+    fn ink_request_cancel_after_lost_commit_ack_preserves_saved_stroke_and_refuses_late_begin() {
+        let (mut w, _) = note_workspace();
+        let e = w
+            .begin_ink(
+                "commit-lost-ack",
+                0,
+                pdfmaster_core::Color {
+                    r: 0.,
+                    g: 0.,
+                    b: 1.,
+                },
+                2.,
+            )
+            .unwrap();
+        w.commit_ink(
+            e.id,
+            vec![vec![
+                pdfmaster_core::Point { x: 10., y: 10. },
+                pdfmaster_core::Point { x: 80., y: 80. },
+            ]],
+        )
+        .unwrap();
+        let changed = w.session.as_ref().unwrap().bytes().unwrap();
+        w.cancel_ink_request("commit-lost-ack").unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), changed);
+        assert!(
+            w.begin_ink(
+                "commit-lost-ack",
+                0,
+                pdfmaster_core::Color {
+                    r: 0.,
+                    g: 0.,
+                    b: 1.
+                },
+                2.
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn ink_guard_blocks_close_mutation_export_and_commits_once_with_checkpoint_and_undo() {
+        let (mut w, directory) = note_workspace();
+        w.session.as_mut().unwrap().mark_saved();
+        w.checkpoint().unwrap();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let e = w
+            .begin_ink(
+                "guard-test",
+                0,
+                pdfmaster_core::Color {
+                    r: 1.,
+                    g: 0.,
+                    b: 0.,
+                },
+                4.,
+            )
+            .unwrap();
+        assert!(w.has_unsaved_work());
+        assert!(w.clean().is_err());
+        assert!(w.begin_export().is_err());
+        assert!(w.begin_note_editor(0, 0, "原便笺 🦀").is_err());
+        assert!(
+            apply_single_edit(
+                &mut w,
+                Edit::Rotate {
+                    page: 0,
+                    degrees: 90
+                }
+            )
+            .is_err()
+        );
+        let points = vec![vec![
+            pdfmaster_core::Point { x: 10., y: 10. },
+            pdfmaster_core::Point { x: 80., y: 80. },
+        ]];
+        let v = w.commit_ink(e.id, points.clone()).unwrap();
+        assert!(v.info.dirty);
+        assert!(v.ink_editor.is_none());
+        assert!(directory.path().join("draft.json").is_file());
+        let changed = w.session.as_ref().unwrap().bytes().unwrap();
+        w.commit_ink(e.id, points).unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), changed);
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+    #[test]
+    fn ink_cancel_bad_geometry_and_stale_ids_cannot_lose_or_replace_current_stroke() {
+        let (mut w, _) = note_workspace();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let color = pdfmaster_core::Color {
+            r: 1.,
+            g: 0.,
+            b: 0.,
+        };
+        let a = w.begin_ink("first-test", 0, color, 4.).unwrap();
+        assert!(w.commit_ink(a.id, vec![vec![]]).is_err());
+        assert!(w.ink_editor.is_some());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        w.cancel_ink(a.id).unwrap();
+        w.cancel_ink(a.id).unwrap();
+        let b = w.begin_ink("second-test", 0, color, 4.).unwrap();
+        assert!(w.cancel_ink(a.id).is_err());
+        assert!(w.commit_ink(a.id, vec![]).is_err());
+        assert_eq!(w.ink_editor.as_ref().unwrap().id, b.id);
+        w.cancel_ink(b.id).unwrap();
+        assert!(w.commit_ink(b.id, vec![]).is_err());
+    }
     #[test]
     fn shape_edits_use_shared_journal_history_and_editor_reservation_guards() {
         let (mut w, directory) = note_workspace();
@@ -1200,6 +1361,118 @@ mod workspace_tests {
 }
 
 impl Workspace {
+    fn cancel_ink_request(&mut self, request: &str) -> Reply<DocumentView> {
+        Self::validate_ink_request(request)?;
+        if !self.cancelled_ink_requests.contains(request)
+            && self.cancelled_ink_requests.len() >= 16_384
+        {
+            return Err("手绘恢复请求预算已用尽，请先保存文档并正常重启。".into());
+        }
+        self.cancelled_ink_requests.insert(request.into());
+        if let Some(editor) = &self.ink_editor {
+            if editor.request != request {
+                return Err("该恢复请求不属于当前笔画，未取消新手绘。".into());
+            }
+            return self.cancel_ink(editor.id);
+        }
+        self.view()
+    }
+    fn validate_ink_request(request: &str) -> Reply<()> {
+        if !(8..=64).contains(&request.len())
+            || !request
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        {
+            return Err("手绘请求身份无效。".into());
+        }
+        Ok(())
+    }
+    fn begin_ink(
+        &mut self,
+        request: &str,
+        page: usize,
+        color: pdfmaster_core::Color,
+        width: f32,
+    ) -> Reply<InkEditorView> {
+        Self::validate_ink_request(request)?;
+        if self.cancelled_ink_requests.contains(request) {
+            return Err("该手绘请求已取消，未重新开始。".into());
+        }
+        self.ensure_editor_idle()?;
+        let s = self.session.as_ref().ok_or("请先打开 PDF")?;
+        if page >= s.info().page_count
+            || !width.is_finite()
+            || !(0.25..=32.).contains(&width)
+            || [color.r, color.g, color.b]
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=1.).contains(v))
+        {
+            return Err("手绘页面或样式无效。".into());
+        }
+        let id = self
+            .next_ink_id
+            .checked_add(1)
+            .ok_or("手绘会话编号已耗尽，请安全保存后重启。")?;
+        let e = InkEditor {
+            id,
+            request: request.into(),
+            page,
+            color,
+            line_width: width,
+            document_epoch: self.document_epoch,
+            snapshot: s.bytes().map_err(|e| e.to_string())?,
+        };
+        self.next_ink_id = id;
+        let view = e.view();
+        self.ink_editor = Some(e);
+        Ok(view)
+    }
+    fn commit_ink(
+        &mut self,
+        id: u32,
+        strokes: Vec<Vec<pdfmaster_core::Point>>,
+    ) -> Reply<DocumentView> {
+        if self.ink_editor.is_none() && self.finished_ink == Some((id, self.document_epoch, true)) {
+            return self.view();
+        }
+        let e = self
+            .ink_editor
+            .as_ref()
+            .filter(|e| e.id == id)
+            .ok_or("手绘会话已改变，请同步状态。")?;
+        let s = self.session.as_mut().ok_or("请先打开 PDF")?;
+        if e.document_epoch != self.document_epoch
+            || s.bytes().map_err(|e| e.to_string())? != e.snapshot
+        {
+            return Err("手绘期间文档已改变，未提交笔画。".into());
+        }
+        s.apply(Edit::AddInk {
+            page: e.page,
+            strokes,
+            color: e.color,
+            line_width: e.line_width,
+            smoothed: true,
+        })
+        .map_err(|e| e.to_string())?;
+        self.ink_editor = None;
+        self.finished_ink = Some((id, self.document_epoch, true));
+        self.checkpoint()
+    }
+    fn cancel_ink(&mut self, id: u32) -> Reply<DocumentView> {
+        if self.ink_editor.is_none()
+            && self
+                .finished_ink
+                .is_some_and(|(last, epoch, _)| last == id && epoch == self.document_epoch)
+        {
+            return self.view();
+        }
+        if self.ink_editor.as_ref().is_none_or(|e| e.id != id) {
+            return Err("手绘会话已改变，未取消新笔画。".into());
+        }
+        self.ink_editor = None;
+        self.finished_ink = Some((id, self.document_epoch, false));
+        self.view()
+    }
     fn replace_document(&mut self, session: Session, name: String) -> Reply<DocumentView> {
         self.clean()?;
         let epoch = self
@@ -1212,13 +1485,18 @@ impl Workspace {
         self.checkpoint()
     }
     fn has_unsaved_work(&self) -> bool {
-        self.dirty() || self.note_editor.is_some() || self.export_reservation.is_some()
+        self.dirty()
+            || self.note_editor.is_some()
+            || self.ink_editor.is_some()
+            || self.export_reservation.is_some()
     }
     fn ensure_editor_idle(&self) -> Reply<()> {
         if self.export_reservation.is_some() {
             Err("正在处理 PDF 文件，请等待文件面板和读写完成或取消操作。".into())
         } else if self.note_editor.is_some() {
             Err("请先保存或取消便笺编辑；编辑框内容尚未写入 PDF。".into())
+        } else if self.ink_editor.is_some() {
+            Err("手绘笔画尚未结束，请抬笔提交或取消手绘。".into())
         } else {
             Ok(())
         }
@@ -1394,6 +1672,7 @@ impl Workspace {
             restored: self.restored,
             warning: self.recovery_warning.clone(),
             note_editor: self.note_editor.clone(),
+            ink_editor: self.ink_editor.as_ref().map(InkEditor::view),
         })
     }
     fn clean(&self) -> Reply<()> {
@@ -1495,7 +1774,7 @@ fn apply_page_batch(
         .apply(edit)
         .map_err(|error| error.to_string())?;
     Ok(PageBatchReply::Applied {
-        document: workspace.checkpoint()?,
+        document: Box::new(workspace.checkpoint()?),
         affected_count,
     })
 }
@@ -1505,6 +1784,7 @@ fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentVie
     if matches!(
         edit,
         Edit::RotatePages { .. }
+            | Edit::AddInk { .. }
             | Edit::DeletePages { .. }
             | Edit::DeletePage { .. }
             | Edit::DeleteNote { .. }
@@ -1805,6 +2085,45 @@ async fn notes_document(page: usize, state: State<'_, Store>) -> Reply<pdfmaster
 async fn shapes_document(page: usize, state: State<'_, Store>) -> Reply<pdfmaster_core::ShapeList> {
     let workspace = state.lock().map_err(|_| "文档状态不可用")?;
     workspace_shapes(&workspace, page)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn begin_ink_document(
+    request: String,
+    page: usize,
+    color: pdfmaster_core::Color,
+    line_width: f32,
+    state: State<'_, Store>,
+) -> Reply<InkEditorView> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .begin_ink(&request, page, color, line_width)
+}
+#[tauri::command(rename_all = "snake_case")]
+async fn commit_ink_document(
+    id: u32,
+    strokes: Vec<Vec<pdfmaster_core::Point>>,
+    state: State<'_, Store>,
+) -> Reply<DocumentView> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .commit_ink(id, strokes)
+}
+#[tauri::command(rename_all = "snake_case")]
+async fn cancel_ink_document(id: u32, state: State<'_, Store>) -> Reply<DocumentView> {
+    state.lock().map_err(|_| "文档状态不可用")?.cancel_ink(id)
+}
+#[tauri::command(rename_all = "snake_case")]
+async fn cancel_ink_request_document(
+    request: String,
+    state: State<'_, Store>,
+) -> Reply<DocumentView> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .cancel_ink_request(&request)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -2135,7 +2454,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,shapes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

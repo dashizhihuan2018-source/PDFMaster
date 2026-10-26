@@ -149,6 +149,12 @@ class ThirdPartyNoticeContract(unittest.TestCase):
             '<a class="crate-source" data-source-kind="repository" href="https://example.invalid/source" rel="noreferrer noopener">safe-crate 1.2.3</a>',
             '<span class="workspace-package" data-source-kind="workspace">pdfmaster-core 0.1.0</span>',
         )
+        drawing_notice = notice.replace("pdfmaster-core", "pdfmaster-drawing")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for name in EXPECTED_OUTPUTS:
+                (root / name).write_text(drawing_notice, encoding="utf-8")
+            self.assertEqual(self.validator.validate_directory(root), [])
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             for name in EXPECTED_OUTPUTS:

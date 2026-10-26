@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+pdfmaster-drawing = { path = "../pdfmaster-drawing" }
 flate2 = "1.1"
 hayro = "=0.8.0"
 lopdf = { version = "=0.46.0", default-features = false }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pdfmaster-core"]
+members = ["crates/pdfmaster-core", "crates/pdfmaster-drawing"]
 resolver = "2"
 
 [workspace.package]

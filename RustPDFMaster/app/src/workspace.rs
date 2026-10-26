@@ -1,6 +1,15 @@
 #[path = "bridge.rs"]
 mod bridge;
 use leptos::{prelude::*, task::spawn_local};
+use pdfmaster_ui::ink::{Frame, InkAction, InkGesture, InkImageHandoff};
+use wasm_bindgen::JsCast;
+fn image_event_source(event: &web_sys::Event) -> Option<String> {
+    event
+        .target()?
+        .dyn_into::<web_sys::HtmlImageElement>()
+        .ok()
+        .map(|image| image.src())
+}
 use pdfmaster_ui::{
     RasterPlan, adjacent_page, command_status_message, fit_width_zoom, line_edit, note_edit,
     page_batch_args, page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
@@ -33,6 +42,15 @@ struct Document {
     warning: Option<String>,
     #[serde(default)]
     note_editor: Option<NoteDraft>,
+    #[serde(default)]
+    ink_editor: Option<InkDraft>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct InkDraft {
+    id: u32,
+    page: usize,
+    request: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -125,9 +143,334 @@ struct Model {
     line_points: RwSignal<String>,
     shapes: RwSignal<Option<Result<ShapeList, String>>>,
     selected_shape: RwSignal<Option<Value>>,
+    ink_enabled: RwSignal<bool>,
+    ink_gesture: RwSignal<Option<InkGesture>>,
+    ink_handoff: RwSignal<bool>,
+    ink_image: RwSignal<Option<InkImageHandoff>>,
+    ink_image_revision: RwSignal<u32>,
+    image_ready: RwSignal<bool>,
 }
 
 impl Model {
+    fn complete_ink_handoff(self) {
+        self.ink_handoff.set(false);
+        self.ink_image.set(None);
+        self.ink_gesture.set(None);
+        self.busy.set(false);
+    }
+    fn image_loaded(self, source: Option<String>) {
+        self.image_ready.set(true);
+        if self.ink_handoff.get_untracked() {
+            let ready = self.ink_image.with_untracked(|h| {
+                h.as_ref()
+                    .is_some_and(|h| source.as_ref().is_some_and(|s| h.loaded(h.revision, s)))
+            });
+            if ready {
+                self.complete_ink_handoff();
+            }
+        }
+    }
+    fn ink_image_decoded(self, revision: u32) {
+        let mut image = None;
+        self.ink_image.update(|h| {
+            if let Some(h) = h {
+                image = h.decoded(revision);
+            }
+        });
+        if let Some(image) = image {
+            self.image_ready.set(false);
+            self.image.set(image);
+        }
+    }
+    fn ink_image_failed(self, revision: u32) {
+        let previous = self
+            .ink_image
+            .with_untracked(|h| h.as_ref().and_then(|h| h.failed(revision)));
+        if let Some(previous) = previous {
+            self.ink_image.set(None);
+            self.image.set(previous);
+            self.ink_handoff.set(false);
+            self.image_ready.set(false);
+            self.ink_gesture.update(|s| {
+                if let Some(s) = s {
+                    s.committing = false;
+                }
+            });
+            self.busy.set(false);
+            self.message.set("笔画原生状态已更新，但页面图片未加载。旧画面和本笔输入仍保留；请重试提交刷新或取消／同步手绘核对，重试不会重复添加已提交笔画。".into());
+        }
+    }
+    fn pointer_down(self, event: web_sys::PointerEvent, surface: NodeRef<leptos::html::Div>) {
+        if !self.ink_enabled.get_untracked()
+            || self.blocked()
+            || !self.image_ready.get_untracked()
+            || !event.is_primary()
+            || event.button() != 0
+        {
+            return;
+        }
+        let Some(node) = surface.get() else {
+            return;
+        };
+        let Some(page) = self.document.with_untracked(|d| {
+            d.as_ref()
+                .and_then(|d| d.info.pages.get(self.page.get_untracked()))
+                .cloned()
+        }) else {
+            return;
+        };
+        let rect = node.get_bounding_client_rect();
+        let result = InkGesture::begin(
+            event.pointer_id(),
+            self.page.get_untracked(),
+            page.width,
+            page.height,
+            page.rotation,
+            Frame {
+                left: rect.left(),
+                top: rect.top(),
+                width: rect.width(),
+                height: rect.height(),
+            },
+            f64::from(event.client_x()),
+            f64::from(event.client_y()),
+            &self.shape_stroke.get_untracked(),
+            &self.shape_line.get_untracked(),
+        );
+        let mut gesture = match result {
+            Ok(s) => s,
+            Err(e) => {
+                self.message.set(e);
+                return;
+            }
+        };
+        let mut random = [0u8; 16];
+        let Some(crypto) = web_sys::window().and_then(|w| w.crypto().ok()) else {
+            self.message.set("无法建立手绘请求身份，未开始。".into());
+            return;
+        };
+        if crypto.get_random_values_with_u8_array(&mut random).is_err() {
+            self.message.set("无法建立手绘请求身份，未开始。".into());
+            return;
+        }
+        gesture.request = random.iter().map(|b| format!("{b:02x}")).collect();
+        if node.set_pointer_capture(event.pointer_id()).is_err() {
+            self.message.set("无法捕获绘制指针，未开始手绘。".into());
+            return;
+        }
+        event.prevent_default();
+        let args = json!({"request":gesture.request,"page":gesture.page,"color":gesture.color,"line_width":gesture.width});
+        self.ink_gesture.set(Some(gesture));
+        self.message.set("正在保护手绘会话…".into());
+        spawn_local(async move {
+            match bridge::call_bounded::<InkDraft>("begin_ink_document", &args).await {
+                Ok(editor) => {
+                    // A pending capture is retained through cancellation until this acknowledgement.
+                    self.document.update(|d| {
+                        if let Some(d) = d {
+                            d.ink_editor = Some(editor.clone());
+                        }
+                    });
+                    let mut action = InkAction::Wait;
+                    self.ink_gesture.update(|s| {
+                        if let Some(s) = s {
+                            action = s.acknowledge(editor.id);
+                        }
+                    });
+                    self.message
+                        .set("手绘中；抬笔提交。尚未提交的采样点未自动持久化。".into());
+                    self.ink_action(action);
+                }
+                Err(e) => {
+                    self.ink_gesture.update(|s| {
+                        if let Some(s) = s {
+                            s.begin_pending = false;
+                            s.ended = true;
+                        }
+                    });
+                    self.message
+                        .set(format!("{e}；请使用取消／同步手绘核对原生会话。"));
+                }
+            }
+        });
+    }
+    fn pointer_sample(
+        self,
+        event: &web_sys::PointerEvent,
+        surface: NodeRef<leptos::html::Div>,
+    ) -> bool {
+        if !self.ink_gesture.with_untracked(|s| {
+            s.as_ref()
+                .is_some_and(|s| s.pointer == event.pointer_id() && !s.ended && !s.committing)
+        }) {
+            return false;
+        }
+        event.prevent_default();
+        let Some(node) = surface.get() else {
+            self.cancel_ink();
+            return false;
+        };
+        let r = node.get_bounding_client_rect();
+        let mut error = None;
+        self.ink_gesture.update(|s| {
+            if let Some(s) = s
+                && let Err(e) = s.sample(
+                    event.pointer_id(),
+                    Frame {
+                        left: r.left(),
+                        top: r.top(),
+                        width: r.width(),
+                        height: r.height(),
+                    },
+                    f64::from(event.client_x()),
+                    f64::from(event.client_y()),
+                )
+            {
+                error = Some(e);
+            }
+        });
+        if let Some(e) = error {
+            self.cancel_ink();
+            self.message.set(e);
+            return false;
+        }
+        true
+    }
+    fn pointer_up(self, event: web_sys::PointerEvent, surface: NodeRef<leptos::html::Div>) {
+        if !self.pointer_sample(&event, surface) {
+            return;
+        }
+        let mut action = InkAction::Wait;
+        self.ink_gesture.update(|s| {
+            if let Some(s) = s {
+                action = s.finish(event.pointer_id());
+            }
+        });
+        if let Some(node) = surface.get() {
+            let _ = node.release_pointer_capture(event.pointer_id());
+        }
+        self.ink_action(action);
+    }
+    fn pointer_cancel(self, event: web_sys::PointerEvent) {
+        if self.ink_gesture.with_untracked(|s| {
+            s.as_ref()
+                .is_some_and(|s| s.pointer == event.pointer_id() && !s.ended && !s.committing)
+        }) {
+            self.cancel_ink();
+        }
+    }
+    fn retry_ink(self) {
+        let mut action = InkAction::Wait;
+        self.ink_gesture.update(|s| {
+            if let Some(s) = s {
+                action = s.retry();
+            }
+        });
+        self.ink_action(action);
+    }
+    fn cancel_ink(self) {
+        if self.busy.get_untracked() {
+            return;
+        }
+        if self.ink_gesture.with_untracked(|s| {
+            s.as_ref()
+                .is_some_and(|s| s.begin_pending || s.guard.is_some() || !s.ended)
+        }) {
+            let mut action = InkAction::Wait;
+            self.ink_gesture.update(|s| {
+                if let Some(s) = s {
+                    action = s.cancel();
+                }
+            });
+            self.ink_action(action);
+            return;
+        }
+        if let Some(request) = self
+            .ink_gesture
+            .with_untracked(|s| s.as_ref().map(|s| s.request.clone()))
+        {
+            self.ink_action(InkAction::CancelRequest { request });
+            return;
+        }
+        // Includes a lost begin acknowledgement and a reloaded WebView: inspect read-only
+        // document state first; never assume that a failed reply means no native guard.
+        self.busy.set(true);
+        spawn_local(async move {
+            let result =
+                bridge::call_bounded::<Option<Document>>("document_info", &json!({})).await;
+            self.busy.set(false);
+            match result {
+                Ok(Some(doc)) => {
+                    let request = doc.ink_editor.as_ref().map(|e| e.request.clone());
+                    self.document.set(Some(doc));
+                    if let Some(request) = request {
+                        self.ink_action(InkAction::CancelRequest { request });
+                    } else {
+                        self.ink_gesture.set(None);
+                        self.message
+                            .set("原生手绘会话已结束；已提交的笔画仍保留，可撤销。".into());
+                        self.refresh();
+                    }
+                }
+                Ok(None) => {
+                    self.ink_gesture.set(None);
+                    self.document.set(None);
+                }
+                Err(e) => self.message.set(e),
+            }
+        });
+    }
+    fn ink_action(self, action: InkAction) {
+        let (command, args) = match action {
+            InkAction::Wait => return,
+            InkAction::Commit { id, points } => {
+                ("commit_ink_document", json!({"id":id,"strokes":[points]}))
+            }
+            InkAction::Cancel { id } => ("cancel_ink_document", json!({"id":id})),
+            InkAction::CancelRequest { request } => {
+                ("cancel_ink_request_document", json!({"request":request}))
+            }
+        };
+        self.busy.set(true);
+        spawn_local(async move {
+            match bridge::call_bounded::<Document>(command, &args).await {
+                Ok(doc) => {
+                    self.document.set(Some(doc));
+                    self.search_result.set(None);
+                    self.ink_handoff.set(true);
+                    self.message.set(
+                        if command == "commit_ink_document" {
+                            "手绘已提交，可撤销；请导出 PDF 保存。"
+                        } else {
+                            "手绘会话已结束；已提交笔画仍保留，可撤销。"
+                        }
+                        .into(),
+                    );
+                    if !self.render().await {
+                        self.ink_handoff.set(false);
+                        self.ink_gesture.update(|s| {
+                            if let Some(s) = s {
+                                s.committing = false;
+                            }
+                        });
+                        self.busy.set(false);
+                    }
+                    // Otherwise keep the preview and operation lock until the PDF image's
+                    // load event; bridge completion alone does not mean visible handoff.
+                }
+                Err(e) => {
+                    self.ink_gesture.update(|s| {
+                        if let Some(s) = s {
+                            s.committing = false;
+                        }
+                    });
+                    self.message
+                        .set(format!("{e}；笔画输入仍保留，请重试提交或取消／同步手绘。"));
+                    self.busy.set(false);
+                }
+            }
+        });
+    }
     fn loaded(self) -> bool {
         self.document.with(|d| d.is_some())
     }
@@ -136,7 +479,13 @@ impl Model {
             .with(|d| d.as_ref().map_or(0, |d| d.info.page_count))
     }
     fn blocked(self) -> bool {
-        self.busy.get() || !self.loaded() || self.has_note_draft()
+        self.busy.get() || !self.loaded() || self.has_note_draft() || self.has_ink()
+    }
+    fn has_ink(self) -> bool {
+        self.ink_gesture.with(|s| s.is_some())
+            || self
+                .document
+                .with(|d| d.as_ref().is_some_and(|d| d.ink_editor.is_some()))
     }
     fn has_note_draft(self) -> bool {
         self.note_draft.with(|draft| draft.is_some())
@@ -160,6 +509,10 @@ impl Model {
             self.message.set("请先保存或取消便笺编辑。".into());
             return;
         }
+        if self.has_ink() {
+            self.message.set("请先结束或取消手绘。".into());
+            return;
+        }
         self.busy.set(true);
         spawn_local(async move {
             let result: Result<Option<Document>, _> = bridge::call(command, &args).await;
@@ -180,6 +533,10 @@ impl Model {
                         }
                     }
                     self.note_draft.set(doc.note_editor.clone());
+                    if let Some(editor) = &doc.ink_editor {
+                        self.page.set(editor.page);
+                        status="手绘会话尚未结束；未提交的笔画无法从进程恢复，请取消／同步手绘后继续。".into();
+                    }
                     let page_count = doc.info.page_count;
                     self.document.set(Some(doc));
                     if matches!(
@@ -224,37 +581,77 @@ impl Model {
     fn edit(self, edit: Value) {
         self.command("edit_document", json!({"edit":edit}));
     }
-    async fn render(self) {
+    async fn render(self) -> bool {
         self.notes.set(None);
         self.shapes.set(None);
         self.selected_shape.set(None);
         if !self.loaded() {
-            return;
+            return false;
         }
         let Some(plan) = self.raster() else {
-            return;
+            return false;
         };
         let args = json!({"page":self.page.get_untracked(),"scale":plan.scale});
-        match bridge::call::<String>("render_page", &args).await {
-            Ok(image) => self.image.set(image),
+        match bridge::call_bounded::<String>("render_page", &args).await {
+            Ok(image) => {
+                if self.image.get_untracked() == image && self.image_ready.get_untracked() {
+                    if self.ink_handoff.get_untracked() {
+                        self.complete_ink_handoff();
+                    }
+                } else if self.ink_handoff.get_untracked() {
+                    let Some(revision) = self.ink_image_revision.get_untracked().checked_add(1)
+                    else {
+                        self.message
+                            .set("图片会话编号已耗尽，请先保存并正常重启。".into());
+                        return false;
+                    };
+                    self.ink_image_revision.set(revision);
+                    self.ink_image.set(Some(InkImageHandoff {
+                        previous: self.image.get_untracked(),
+                        next: image,
+                        revision,
+                        decoded: false,
+                    }));
+                    if set_timeout_with_handle(
+                        move || self.ink_image_failed(revision),
+                        std::time::Duration::from_secs(15),
+                    )
+                    .is_err()
+                    {
+                        self.ink_image_failed(revision);
+                        return false;
+                    }
+                } else {
+                    self.image_ready.set(false);
+                    self.image.set(image);
+                }
+            }
             Err(e) => {
-                self.image.set(String::new());
+                if !self.ink_handoff.get_untracked() {
+                    self.image.set(String::new());
+                    self.image_ready.set(false);
+                }
                 self.message.set(e);
+                return false;
             }
         }
         self.refresh_notes().await;
         self.shapes.set(Some(
-            bridge::call::<ShapeList>(
+            bridge::call_bounded::<ShapeList>(
                 "shapes_document",
                 &json!({"page":self.page.get_untracked()}),
             )
             .await,
         ));
+        true
     }
     async fn refresh_notes(self) {
         self.notes.set(Some(
-            bridge::call::<NoteList>("notes_document", &json!({"page":self.page.get_untracked()}))
-                .await,
+            bridge::call_bounded::<NoteList>(
+                "notes_document",
+                &json!({"page":self.page.get_untracked()}),
+            )
+            .await,
         ));
     }
     fn navigate(self, page: usize) {
@@ -263,6 +660,10 @@ impl Model {
         }
         if self.has_note_draft() {
             self.message.set("请先保存或取消便笺编辑。".into());
+            return;
+        }
+        if self.has_ink() {
+            self.message.set("请先结束或取消手绘。".into());
             return;
         }
         if page >= self.count() {
@@ -703,7 +1104,14 @@ pub fn Workspace() -> impl IntoView {
         line_points: RwSignal::new("72,200,300,300".into()),
         shapes: RwSignal::new(None),
         selected_shape: RwSignal::new(None),
+        ink_enabled: RwSignal::new(false),
+        ink_gesture: RwSignal::new(None),
+        ink_handoff: RwSignal::new(false),
+        ink_image: RwSignal::new(None),
+        ink_image_revision: RwSignal::new(0),
+        image_ready: RwSignal::new(false),
     };
+    let surface = NodeRef::<leptos::html::Div>::new();
     m.command("document_info", json!({}));
     view! {
         <main class="workspace">
@@ -738,7 +1146,21 @@ pub fn Workspace() -> impl IntoView {
                 <Show when=move||m.loaded() fallback=move||view!{
                     <div class="empty-state"><div class="paper-emblem">"PDF"</div><h1>"让文档回到工作中心。"</h1><p>"打开一份 PDF，或从空白页开始。"</p><button class="primary" disabled=move||m.busy.get() on:click=move|_|m.command("open_document",json!({}))>"选择 PDF 文件"</button><div class="safety-note">"仅在会话副本中编辑，原文件不会自动覆盖。"</div></div>
                 }>
-                    <div class="paper-frame"><Show when=move||!m.image.get().is_empty() fallback=move||view!{<p class="render-placeholder">"等待页面渲染"</p>}><img class="pdf-page" src=move||m.image.get() style=move||m.raster().map(|p|p.image_style()).unwrap_or_default() alt=move||format!("PDF 第 {} 页",m.page.get()+1) draggable="false"/></Show></div>
+                    <div class="paper-frame"><Show when=move||!m.image.get().is_empty() fallback=move||view!{<p class="render-placeholder">"等待页面渲染"</p>}>
+                        <div class="drawing-surface" class:inking=move||m.ink_enabled.get() node_ref=surface
+                            on:pointerdown=move|e|m.pointer_down(e,surface)
+                            on:pointermove=move|e|{m.pointer_sample(&e,surface);}
+                            on:pointerup=move|e|m.pointer_up(e,surface)
+                            on:pointercancel=move|e|m.pointer_cancel(e)
+                            on:lostpointercapture=move|e|m.pointer_cancel(e)>
+                            <img class="pdf-page" src=move||m.image.get() style=move||m.raster().map(|p|p.image_style()).unwrap_or_default() alt=move||format!("PDF 第 {} 页",m.page.get()+1) draggable="false" on:load=move|e|m.image_loaded(image_event_source(&e)) on:error=move|_|{if let Some(h)=m.ink_image.get_untracked(){m.ink_image_failed(h.revision);}}/>
+                            {move||m.ink_image.get().filter(|h|!h.decoded).map(|h|{let revision=h.revision;view!{<img class="ink-staged-image" src=h.next alt="" aria-hidden="true" on:load=move|_|m.ink_image_decoded(revision) on:error=move|_|m.ink_image_failed(revision)/>}})}
+                            {move||m.ink_gesture.with(|s|s.as_ref().filter(|s|s.guard.is_some()&&!s.cancelled).map(|s|{
+                                let(w,h)=if s.rotation.rem_euclid(180)==0{(s.page_width,s.page_height)}else{(s.page_height,s.page_width)};
+                                view!{<svg class="ink-preview" viewBox=format!("0 0 {w} {h}") preserveAspectRatio="none" aria-hidden="true"><polyline points=s.preview() fill="none" stroke=s.stroke.clone() stroke-width=s.width stroke-linecap="round" stroke-linejoin="round"/></svg>}
+                            }))}
+                        </div>
+                    </Show></div>
                 </Show>
             </section>
             <aside class="inspector">
@@ -805,6 +1227,15 @@ pub fn Workspace() -> impl IntoView {
                         <p class="note-meta">"编辑确认未返回时，可恢复当前进程的编辑入口；不会恢复未持久化的输入。"</p>
                     </Show>
                     <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。仅支持受限 Text 便笺；标签、回复线程及歧义弹窗关系暂不编辑或删除。关系检查最多 16384 条。定位和弹窗显示仍在迁移；修改和删除均不是安全擦除。"</p>
+                </div>
+                <div class="tool-group ink-panel"><h3>"手绘"</h3>
+                    <button disabled=move||m.blocked() aria-pressed=move||m.ink_enabled.get().to_string() on:click=move|_|m.ink_enabled.update(|v|*v = !*v)>{move||if m.ink_enabled.get(){"退出手绘模式"}else{"进入手绘模式"}}</button>
+                    <p class="note-meta">{move||if m.ink_enabled.get(){"在页面上拖动绘制；抬笔后提交一笔。阅读滚动请先退出手绘模式。"}else{"可使用鼠标、触控或笔绘制。颜色与线宽使用下方图形参数，在落笔时固定。"}}</p>
+                    <Show when=move||m.has_ink()>
+                        <button disabled=move||m.busy.get()||!m.ink_gesture.with(|s|s.as_ref().is_some_and(|s|s.ended&&s.guard.is_some()&&!s.committing&&!s.cancelled)) on:click=move|_|m.retry_ink()>"重试提交手绘"</button>
+                    </Show>
+                    <button disabled=move||m.busy.get()||!m.loaded() on:click=move|_|m.cancel_ink()>"取消／同步手绘"</button>
+                    <p class="muted">"手绘中阻止正常关闭及冲突操作；采样点在提交前未持久化，崩溃或强制退出仍可能丢失。当前仅迁移添加与整笔撤销，选取、改样式与橡皮擦仍待迁移。"</p>
                 </div>
                 <div class="tool-group shape-panel"><h3>"图形批注"</h3>
                     <div class="note-list" aria-label="当前页图形批注">{move||match m.shapes.get() {

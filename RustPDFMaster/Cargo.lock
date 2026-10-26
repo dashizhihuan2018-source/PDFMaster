@@ -636,10 +636,18 @@ dependencies = [
  "flate2",
  "hayro",
  "lopdf",
+ "pdfmaster-drawing",
  "png",
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "pdfmaster-drawing"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

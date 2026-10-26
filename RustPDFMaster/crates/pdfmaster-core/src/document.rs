@@ -143,6 +143,14 @@ pub enum Edit {
         fill: Option<Color>,
         line_width: f32,
     },
+    AddInk {
+        page: usize,
+        strokes: Vec<Vec<crate::Point>>,
+        color: Color,
+        line_width: f32,
+        #[serde(default)]
+        smoothed: bool,
+    },
     UpdateShape {
         page: usize,
         expected: crate::shapes::ShapeAnnotation,

@@ -11,6 +11,13 @@ use crate::notes::{delete_note, update_note, validate_notes_page, validated_anno
 
 pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit) -> Result<()> {
     match edit {
+        Edit::AddInk {
+            page,
+            strokes,
+            color,
+            line_width,
+            smoothed,
+        } => crate::ink::add_ink(document, pages, page, strokes, color, line_width, smoothed),
         Edit::Rotate { page, degrees } => rotate(document, pages, page, degrees),
         Edit::RotatePages {
             pages: selected,

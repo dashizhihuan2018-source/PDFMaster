@@ -3,6 +3,7 @@
 mod document;
 mod edit;
 mod extract;
+mod ink;
 mod insert;
 mod lines;
 mod notes;

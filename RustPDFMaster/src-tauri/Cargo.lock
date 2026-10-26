@@ -2647,8 +2647,16 @@ dependencies = [
  "flate2",
  "hayro",
  "lopdf",
+ "pdfmaster-drawing",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pdfmaster-drawing"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
