@@ -2,7 +2,9 @@
 mod bridge;
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::{
-    RasterPlan, adjacent_page, command_status_message, fit_width_zoom, raster_plan, step_zoom,
+    RasterPlan, adjacent_page, command_status_message, fit_width_zoom, note_edit, page_batch_args,
+    page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
+    search_conditions_message, search_response_is_current, search_status_message, step_zoom,
     visible_status,
 };
 use serde::Deserialize;
@@ -31,6 +33,58 @@ struct Document {
     warning: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct NoteBounds {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct TextNote {
+    annotation_index: usize,
+    bounds: NoteBounds,
+    contents: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct NoteList {
+    notes: Vec<TextNote>,
+    unsupported_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SearchHit {
+    page_index: usize,
+    match_start: usize,
+    match_end: usize,
+    snippet: String,
+    snippet_match_start: usize,
+    snippet_match_end: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SearchResponse {
+    query: String,
+    case_sensitive: bool,
+    hits: Vec<SearchHit>,
+    pages_scanned: usize,
+    searchable_pages: usize,
+    truncated: bool,
+    limitation: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PageBatchReply {
+    Cancelled,
+    Applied {
+        document: Document,
+        affected_count: usize,
+    },
+}
+
 #[derive(Clone, Copy)]
 struct Model {
     document: RwSignal<Option<Document>>,
@@ -40,6 +94,13 @@ struct Model {
     message: RwSignal<String>,
     busy: RwSignal<bool>,
     text: RwSignal<String>,
+    note_text: RwSignal<String>,
+    notes: RwSignal<Option<Result<NoteList, String>>>,
+    search_query: RwSignal<String>,
+    search_case_sensitive: RwSignal<bool>,
+    search_result: RwSignal<Option<SearchResponse>>,
+    page_jump: RwSignal<String>,
+    page_range: RwSignal<String>,
 }
 
 impl Model {
@@ -62,6 +123,9 @@ impl Model {
         })
     }
     fn command(self, command: &'static str, args: Value) {
+        self.command_at_page(command, args, None);
+    }
+    fn command_at_page(self, command: &'static str, args: Value, selected_page: Option<usize>) {
         if self.busy.get_untracked() {
             return;
         }
@@ -70,11 +134,29 @@ impl Model {
             let result: Result<Option<Document>, _> = bridge::call(command, &args).await;
             match result {
                 Ok(Some(doc)) => {
-                    self.page
-                        .update(|p| *p = (*p).min(doc.info.page_count.saturating_sub(1)));
+                    self.page.update(|p| {
+                        *p = selected_page
+                            .unwrap_or(*p)
+                            .min(doc.info.page_count.saturating_sub(1))
+                    });
                     let status =
                         command_status_message(command, doc.restored, doc.warning.as_deref());
+                    let page_count = doc.info.page_count;
                     self.document.set(Some(doc));
+                    if matches!(
+                        command,
+                        "open_document"
+                            | "new_document"
+                            | "edit_document"
+                            | "undo_document"
+                            | "redo_document"
+                    ) {
+                        self.search_result.set(None);
+                    }
+                    if page_count > 0 {
+                        self.page_jump
+                            .set((self.page.get_untracked() + 1).to_string());
+                    }
                     if matches!(command, "open_document" | "new_document" | "document_info")
                         && web_sys::window()
                             .and_then(|w| w.inner_width().ok())
@@ -100,6 +182,7 @@ impl Model {
         self.command("edit_document", json!({"edit":edit}));
     }
     async fn render(self) {
+        self.notes.set(None);
         if !self.loaded() {
             return;
         }
@@ -114,13 +197,141 @@ impl Model {
                 self.message.set(e);
             }
         }
+        self.refresh_notes().await;
+    }
+    async fn refresh_notes(self) {
+        self.notes.set(Some(
+            bridge::call::<NoteList>("notes_document", &json!({"page":self.page.get_untracked()}))
+                .await,
+        ));
     }
     fn navigate(self, page: usize) {
         if self.busy.get_untracked() || !self.loaded() {
             return;
         }
-        self.page.set(page.min(self.count().saturating_sub(1)));
+        if page >= self.count() {
+            self.message.set("页码无效，请输入现有页面。".into());
+            return;
+        }
+        self.page.set(page);
+        self.page_jump.set((page + 1).to_string());
         self.refresh();
+    }
+    fn jump_to_page(self) {
+        if self.blocked() {
+            return;
+        }
+        match page_jump_index(&self.page_jump.get_untracked(), self.count()) {
+            Ok(page) => {
+                self.message
+                    .update(|message| *message = page_jump_success_message(message));
+                self.navigate(page);
+            }
+            Err(error) => self.message.set(error),
+        }
+    }
+    fn batch_pages(self, operation: &'static str) {
+        self.batch_range(self.page_range.get_untracked(), operation);
+    }
+    fn delete_current_page(self) {
+        self.batch_range((self.page.get_untracked() + 1).to_string(), "delete");
+    }
+    fn move_page(self, delta: i32) {
+        if self.blocked() {
+            return;
+        }
+        if let Some((edit, target)) = page_move_edit(self.page.get_untracked(), delta, self.count())
+        {
+            self.command_at_page("edit_document", json!({"edit":edit}), Some(target));
+        }
+    }
+    fn batch_range(self, range: String, operation: &'static str) {
+        if self.blocked() {
+            return;
+        }
+        self.busy.set(true);
+        spawn_local(async move {
+            let args = page_batch_args(&range, operation);
+            let result = bridge::call::<PageBatchReply>("batch_pages", &args).await;
+            match result {
+                Ok(PageBatchReply::Applied {
+                    document,
+                    affected_count,
+                }) => {
+                    self.page.update(|page| {
+                        *page = (*page).min(document.info.page_count.saturating_sub(1))
+                    });
+                    self.page_jump
+                        .set((self.page.get_untracked() + 1).to_string());
+                    self.search_result.set(None);
+                    self.message.set(if operation == "delete" {
+                        format!("已删除 {affected_count} 页，可使用撤销恢复。")
+                    } else {
+                        format!("已顺时针旋转 {affected_count} 页。")
+                    });
+                    self.document.set(Some(document));
+                    self.render().await;
+                }
+                Ok(PageBatchReply::Cancelled) => {
+                    self.message.set("已取消批量删除，文档保持不变。".into());
+                }
+                Err(error) => self.message.set(error),
+            }
+            self.busy.set(false);
+        });
+    }
+    fn invalidate_search(self) {
+        let summary = self.search_result.with_untracked(|result| {
+            result.as_ref().map(|result| {
+                search_status_message(&result.query, result.hits.len(), result.truncated)
+            })
+        });
+        self.message
+            .update(|message| *message = search_conditions_message(message, summary.as_deref()));
+        self.search_result.set(None);
+    }
+    fn search(self) {
+        if self.blocked() {
+            return;
+        }
+        let query = self.search_query.get_untracked();
+        if query.trim().is_empty() {
+            self.search_result.set(None);
+            self.message.set("请输入搜索关键词。".into());
+            return;
+        }
+        let case_sensitive = self.search_case_sensitive.get_untracked();
+        let requested_query = query.trim().to_owned();
+        self.busy.set(true);
+        spawn_local(async move {
+            let args = json!({"query":query,"case_sensitive":case_sensitive});
+            match bridge::call::<SearchResponse>("search_document", &args).await {
+                Ok(result)
+                    if search_response_is_current(
+                        &requested_query,
+                        case_sensitive,
+                        &result.query,
+                        result.case_sensitive,
+                    ) =>
+                {
+                    self.message.set(search_status_message(
+                        &result.query,
+                        result.hits.len(),
+                        result.truncated,
+                    ));
+                    self.search_result.set(Some(result));
+                }
+                Ok(_) => {
+                    self.search_result.set(None);
+                    self.message.set("搜索条件已改变，请重新搜索。".into());
+                }
+                Err(error) => {
+                    self.search_result.set(None);
+                    self.message.set(error);
+                }
+            }
+            self.busy.set(false);
+        });
     }
     fn refresh(self) {
         if self.busy.get_untracked() {
@@ -178,6 +389,31 @@ impl Model {
             .unwrap_or((595., 842.));
         self.edit(json!({"kind":"add_text","page":self.page.get_untracked(),"bounds":{"x":36.,"y":height*0.5,"width":(width-72.).max(20.),"height":60.},"text":text,"font_size":18.,"color":{"r":0.1,"g":0.1,"b":0.1}}));
     }
+    fn add_note(self) {
+        if self.blocked() {
+            return;
+        }
+        let page = self.page.get_untracked();
+        let edit = self.document.with_untracked(|document| {
+            document
+                .as_ref()
+                .and_then(|document| document.info.pages.get(page))
+                .map(|info| {
+                    note_edit(
+                        page,
+                        info.width,
+                        info.height,
+                        info.rotation,
+                        &self.note_text.get_untracked(),
+                    )
+                })
+        });
+        match edit {
+            Some(Ok(edit)) => self.edit(edit),
+            Some(Err(error)) => self.message.set(error),
+            None => self.message.set("请先打开 PDF。".into()),
+        }
+    }
 }
 
 #[component]
@@ -190,6 +426,13 @@ pub fn Workspace() -> impl IntoView {
         message: RwSignal::new(String::new()),
         busy: RwSignal::new(false),
         text: RwSignal::new(String::new()),
+        note_text: RwSignal::new(String::new()),
+        notes: RwSignal::new(None),
+        search_query: RwSignal::new(String::new()),
+        search_case_sensitive: RwSignal::new(false),
+        search_result: RwSignal::new(None),
+        page_jump: RwSignal::new(String::new()),
+        page_range: RwSignal::new(String::new()),
     };
     m.command("document_info", json!({}));
     view! {
@@ -229,16 +472,58 @@ pub fn Workspace() -> impl IntoView {
                 </Show>
             </section>
             <aside class="inspector">
-                <h2>"文档工具"</h2><div class="tool-group"><h3>"页面"</h3>
+                <h2>"文档工具"</h2>
+                <div class="tool-group search-panel"><h3>"文档搜索"</h3>
+                    <input aria-label="搜索文档文字" disabled=move||m.busy.get() placeholder="输入关键词" prop:value=move||m.search_query.get() on:input=move|e|{m.search_query.set(event_target_value(&e));m.invalidate_search();}/>
+                    <label class="search-case"><input type="checkbox" disabled=move||m.busy.get() prop:checked=move||m.search_case_sensitive.get() on:change=move|e|{m.search_case_sensitive.set(event_target_checked(&e));m.invalidate_search();}/><span>"区分大小写"</span></label>
+                    <button disabled=move||m.blocked() on:click=move|_|m.search()>"搜索当前文档"</button>
+                    <Show when=move||m.search_result.with(|r|r.is_some())>
+                        <div class="search-meta">{move||m.search_result.with(|r|r.as_ref().map(|r|format!("已扫描 {} 页 · {} 页含文字{}",r.pages_scanned,r.searchable_pages,if r.case_sensitive{" · 区分大小写"}else{""})).unwrap_or_default())}</div>
+                        <div class="search-results">
+                            <For each=move||m.search_result.with(|r|r.as_ref().map(|r|r.hits.clone().into_iter().enumerate().collect::<Vec<_>>()).unwrap_or_default()) key=|(index,hit)|(*index,hit.page_index,hit.match_start) children=move|(index,hit)|{
+                                let target=hit.page_index;
+                                view!{<button class="search-hit" disabled=move||m.busy.get() on:click=move|_|m.navigate(target)><strong>{format!("第 {} 页 · 命中 {}",hit.page_index+1,index+1)}</strong><span>{hit.snippet}</span><small>{format!("字符 {}–{} · 片段内 {}–{}",hit.match_start,hit.match_end,hit.snippet_match_start,hit.snippet_match_end)}</small></button>}
+                            }/>
+                        </div>
+                        <p class="muted search-limit">{move||m.search_result.with(|r|r.as_ref().map(|r|r.limitation.clone()).unwrap_or_default())}</p>
+                    </Show>
+                </div>
+                <div class="tool-group"><h3>"页面"</h3>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"rotate","page":m.page.get_untracked(),"degrees":90}))>"顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"duplicate_page","page":m.page.get_untracked(),"index":m.page.get_untracked()+1}))>"复制当前页"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"insert_blank","index":m.page.get_untracked()+1,"width":595.,"height":842.}))>"在后方插入空白页"</button>
-                    <button class="danger" disabled={move || m.blocked()||m.count()<=1} on:click=move|_|m.edit(json!({"kind":"delete_page","page":m.page.get_untracked()}))>"删除当前页"</button>
+                    <button disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.move_page(-1)>"当前页前移"</button>
+                    <button disabled={move||m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.move_page(1)>"当前页后移"</button>
+                    <button class="danger" disabled={move || m.blocked()||m.count()<=1} on:click=move|_|m.delete_current_page()>"删除当前页"</button>
+                </div>
+                <div class="tool-group"><h3>"批量页面"</h3>
+                    <input aria-label="批量页码范围" disabled=move||m.busy.get() placeholder="例如 1-3,5" prop:value=move||m.page_range.get() on:input=move|e|m.page_range.set(event_target_value(&e))/>
+                    <button disabled=move||m.blocked() on:click=move|_|m.batch_pages("rotate_90")>"批量顺时针旋转 90°"</button>
+                    <button class="danger" disabled=move||m.blocked()||m.count()<=1 on:click=move|_|m.batch_pages("delete")>"批量删除"</button>
+                    <p class="muted">"页码从 1 开始；删除会先显示选中页数并要求确认。"</p>
                 </div>
                 <div class="tool-group"><h3>"文字批注"</h3><textarea aria-label="文字批注内容" placeholder="输入要添加的文字" prop:value=move||m.text.get() on:input=move|e|m.text.set(event_target_value(&e))></textarea><button disabled=move||m.blocked() on:click=move|_|m.add_text()>"添加到页面中部"</button><p class="muted">"字体与复杂 PDF 兼容性仍在迁移验证中。"</p></div>
+                <div class="tool-group notes-panel"><h3>"便笺与评论"</h3>
+                    <textarea aria-label="便笺内容" disabled=move||m.busy.get() placeholder="支持中文和 emoji；保存为 PDF 便笺" prop:value=move||m.note_text.get() on:input=move|event|m.note_text.set(event_target_value(&event))></textarea>
+                    <button disabled=move||m.blocked() on:click=move|_|m.add_note()>"添加便笺到左上方"</button>
+                    <div class="note-list" aria-label="当前页便笺">
+                        {move||match m.notes.get() {
+                            None => view!{<p class="note-meta">{if m.loaded(){"正在读取当前页便笺…"}else{"打开 PDF 后显示当前页便笺。"}}</p>}.into_any(),
+                            Some(Err(error)) => view!{<p class="note-error">{format!("无法读取批注：{error}")}</p>}.into_any(),
+                            Some(Ok(list)) => view!{
+                                <p class="note-meta">{format!("当前页 {} 条便笺",list.notes.len())}</p>
+                                <p class="note-meta">{if list.unsupported_count>0{format!("另有 {} 条其他类型批注尚不支持显示。",list.unsupported_count)}else{String::new()}}</p>
+                                {list.notes.into_iter().map(|note|view!{
+                                    <article class="note-item"><strong>{format!("便笺 {}",note.annotation_index+1)}</strong><p>{note.contents}</p><small>{format!("PDF 坐标 {:.0}, {:.0} · {:.0} × {:.0} pt",note.bounds.x,note.bounds.y,note.bounds.width,note.bounds.height)}</small></article>
+                                }).collect_view()}
+                            }.into_any(),
+                        }}
+                    </div>
+                    <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。选择、修改、删除和弹窗仍在迁移。"</p>
+                </div>
                 <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
             </aside>
-            <footer class="statusbar"><span role="status" aria-live="polite">{move||m.document.with(|d|visible_status(d.as_ref().and_then(|d|d.warning.as_deref()), &m.message.get(), m.busy.get()))}</span><span class="flex"></span><Show when=move||m.loaded()><button aria-label="上一页" disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),-1,m.count()))>"‹"</button><span>{move||format!("{} / {}",m.page.get()+1,m.count())}</span><button aria-label="下一页" disabled={move || m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),1,m.count()))>"›"</button><span class="page-dimensions">{move||m.document.with(|d|d.as_ref().and_then(|d|d.info.pages.get(m.page.get())).map(|p|format!("{:.0} × {:.0} pt · {}°",p.width,p.height,p.rotation)).unwrap_or_default())}</span></Show></footer>
+            <footer class="statusbar"><span role="status" aria-live="polite">{move||m.document.with(|d|visible_status(d.as_ref().and_then(|d|d.warning.as_deref()), &m.message.get(), m.busy.get()))}</span><span class="flex"></span><Show when=move||m.loaded()><button aria-label="上一页" disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),-1,m.count()))>"‹"</button><span>{move||format!("{} / {}",m.page.get()+1,m.count())}</span><button aria-label="下一页" disabled={move || m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),1,m.count()))>"›"</button><label class="page-jump-label"><span>"页码"</span><input aria-label="跳转页码" inputmode="numeric" prop:value=move||m.page_jump.get() on:input=move|e|m.page_jump.set(event_target_value(&e))/></label><button class="page-jump-button" disabled=move||m.blocked() on:click=move|_|m.jump_to_page()>"转到"</button><span class="page-dimensions">{move||m.document.with(|d|d.as_ref().and_then(|d|d.info.pages.get(m.page.get())).map(|p|format!("{:.0} × {:.0} pt · {}°",p.width,p.height,p.rotation)).unwrap_or_default())}</span></Show></footer>
         </main>
     }
 }

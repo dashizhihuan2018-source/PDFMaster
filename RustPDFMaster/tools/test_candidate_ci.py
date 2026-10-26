@@ -15,8 +15,17 @@ REPOSITORY = PROJECT.parent
 WORKFLOW = REPOSITORY / ".github/workflows/pdfmaster-rust-candidate.yml"
 BUILD_CONFIG = PROJECT / "cross-platform/build.json"
 TOOLS = PROJECT / "tools"
+TAURI_CONFIG = PROJECT / "src-tauri/tauri.conf.json"
+NOTICE_GUARD = TOOLS / "verify-bundled-notices.py"
 CHECKOUT_SHA = "11d5960a326750d5838078e36cf38b85af677262"
 UPLOAD_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
+NOTICE_NAMES = {
+    "macos-aarch64.html",
+    "windows-x86_64.html",
+    "ios-simulator-aarch64.html",
+    "ios-device-aarch64.html",
+    "ui-wasm32.html",
+}
 
 
 def synthetic_pe(machine=0x8664):
@@ -33,6 +42,21 @@ def synthetic_pe(machine=0x8664):
     return data
 
 
+def synthetic_notice():
+    return """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Third-party notices</title><style>body { margin: 0; }</style></head>
+<body><main><h1>Notices</h1><p class="scope">Candidate inventory.</p>
+<section class="license" data-license-id="MIT"><h2>MIT <span class="license-id">MIT</span></h2><h3>Packages</h3>
+<ul class="packages"><li class="package" data-package-name="fixture" data-package-version="1.0.0">
+<a class="crate-source" data-source-kind="repository" href="https://example.invalid/source" rel="noreferrer noopener">fixture 1.0.0</a>
+</li></ul><pre class="license-text">MIT fixture text</pre></section>
+</main></body></html>"""
+
+
 class CandidateCiContract(unittest.TestCase):
     def read_required(self, path: Path) -> str:
         self.assertTrue(path.is_file(), f"missing required file: {path}")
@@ -40,6 +64,100 @@ class CandidateCiContract(unittest.TestCase):
 
     def guard(self, root, command, *arguments):
         return subprocess.run([sys.executable, str(TOOLS / "ci-artifact-guard.py"), command, str(root), *arguments], capture_output=True, text=True)
+
+    def notice_guard(self, command, *arguments):
+        return subprocess.run(
+            [sys.executable, str(NOTICE_GUARD), command, *map(str, arguments)],
+            capture_output=True,
+            text=True,
+        )
+
+    def write_notice_set(self, root: Path):
+        root.mkdir(parents=True, exist_ok=True)
+        for name in NOTICE_NAMES:
+            (root / name).write_text(synthetic_notice(), encoding="utf-8")
+
+    def test_notice_toolchain_prebuild_and_resource_map_are_exact(self):
+        setup = self.read_required(TOOLS / "ci-setup.sh")
+        self.assertIn('cargo_about_version="0.9.2"', setup)
+        self.assertIn("install cargo-about", setup)
+        self.assertIn("--features cli", setup)
+        self.assertIn("CARGO_ABOUT_BIN=", setup)
+
+        prepare = self.read_required(TOOLS / "prepare-tauri-build.sh")
+        self.assertLess(
+            prepare.index("generate-third-party-notices.sh"),
+            prepare.index("trunk --no-color build --release --locked"),
+        )
+        self.assertIn("src-tauri/gen/apple/assets/third-party-notices", prepare)
+
+        check = self.read_required(TOOLS / "ci-check.sh")
+        self.assertLess(check.index("generate-third-party-notices.sh"), check.index('cargo "+$rust_version"'))
+
+        config = json.loads(self.read_required(TAURI_CONFIG))
+        self.assertEqual(config["build"]["beforeBuildCommand"], "bash tools/prepare-tauri-build.sh")
+        self.assertEqual(
+            config["bundle"]["resources"],
+            {
+                f"../target/third-party-notices/{name}": f"third-party-notices/{name}"
+                for name in NOTICE_NAMES
+            },
+        )
+
+    def test_platform_artifact_scripts_verify_exact_bundled_notices(self):
+        macos = self.read_required(TOOLS / "ci-build-macos.sh")
+        self.assertIn('$bundle/Contents/Resources/third-party-notices', macos)
+        self.assertIn('verify-bundled-notices.py directory', macos)
+        self.assertIn('verify-bundled-notices.py zip', macos)
+
+        windows = self.read_required(TOOLS / "ci-build-windows.sh")
+        self.assertIn("7z x", windows)
+        self.assertIn('verify-bundled-notices.py directory', windows)
+        self.assertIn("third-party-notices", windows)
+
+        ios = self.read_required(TOOLS / "ci-build-ios.sh")
+        self.assertIn('$app/assets/third-party-notices', ios)
+        self.assertIn('verify-bundled-notices.py directory', ios)
+        self.assertIn('verify-bundled-notices.py zip', ios)
+
+    def test_notice_bundle_guard_matches_directory_and_zip_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            bundled = root / "bundled"
+            self.write_notice_set(source)
+            self.write_notice_set(bundled)
+            result = self.notice_guard("directory", source, bundled)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            archive = root / "candidate.zip"
+            prefix = "Candidate.app/Contents/Resources/third-party-notices/"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr(prefix, b"")
+                for name in NOTICE_NAMES:
+                    output.write(source / name, f"{prefix}{name}")
+            result = self.notice_guard("zip", source, archive, prefix)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            (bundled / "leaked-metadata.txt").write_text(
+                "/Users/private/source", encoding="utf-8"
+            )
+            self.assertNotEqual(
+                self.notice_guard("directory", source, bundled).returncode, 0
+            )
+            (bundled / "leaked-metadata.txt").unlink()
+            (bundled / "nested-private-data").mkdir()
+            self.assertNotEqual(
+                self.notice_guard("directory", source, bundled).returncode, 0
+            )
+            (bundled / "nested-private-data").rmdir()
+
+            (bundled / "ui-wasm32.html").write_text("changed", encoding="utf-8")
+            self.assertNotEqual(self.notice_guard("directory", source, bundled).returncode, 0)
+            with zipfile.ZipFile(archive, "w") as output:
+                for name in NOTICE_NAMES - {"ui-wasm32.html"}:
+                    output.write(source / name, f"{prefix}{name}")
+            self.assertNotEqual(self.notice_guard("zip", source, archive, prefix).returncode, 0)
 
     def test_windows_application_and_nsis_stub_have_separate_contracts(self):
         script = self.read_required(TOOLS / "ci-build-windows.sh")

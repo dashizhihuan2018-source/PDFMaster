@@ -7,6 +7,10 @@ cd "$project_root"
 
 export NO_COLOR=true
 rust_version="1.96.0"
+python_bin="${PYTHON_BIN:-python3}"
+
+bash tools/generate-third-party-notices.sh target/third-party-notices
+PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m unittest -v tools/test_third_party_notices.py
 
 cargo "+$rust_version" fmt --manifest-path crates/pdfmaster-core/Cargo.toml --all -- --check
 cargo "+$rust_version" test --locked --manifest-path crates/pdfmaster-core/Cargo.toml

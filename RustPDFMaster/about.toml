@@ -1,0 +1,12 @@
+# Tool policy for generating notices, not a statement of legal acceptance.
+# Keep upstream expressions; do not override unclear packages to make CI pass.
+accepted = [
+  "MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "ISC",
+  "Unicode-3.0", "Zlib", "BSL-1.0", "CC0-1.0", "MIT-0", "0BSD",
+  "MPL-2.0", "Unlicense", "Apache-2.0 WITH LLVM-exception",
+]
+
+# Ignore workspace crates only when their manifest explicitly marks them as
+# non-publishable. Other workspace crates remain visible but receive no
+# invented public source link in the notice template.
+private = { ignore = true }

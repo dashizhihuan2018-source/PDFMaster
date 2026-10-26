@@ -19,6 +19,13 @@ manifest="${artifact}.sha256"
 [[ -f "$installer" ]]
 [[ ! -L "$installer" ]]
 python tools/ci-artifact-guard.py pe-x64 "$project_root" "$application"
+review="$(mktemp -d)"
+review_native="$(cygpath -w "$review")"
+7z x -y "-o$review_native" "$installer" >/dev/null
+mapfile -t notice_dirs < <(find "$review" -type d -name third-party-notices -print)
+[[ "${#notice_dirs[@]}" == "1" ]]
+python tools/verify-bundled-notices.py directory \
+  target/third-party-notices "${notice_dirs[0]}"
 
 mkdir -p artifacts
 rm -f "$artifact" "$manifest"

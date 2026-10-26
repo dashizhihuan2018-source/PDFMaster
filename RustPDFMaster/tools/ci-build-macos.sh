@@ -23,11 +23,17 @@ manifest="${artifact}.sha256"
 [[ -z "$(find "$bundle" -type l -print -quit)" ]]
 [[ "$(lipo -archs "$binary")" == "arm64" ]]
 file "$binary" | grep -q 'Mach-O 64-bit executable arm64'
+notices="$bundle/Contents/Resources/third-party-notices"
+python3 tools/verify-bundled-notices.py directory \
+  target/third-party-notices "$notices"
 
 mkdir -p artifacts
 rm -f "$artifact" "$manifest"
 ditto -c -k --keepParent "$bundle" "$artifact"
 python3 tools/ci-artifact-guard.py zip \
   "$project_root" "$artifact" "PDF Master Rust Candidate.app/"
+python3 tools/verify-bundled-notices.py zip \
+  target/third-party-notices "$artifact" \
+  "PDF Master Rust Candidate.app/Contents/Resources/third-party-notices/"
 python3 tools/ci-artifact-guard.py hash \
   "$project_root" "$artifact" "$manifest"

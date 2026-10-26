@@ -5,10 +5,11 @@ mod ios_export;
 #[cfg(target_os = "macos")]
 mod macos_termination;
 mod recovery;
+mod search;
 mod storage;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use pdfmaster_core::{DocumentInfo, Edit, Session};
-use serde::Serialize;
+use pdfmaster_core::{DocumentInfo, Edit, PageRange, Session};
+use serde::{Deserialize, Serialize};
 use std::{fs::File, io::Read, path::Path, sync::Mutex};
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -30,12 +31,79 @@ struct DocumentView {
     restored: bool,
     warning: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+enum PageBatchOperation {
+    #[serde(rename = "rotate_90")]
+    Rotate90,
+    #[serde(rename = "delete")]
+    Delete,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PageBatchReply {
+    Cancelled,
+    ConfirmationRequired {
+        count: usize,
+        page_count: usize,
+    },
+    Applied {
+        document: DocumentView,
+        affected_count: usize,
+    },
+}
 type Store = Mutex<Workspace>;
 type Reply<T> = Result<T, String>;
+
+fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::NoteList> {
+    workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .notes(page)
+        .map_err(|error| error.to_string())
+}
 
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+    #[test]
+    fn notes_read_current_memory_without_checkpointing_or_changing_history() {
+        let mut w = Workspace::default();
+        assert!(workspace_notes(&w, 0).is_err());
+        w.session = Some(Session::blank(100., 100., 2).unwrap());
+        w.session
+            .as_mut()
+            .unwrap()
+            .apply(Edit::AddNote {
+                page: 1,
+                bounds: pdfmaster_core::Rect {
+                    x: 10.,
+                    y: 10.,
+                    width: 20.,
+                    height: 20.,
+                },
+                contents: "当前内存 🦀".into(),
+                color: pdfmaster_core::Color {
+                    r: 1.,
+                    g: 0.8,
+                    b: 0.,
+                },
+            })
+            .unwrap();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        assert!(workspace_notes(&w, 0).unwrap().notes.is_empty());
+        assert_eq!(
+            workspace_notes(&w, 1).unwrap().notes[0].contents,
+            "当前内存 🦀"
+        );
+        assert!(workspace_notes(&w, 2).is_err());
+        assert!(!w.recovery_fault);
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+    }
     #[test]
     fn restored_bytes_stay_unsaved_until_export() {
         let w = Workspace {
@@ -124,6 +192,213 @@ mod workspace_tests {
         assert!(view.warning.is_some());
         assert!(w.clean().is_err());
     }
+    #[test]
+    fn search_reads_only_the_current_in_memory_session() {
+        let mut session = Session::blank(200., 200., 1).unwrap();
+        session
+            .apply(Edit::AddText {
+                page: 0,
+                bounds: pdfmaster_core::Rect {
+                    x: 20.,
+                    y: 80.,
+                    width: 160.,
+                    height: 40.,
+                },
+                text: "Current Session Search".into(),
+                font_size: 12.,
+                color: pdfmaster_core::Color {
+                    r: 0.,
+                    g: 0.,
+                    b: 0.,
+                },
+            })
+            .unwrap();
+        let w = Workspace {
+            session: Some(session),
+            ..Default::default()
+        };
+        let result = search::search_session(w.session.as_ref().unwrap(), "session", false).unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].page_index, 0);
+    }
+    #[test]
+    fn search_command_wire_contract_is_explicitly_snake_case() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains(
+                "#[tauri::command(rename_all = \"snake_case\")]\nasync fn search_document"
+            )
+        );
+    }
+    #[test]
+    fn page_batch_command_wire_contract_is_explicitly_snake_case() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains("#[tauri::command(rename_all = \"snake_case\")]\nasync fn batch_pages")
+        );
+    }
+    #[test]
+    fn confirmed_delete_rejects_a_changed_document_snapshot() {
+        let mut w = Workspace {
+            session: Some(Session::blank(100., 100., 3).unwrap()),
+            ..Default::default()
+        };
+        let snapshot = w.session.as_ref().unwrap().bytes().unwrap();
+        w.session
+            .as_mut()
+            .unwrap()
+            .apply(Edit::Rotate {
+                page: 0,
+                degrees: 90,
+            })
+            .unwrap();
+        let changed = w.session.as_ref().unwrap().bytes().unwrap();
+        assert!(apply_confirmed_delete(&mut w, "1", 1, &snapshot).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), changed);
+        assert_eq!(w.session.as_ref().unwrap().info().page_count, 3);
+    }
+    #[test]
+    fn confirmed_snapshot_deletes_once_and_undo_restores_all_pages() {
+        let mut w = Workspace {
+            session: Some(Session::blank(100., 100., 3).unwrap()),
+            ..Default::default()
+        };
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        assert!(matches!(
+            apply_confirmed_delete(&mut w, "3,1", 2, &before).unwrap(),
+            PageBatchReply::Applied {
+                affected_count: 2,
+                ..
+            }
+        ));
+        assert_eq!(w.session.as_ref().unwrap().info().page_count, 1);
+        assert!(apply_confirmed_delete(&mut w, "1", 1, &before).is_err());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(
+            serde_json::to_value(PageBatchReply::Cancelled).unwrap(),
+            serde_json::json!({"kind":"cancelled"})
+        );
+    }
+    #[test]
+    fn rotate_batch_is_one_checkpoint_and_one_undo_even_when_draft_write_fails() {
+        let mut w = Workspace {
+            session: Some(Session::blank(100., 100., 3).unwrap()),
+            ..Default::default()
+        };
+        let response = apply_page_batch(&mut w, "1,3", PageBatchOperation::Rotate90, None).unwrap();
+        let PageBatchReply::Applied {
+            document,
+            affected_count,
+        } = response
+        else {
+            panic!("rotation must apply without confirmation")
+        };
+        assert_eq!(affected_count, 2);
+        assert_eq!(
+            document
+                .info
+                .pages
+                .iter()
+                .map(|page| page.rotation)
+                .collect::<Vec<_>>(),
+            vec![90, 0, 90]
+        );
+        assert!(document.warning.is_some());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(
+            w.session
+                .as_ref()
+                .unwrap()
+                .info()
+                .pages
+                .iter()
+                .map(|page| page.rotation)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 0]
+        );
+        assert!(w.session.as_mut().unwrap().undo().is_err());
+    }
+    #[test]
+    fn delete_batch_requires_exact_count_confirmation_and_never_deletes_all() {
+        let mut w = Workspace {
+            session: Some(Session::blank(100., 100., 3).unwrap()),
+            ..Default::default()
+        };
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let response = apply_page_batch(&mut w, "1,3", PageBatchOperation::Delete, None).unwrap();
+        assert!(matches!(
+            response,
+            PageBatchReply::ConfirmationRequired {
+                count: 2,
+                page_count: 3
+            }
+        ));
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert!(apply_page_batch(&mut w, "1,3", PageBatchOperation::Delete, Some(1)).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert!(apply_page_batch(&mut w, "1-3", PageBatchOperation::Delete, None).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        let response =
+            apply_page_batch(&mut w, "1,3", PageBatchOperation::Delete, Some(2)).unwrap();
+        assert!(matches!(
+            response,
+            PageBatchReply::Applied {
+                affected_count: 2,
+                ..
+            }
+        ));
+        assert_eq!(w.session.as_ref().unwrap().info().page_count, 1);
+    }
+    #[test]
+    fn invalid_or_unsupported_delete_batch_is_atomic() {
+        let mut session = Session::blank(100., 100., 3).unwrap();
+        session
+            .apply(Edit::AddNote {
+                page: 1,
+                bounds: pdfmaster_core::Rect {
+                    x: 10.,
+                    y: 10.,
+                    width: 20.,
+                    height: 20.,
+                },
+                contents: "keep".into(),
+                color: pdfmaster_core::Color {
+                    r: 1.,
+                    g: 1.,
+                    b: 0.,
+                },
+            })
+            .unwrap();
+        let mut w = Workspace {
+            session: Some(session),
+            ..Default::default()
+        };
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        assert!(apply_page_batch(&mut w, "1,x", PageBatchOperation::Rotate90, None).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert!(apply_page_batch(&mut w, "1-2", PageBatchOperation::Delete, Some(2)).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+    #[test]
+    fn generic_edit_route_cannot_bypass_page_batch_confirmation() {
+        let mut w = Workspace {
+            session: Some(Session::blank(100., 100., 3).unwrap()),
+            ..Default::default()
+        };
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        for edit in [
+            Edit::RotatePages {
+                pages: vec![0, 1],
+                degrees: 90,
+            },
+            Edit::DeletePages { pages: vec![0, 1] },
+            Edit::DeletePage { page: 0 },
+        ] {
+            assert!(apply_single_edit(&mut w, edit).is_err());
+            assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        }
+    }
 }
 
 impl Workspace {
@@ -189,6 +464,87 @@ impl Workspace {
         }
         self.checkpoint()
     }
+}
+
+fn apply_page_batch(
+    workspace: &mut Workspace,
+    range: &str,
+    operation: PageBatchOperation,
+    confirmed_count: Option<usize>,
+) -> Reply<PageBatchReply> {
+    let page_count = workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .info()
+        .page_count;
+    let pages =
+        PageRange::parse(range, page_count).map_err(|error| format!("页码范围无效：{error}"))?;
+    let affected_count = pages.len();
+    let edit = match operation {
+        PageBatchOperation::Rotate90 => Edit::RotatePages { pages, degrees: 90 },
+        PageBatchOperation::Delete => {
+            if affected_count >= page_count {
+                return Err("不能删除文档的全部页面。".into());
+            }
+            match confirmed_count {
+                None => {
+                    return Ok(PageBatchReply::ConfirmationRequired {
+                        count: affected_count,
+                        page_count,
+                    });
+                }
+                Some(count) if count != affected_count => {
+                    return Err("确认页数与当前页码范围不一致，文档未修改。".into());
+                }
+                Some(_) => Edit::DeletePages { pages },
+            }
+        }
+    };
+    workspace
+        .session
+        .as_mut()
+        .ok_or("请先打开 PDF")?
+        .apply(edit)
+        .map_err(|error| error.to_string())?;
+    Ok(PageBatchReply::Applied {
+        document: workspace.checkpoint()?,
+        affected_count,
+    })
+}
+
+fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentView> {
+    if matches!(
+        edit,
+        Edit::RotatePages { .. } | Edit::DeletePages { .. } | Edit::DeletePage { .. }
+    ) {
+        return Err("批量旋转和页面删除必须使用带页数确认的批处理入口。".into());
+    }
+    workspace
+        .session
+        .as_mut()
+        .ok_or("请先打开 PDF")?
+        .apply(edit)
+        .map_err(|error| error.to_string())?;
+    workspace.checkpoint()
+}
+
+fn apply_confirmed_delete(
+    workspace: &mut Workspace,
+    range: &str,
+    count: usize,
+    snapshot: &[u8],
+) -> Reply<PageBatchReply> {
+    let current = workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .bytes()
+        .map_err(|error| error.to_string())?;
+    if current != snapshot {
+        return Err("确认期间文档已改变，请重新选择页面；文档未修改。".into());
+    }
+    apply_page_batch(workspace, range, PageBatchOperation::Delete, Some(count))
 }
 
 #[tauri::command]
@@ -259,14 +615,81 @@ async fn render_page(page: usize, scale: f32, state: State<'_, Store>) -> Reply<
 }
 
 #[tauri::command]
+async fn notes_document(page: usize, state: State<'_, Store>) -> Reply<pdfmaster_core::NoteList> {
+    let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    workspace_notes(&workspace, page)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn search_document(
+    query: String,
+    case_sensitive: bool,
+    state: State<'_, Store>,
+) -> Reply<search::SearchResponse> {
+    let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    let session = workspace.session.as_ref().ok_or("请先打开 PDF")?;
+    search::search_session(session, &query, case_sensitive)
+}
+
+#[tauri::command]
 async fn edit_document(edit: Edit, state: State<'_, Store>) -> Reply<Option<DocumentView>> {
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
-    w.session
-        .as_mut()
-        .ok_or("请先打开 PDF")?
-        .apply(edit)
-        .map_err(|e| e.to_string())?;
-    w.checkpoint().map(Some)
+    apply_single_edit(&mut w, edit).map(Some)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn batch_pages(
+    app: tauri::AppHandle,
+    range: String,
+    operation: PageBatchOperation,
+    state: State<'_, Store>,
+) -> Reply<PageBatchReply> {
+    let (count, page_count, snapshot) = {
+        let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
+        match apply_page_batch(&mut workspace, &range, operation, None)? {
+            PageBatchReply::ConfirmationRequired { count, page_count } => {
+                let snapshot = workspace
+                    .session
+                    .as_ref()
+                    .ok_or("请先打开 PDF")?
+                    .bytes()
+                    .map_err(|error| error.to_string())?;
+                (count, page_count, snapshot)
+            }
+            reply => return Ok(reply),
+        }
+    };
+    // Never hold the workspace mutex across a platform dialog. Bind the exact
+    // immutable range and document bytes; IPC cannot supply a confirmation flag.
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let dialog = app
+        .dialog()
+        .message(format!(
+            "确认删除选中的 {count} 页？文档共有 {page_count} 页；此操作可通过撤销恢复。"
+        ))
+        .title("批量删除页面")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+            "删除选中页面".into(),
+            "取消".into(),
+        ));
+    // On macOS an unparented RFD dialog uses CFUserNotification instead of an
+    // application sheet. Attach desktop alerts to the actual candidate window.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let dialog = dialog.parent(
+        &app.get_webview_window("main")
+            .ok_or("确认窗口不存在；文档未修改。")?,
+    );
+    dialog.show(move |confirmed| {
+        let _ = sender.send(confirmed);
+    });
+    if !receiver
+        .await
+        .map_err(|_| "系统确认窗口不可用；文档未修改。")?
+    {
+        return Ok(PageBatchReply::Cancelled);
+    }
+    let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    apply_confirmed_delete(&mut workspace, &range, count, &snapshot)
 }
 #[tauri::command]
 async fn undo_document(state: State<'_, Store>) -> Reply<Option<DocumentView>> {
@@ -380,7 +803,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,edit_document,undo_document,redo_document,export_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

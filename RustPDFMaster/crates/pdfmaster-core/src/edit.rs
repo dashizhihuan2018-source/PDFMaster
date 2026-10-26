@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream, StringFormat, dictionary};
 
@@ -5,10 +7,15 @@ use crate::document::{
     Color, Edit, MAX_PAGES, MAX_TEXT_BYTES, PageInfo, PdfMasterError, Rect, Result, add_blank_page,
     materialize_page_attributes, page_object_ids, validate_page_index, validate_page_size,
 };
+use crate::notes::update_note;
 
 pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit) -> Result<()> {
     match edit {
         Edit::Rotate { page, degrees } => rotate(document, pages, page, degrees),
+        Edit::RotatePages {
+            pages: selected,
+            degrees,
+        } => rotate_pages(document, pages, &selected, degrees),
         Edit::MovePage { from, to } => move_page(document, pages, from, to),
         Edit::InsertBlank {
             index,
@@ -17,6 +24,7 @@ pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit
         } => insert_blank(document, pages, index, width, height),
         Edit::DuplicatePage { page, index } => duplicate_page(document, pages, page, index),
         Edit::DeletePage { page } => delete_page(document, pages, page),
+        Edit::DeletePages { pages: selected } => delete_pages(document, pages, &selected),
         Edit::AddText {
             page,
             bounds,
@@ -30,24 +38,67 @@ pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit
             contents,
             color,
         } => add_note(document, pages, page, bounds, &contents, color),
+        Edit::UpdateNote {
+            page,
+            annotation_index,
+            expected_contents,
+            contents,
+        } => update_note(
+            document,
+            pages,
+            page,
+            annotation_index,
+            &expected_contents,
+            &contents,
+        ),
     }
 }
 
 fn rotate(document: &mut Document, pages: &[PageInfo], page: usize, degrees: i32) -> Result<()> {
     validate_page_index(page, pages.len())?;
-    if degrees == 0 || degrees % 90 != 0 || degrees.rem_euclid(360) == 0 {
-        return Err(PdfMasterError::InvalidOperation(
-            "rotation must change the page by a multiple of 90 degrees",
-        ));
-    }
+    validate_rotation(degrees)?;
     let page_id = page_object_ids(document)?[page];
-    let rotation = (pages[page].rotation + degrees).rem_euclid(360);
+    let rotation = normalized_rotation(pages[page].rotation, degrees);
     document
         .get_object_mut(page_id)
         .and_then(Object::as_dict_mut)
         .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
         .set("Rotate", rotation as i64);
     Ok(())
+}
+
+fn rotate_pages(
+    document: &mut Document,
+    pages: &[PageInfo],
+    selected: &[usize],
+    degrees: i32,
+) -> Result<()> {
+    validate_page_batch(selected, pages.len())?;
+    validate_rotation(degrees)?;
+    let ids = page_object_ids(document)?;
+    for &page in selected {
+        let rotation = normalized_rotation(pages[page].rotation, degrees);
+        document
+            .get_object_mut(ids[page])
+            .and_then(Object::as_dict_mut)
+            .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
+            .set("Rotate", rotation as i64);
+    }
+    Ok(())
+}
+
+fn validate_rotation(degrees: i32) -> Result<()> {
+    let degrees = i64::from(degrees);
+    if degrees == 0 || degrees % 90 != 0 || degrees.rem_euclid(360) == 0 {
+        return Err(PdfMasterError::InvalidOperation(
+            "rotation must change the page by a multiple of 90 degrees",
+        ));
+    }
+    Ok(())
+}
+
+fn normalized_rotation(current: i32, degrees: i32) -> i32 {
+    (i64::from(current) + i64::from(degrees)).rem_euclid(360) as i32
 }
 
 fn move_page(document: &mut Document, pages: &[PageInfo], from: usize, to: usize) -> Result<()> {
@@ -155,6 +206,63 @@ fn delete_page(document: &mut Document, pages: &[PageInfo], page: usize) -> Resu
     }
     ids.remove(page);
     flatten_page_tree(document, &ids)
+}
+
+fn delete_pages(document: &mut Document, pages: &[PageInfo], selected: &[usize]) -> Result<()> {
+    validate_page_batch(selected, pages.len())?;
+    if selected.len() == pages.len() {
+        return Err(PdfMasterError::InvalidOperation("cannot delete every page"));
+    }
+    if document
+        .catalog()
+        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
+        .has(b"AcroForm")
+    {
+        return Err(PdfMasterError::InvalidOperation(
+            "deleting pages from documents with an AcroForm is unsupported",
+        ));
+    }
+
+    let mut ids = page_object_ids(document)?;
+    for &page in selected {
+        let page_dictionary = document
+            .get_object(ids[page])
+            .and_then(Object::as_dict)
+            .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+        if page_dictionary.has(b"Annots") || page_dictionary.has(b"StructParents") {
+            return Err(PdfMasterError::InvalidOperation(
+                "deleting pages with annotations or structure ownership is unsupported",
+            ));
+        }
+    }
+
+    let mut descending = selected.to_vec();
+    descending.sort_unstable_by(|left, right| right.cmp(left));
+    for page in descending {
+        ids.remove(page);
+    }
+    flatten_page_tree(document, &ids)
+}
+
+fn validate_page_batch(selected: &[usize], page_count: usize) -> Result<()> {
+    if selected.is_empty() {
+        return Err(PdfMasterError::InvalidOperation(
+            "page batch cannot be empty",
+        ));
+    }
+    if selected.len() > MAX_PAGES {
+        return Err(PdfMasterError::Budget("page batch length"));
+    }
+    let mut seen = HashSet::with_capacity(selected.len());
+    for &page in selected {
+        validate_page_index(page, page_count)?;
+        if !seen.insert(page) {
+            return Err(PdfMasterError::InvalidOperation(
+                "page batch contains duplicate indices",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn add_text(

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>PDF Master third-party notices</title>
+  <style>
+    :root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; }
+    body { margin: 0 auto; max-width: 960px; padding: 2rem; }
+    h1 { line-height: 1.2; }
+    .scope { border: 1px solid currentColor; border-radius: .5rem; padding: 1rem; }
+    .license { border-top: 1px solid #8888; margin-top: 2rem; padding-top: 1rem; }
+    .license-id { font-family: ui-monospace, monospace; font-size: .85em; }
+    .packages { columns: 2 20rem; }
+    .package { break-inside: avoid; margin-bottom: .3rem; }
+    .license-text { max-height: 24rem; overflow: auto; padding: 1rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PDF Master third-party notices</h1>
+    <p class="scope">Generated from the locked Cargo dependency graph. This inventory is not a legal-compliance approval; license and NOTICE obligations still require manual review.</p>
+    {{#each licenses}}
+    <section class="license" data-license-id="{{id}}">
+      <h2>{{name}} <span class="license-id">{{id}}</span></h2>
+      <h3>Packages using this license text</h3>
+      <ul class="packages">
+        {{#each used_by}}
+        <li class="package" data-package-name="{{crate.name}}" data-package-version="{{crate.version}}">
+          {{#if crate.repository}}
+          <a class="crate-source" data-source-kind="repository" rel="noreferrer noopener" href="{{crate.repository}}">{{crate.name}} {{crate.version}}</a>
+          {{else}}
+          {{#if crate.source}}
+          <a class="crate-source" data-source-kind="registry" data-crate-source="{{crate.source}}" rel="noreferrer noopener" href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a>
+          {{else}}
+          <span class="workspace-package" data-source-kind="workspace">{{crate.name}} {{crate.version}}</span>
+          {{/if}}
+          {{/if}}
+        </li>
+        {{/each}}
+      </ul>
+      <pre class="license-text">{{text}}</pre>
+    </section>
+    {{/each}}
+  </main>
+</body>
+</html>

@@ -81,6 +81,10 @@ pub enum Edit {
         page: usize,
         degrees: i32,
     },
+    RotatePages {
+        pages: Vec<usize>,
+        degrees: i32,
+    },
     MovePage {
         from: usize,
         to: usize,
@@ -97,6 +101,9 @@ pub enum Edit {
     DeletePage {
         page: usize,
     },
+    DeletePages {
+        pages: Vec<usize>,
+    },
     AddText {
         page: usize,
         bounds: Rect,
@@ -109,6 +116,12 @@ pub enum Edit {
         bounds: Rect,
         contents: String,
         color: Color,
+    },
+    UpdateNote {
+        page: usize,
+        annotation_index: usize,
+        expected_contents: String,
+        contents: String,
     },
 }
 

@@ -10,6 +10,7 @@ esac
 rust_version="1.96.0"
 trunk_version="0.21.14"
 tauri_version="2.12.4"
+cargo_about_version="0.9.2"
 tool_root="${RUNNER_TEMP:?RUNNER_TEMP is required}/pdfmaster-rust-tools"
 tool_bin="$tool_root/bin"
 mkdir -p "$tool_bin"
@@ -22,12 +23,26 @@ fi
 
 cargo "+$rust_version" install trunk --version "$trunk_version" --locked --root "$tool_root"
 cargo "+$rust_version" install tauri-cli --version "$tauri_version" --locked --root "$tool_root"
+cargo "+$rust_version" install cargo-about --version "$cargo_about_version" --locked \
+  --features cli --root "$tool_root"
 printf '%s\n' "$tool_bin" >> "${GITHUB_PATH:?GITHUB_PATH is required}"
 export PATH="$tool_bin:$PATH"
+
+if [[ "$platform" == "windows" ]]; then
+  python_bin="python"
+else
+  python_bin="python3"
+fi
+cargo_about_bin="$(command -v cargo-about)"
+printf 'CARGO_ABOUT_BIN=%s\n' "$cargo_about_bin" >> "${GITHUB_ENV:?GITHUB_ENV is required}"
+printf 'PYTHON_BIN=%s\n' "$python_bin" >> "$GITHUB_ENV"
+export CARGO_ABOUT_BIN="$cargo_about_bin"
+export PYTHON_BIN="$python_bin"
 
 rustc "+$rust_version" --version | grep -F "rustc $rust_version "
 [[ "$(trunk --version)" == "trunk ${trunk_version}" ]]
 [[ "$(cargo-tauri --version)" == "tauri-cli ${tauri_version}" ]]
+[[ "$("$CARGO_ABOUT_BIN" --version)" == "cargo-about ${cargo_about_version}" ]]
 
 if [[ "$platform" == "macos" ]]; then
   [[ "${RUNNER_OS:-macOS}" == "macOS" ]]
@@ -55,6 +70,8 @@ else
   [[ "${RUNNER_OS:-Windows}" == "Windows" ]]
   [[ "${RUNNER_ARCH:-X64}" == "X64" ]]
   [[ "$(uname -m)" == "x86_64" ]]
+  command -v 7z >/dev/null
+  command -v cygpath >/dev/null
   vswhere.exe -latest -products '*' \
     -requires Microsoft.VisualStudio.Workload.NativeDesktop \
     -property installationPath | grep -q .
