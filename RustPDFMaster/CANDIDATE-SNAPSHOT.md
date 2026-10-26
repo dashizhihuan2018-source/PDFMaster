@@ -1,6 +1,20 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development dbc9b6a4 (2026-10-27)
+## Current snapshot: development 5df3685a (2026-10-27)
+
+Exactly **141 tracked Rust/workflow files** from development `5df3685a6098e567f5696ffa2dfa4a58cd33a15d`, plus this record. Only reviewed candidate source is synchronized; private history, user documents/screenshots, memory, credentials and generated/build files are excluded. Formal Swift releases, website and installation remain unchanged.
+
+Search toolbar previous/next now cycles through individual hits and auto-selects the first successful result, sharing the guarded result-click path. Query/case/document updates clear selection. Busy, missing-document, note and Ink guards block navigation. Selected rows expose current state and index/total. Inner result scrolling and the nearest outer inspector are both adjusted from actual geometry, without scrolling the app/body; hidden/invalid viewports and oversized rows are handled. The native search still has no glyph coordinates or highlighted page selection. The original search sidebar and full selection experience remain incomplete.
+
+Failure-first regressions cover cyclic boundaries, empty/single/stale indices, integer limits, row visibility and UI wiring. Independent read-only review identified the narrow inspector's nested-scroll clipping; a regression and two-ancestor reveal fix closed that Important issue, with no remaining Critical/Important in the bounded re-review. **175 core +3 drawing, 85 UI, 74 native +4 security, 30 tools**, full three-workspace formatting/host-Clippy, locked release WASM build and separate WASM Clippy passed locally. Automated source tests and review do not certify visual parity.
+
+A new isolated 430px Mac QA executable SHA-256 `75d47ec430a87cac98b81df40aa6ddd5d94df30e0832eb194cea1f42ee201679` passed arm64/ad-hoc strict/deep integrity and all five exact notices. Actual synthetic 24-page GUI checks covered first-result selection, previous wrapping to24, next wrapping back to1 with selected rows visible through both scroll ancestors, a direct row2 selection, changed-query invalidation, auto-navigation to a single page24 hit, single-hit cycling, case-condition invalidation and zero hits retaining the page with disabled arrows. Later external window changes interrupted document-replacement/normal-exit verification; those outcomes are not claimed. The running isolated QA bundle is preserved. No user PDFs or screenshots are published.
+
+The same-source default unsigned iOS simulator archive built with executable SHA-256 `9320bd831cd223776f5d639080107d3122c18246d423092032c38cba6cacbd92`, arm64/IOSSIMULATOR/min16/SDK27 and five exact notices verified. It was not installed or run; physical device/signing/store and new iOS search behavior remain unverified.
+
+Preceding hosted run `40361846479` completed successfully on both Mac and Windows at public `c881b2168306ac610a01525945f79e99761d99a5` (development820d10f5), not this search/thumbnail source. Its three downloaded artifacts matched their full SHA-256 manifests; ZIP safety/CRC/notices and NSIS container checks passed. This does not establish Windows installation/runtime or formal product publication. Current-source hosted results must be checked separately. Inventory remains **24 partial /46 unsupported /0 complete**, with **801 frozen legacy contracts pending**. Full UI/function parity, exact icons, real multi-tabs, sidebar modes/overview, continuous/dual layouts, inline editing, actual Windows runtime, physical iOS, formal releases and final Rustall/public skill delivery remain unfinished.
+
+## Historical snapshot: development dbc9b6a4 (superseded)
 
 Exactly **140 tracked Rust/workflow files** from development `dbc9b6a4110fc3511e71bd8c7644e4e34b3165b4`, plus this record. Only reviewed candidate source is synchronized; private history, user files/screenshots, memory, credentials and generated/build files are excluded. Formal Swift releases, website and installation remain unchanged.
 

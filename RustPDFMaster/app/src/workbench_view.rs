@@ -76,8 +76,8 @@ pub(super) fn Toolbar(model: Model) -> impl IntoView {
                 <input class="chrome-search" aria-label="搜索文档文字" placeholder="搜索" disabled=move||m.blocked() prop:value=move||m.search_query.get()
                     on:focus=move|_|m.select_panel(Some(Panel::Search)) on:input=move|e|{m.search_query.set(event_target_value(&e));m.invalidate_search();}
                     on:keydown=move|e|{if e.key()=="Enter"{m.search();}}/>
-                <button class="chrome-icon-button" aria-label="上个结果" title="逐命中工具栏导航尚未迁移；请在搜索面板选择结果" disabled><Icon name="previous"/></button>
-                <button class="chrome-icon-button" aria-label="下个结果" title="逐命中工具栏导航尚未迁移；请在搜索面板选择结果" disabled><Icon name="next"/></button>
+                <button class="chrome-icon-button" aria-label="上个结果" title="上一处" disabled=move||m.blocked()||!m.search_result.with(|r|r.as_ref().is_some_and(|r|!r.hits.is_empty())) on:click=move|_|m.step_search_hit(true)><Icon name="previous"/></button>
+                <button class="chrome-icon-button" aria-label="下个结果" title="下一处" disabled=move||m.blocked()||!m.search_result.with(|r|r.as_ref().is_some_and(|r|!r.hits.is_empty())) on:click=move|_|m.step_search_hit(false)><Icon name="next"/></button>
             </div>
         </nav>
     }

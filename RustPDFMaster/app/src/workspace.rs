@@ -18,11 +18,53 @@ fn image_event_source(event: &web_sys::Event) -> Option<String> {
         .ok()
         .map(|image| image.src())
 }
+
+fn reveal_search_hit(index: usize) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(container) = document.get_element_by_id("search-results") else {
+        return;
+    };
+    let Some(row) = document
+        .get_element_by_id(&format!("search-hit-{index}"))
+        .and_then(|row| row.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return;
+    };
+    let height = container.client_height();
+    if height <= 0 {
+        return;
+    }
+    let top = f64::from(row.offset_top());
+    container.set_scroll_top(pdfmaster_ui::reveal_scroll(
+        f64::from(container.scroll_top()),
+        top,
+        top + f64::from(row.offset_height()),
+        f64::from(height),
+    ) as i32);
+    // Mobile inspectors can clip the inner results scroller. Reveal the same
+    // row inside that one ancestor too, without scrolling the app/body.
+    if let Ok(Some(inspector)) = container.closest(".inspector") {
+        let scroll = f64::from(inspector.scroll_top());
+        let row_rect = row.get_bounding_client_rect();
+        let top = scroll + row_rect.top()
+            - inspector.get_bounding_client_rect().top()
+            - f64::from(inspector.client_top());
+        inspector.set_scroll_top(pdfmaster_ui::reveal_scroll(
+            scroll,
+            top,
+            top + row_rect.height(),
+            f64::from(inspector.client_height()),
+        ) as i32);
+    }
+}
 use pdfmaster_ui::{
-    RasterPlan, adjacent_page, command_status_message, fit_width_zoom, line_edit, note_edit,
-    page_batch_args, page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
-    search_conditions_message, search_response_is_current, search_status_message, shape_color_hex,
-    shape_edit, step_zoom, update_note_edit, update_shape_edit, visible_status,
+    RasterPlan, adjacent_page, adjacent_search_hit, command_status_message, fit_width_zoom,
+    line_edit, note_edit, page_batch_args, page_jump_index, page_jump_success_message,
+    page_move_edit, raster_plan, search_conditions_message, search_response_is_current,
+    search_status_message, shape_color_hex, shape_edit, step_zoom, update_note_edit,
+    update_shape_edit, visible_status,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -182,6 +224,7 @@ struct Model {
     search_query: RwSignal<String>,
     search_case_sensitive: RwSignal<bool>,
     search_result: RwSignal<Option<SearchResponse>>,
+    search_selection: RwSignal<Option<usize>>,
     page_jump: RwSignal<String>,
     page_range: RwSignal<String>,
     shape_bounds: RwSignal<String>,
@@ -201,6 +244,8 @@ struct Model {
 
 impl Model {
     fn replace_document_view(self, document: Option<Document>) {
+        self.search_selection.set(None);
+        self.search_result.set(None);
         self.thumbnail_cache.update(|cache| {
             cache.invalidate();
         });
@@ -950,6 +995,7 @@ impl Model {
         });
     }
     fn invalidate_search(self) {
+        self.search_selection.set(None);
         let summary = self.search_result.with_untracked(|result| {
             result.as_ref().map(|result| {
                 search_status_message(&result.query, result.hits.len(), result.truncated)
@@ -959,18 +1005,51 @@ impl Model {
             .update(|message| *message = search_conditions_message(message, summary.as_deref()));
         self.search_result.set(None);
     }
+    fn select_search_hit(self, index: usize) {
+        if self.blocked() {
+            return;
+        }
+        let page = self
+            .search_result
+            .with_untracked(|result| result.as_ref()?.hits.get(index).map(|hit| hit.page_index));
+        if let Some(page) = page.filter(|page| *page < self.count()) {
+            self.search_selection.set(Some(index));
+            self.navigate(page);
+            leptos::leptos_dom::helpers::request_animation_frame(move || {
+                if self.search_selection.get_untracked() == Some(index) {
+                    reveal_search_hit(index);
+                }
+            });
+        }
+    }
+    fn step_search_hit(self, backward: bool) {
+        if self.blocked() {
+            return;
+        }
+        let count = self
+            .search_result
+            .with_untracked(|r| r.as_ref().map_or(0, |r| r.hits.len()));
+        if let Some(index) =
+            adjacent_search_hit(self.search_selection.get_untracked(), count, backward)
+        {
+            self.select_search_hit(index);
+        }
+    }
     fn search(self) {
         if self.blocked() {
             return;
         }
         let query = self.search_query.get_untracked();
         if query.trim().is_empty() {
+            self.search_selection.set(None);
             self.search_result.set(None);
             self.message.set("请输入搜索关键词。".into());
             return;
         }
         let case_sensitive = self.search_case_sensitive.get_untracked();
         let requested_query = query.trim().to_owned();
+        self.search_selection.set(None);
+        self.search_result.set(None);
         self.busy.set(true);
         spawn_local(async move {
             let args = json!({"query":query,"case_sensitive":case_sensitive});
@@ -1000,6 +1079,7 @@ impl Model {
                 }
             }
             self.busy.set(false);
+            self.select_search_hit(0);
         });
     }
     fn refresh(self) {
@@ -1330,6 +1410,7 @@ pub fn Workspace() -> impl IntoView {
         search_query: RwSignal::new(String::new()),
         search_case_sensitive: RwSignal::new(false),
         search_result: RwSignal::new(None),
+        search_selection: RwSignal::new(None),
         page_jump: RwSignal::new(String::new()),
         page_range: RwSignal::new(String::new()),
         shape_bounds: RwSignal::new("36,36,120,80".into()),
@@ -1389,11 +1470,10 @@ pub fn Workspace() -> impl IntoView {
                     <label class="search-case"><input type="checkbox" disabled=move||m.busy.get() prop:checked=move||m.search_case_sensitive.get() on:change=move|e|{m.search_case_sensitive.set(event_target_checked(&e));m.invalidate_search();}/><span>"区分大小写"</span></label>
                     <button disabled=move||m.blocked() on:click=move|_|m.search()>"搜索当前文档"</button>
                     <Show when=move||m.search_result.with(|r|r.is_some())>
-                        <div class="search-meta">{move||m.search_result.with(|r|r.as_ref().map(|r|format!("已扫描 {} 页 · {} 页含文字{}",r.pages_scanned,r.searchable_pages,if r.case_sensitive{" · 区分大小写"}else{""})).unwrap_or_default())}</div>
-                        <div class="search-results">
+                        <div class="search-meta">{move||m.search_result.with(|r|r.as_ref().map(|r|format!("已扫描 {} 页 · {} 页含文字{}",r.pages_scanned,r.searchable_pages,if r.case_sensitive{" · 区分大小写"}else{""})).unwrap_or_default())}<span role="status" aria-label="当前搜索结果">{move||m.search_selection.get().map(|index|m.search_result.with(|r|r.as_ref().map(|r|format!(" · 当前 {}/{}",index+1,r.hits.len())).unwrap_or_default())).unwrap_or_default()}</span></div>
+                        <div class="search-results" id="search-results">
                             <For each=move||m.search_result.with(|r|r.as_ref().map(|r|r.hits.clone().into_iter().enumerate().collect::<Vec<_>>()).unwrap_or_default()) key=|(index,hit)|(*index,hit.page_index,hit.match_start) children=move|(index,hit)|{
-                                let target=hit.page_index;
-                                view!{<button class="search-hit" disabled=move||m.busy.get() on:click=move|_|m.navigate(target)><strong>{format!("第 {} 页 · 命中 {}",hit.page_index+1,index+1)}</strong><span>{hit.snippet}</span><small>{format!("字符 {}–{} · 片段内 {}–{}",hit.match_start,hit.match_end,hit.snippet_match_start,hit.snippet_match_end)}</small></button>}
+                                view!{<button class="search-hit" id=format!("search-hit-{index}") class:selected=move||m.search_selection.get()==Some(index) aria-current=move||if m.search_selection.get()==Some(index){"true"}else{"false"} disabled=move||m.blocked() on:click=move|_|m.select_search_hit(index)><strong>{format!("第 {} 页 · 命中 {}",hit.page_index+1,index+1)}</strong><span>{hit.snippet}</span><small>{format!("字符 {}–{} · 片段内 {}–{}",hit.match_start,hit.match_end,hit.snippet_match_start,hit.snippet_match_end)}</small></button>}
                             }/>
                         </div>
                         <p class="muted search-limit">{move||m.search_result.with(|r|r.as_ref().map(|r|r.limitation.clone()).unwrap_or_default())}</p>

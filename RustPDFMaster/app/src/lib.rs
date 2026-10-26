@@ -358,6 +358,44 @@ pub fn search_status_message(query: &str, count: usize, truncated: bool) -> Stri
     }
 }
 
+pub fn adjacent_search_hit(current: Option<usize>, count: usize, backward: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let Some(current) = current.filter(|index| *index < count) else {
+        return Some(if backward { count - 1 } else { 0 });
+    };
+    Some(if backward {
+        if current == 0 { count - 1 } else { current - 1 }
+    } else if current == count - 1 {
+        0
+    } else {
+        current + 1
+    })
+}
+
+/// Reveal one row within a single scroll ancestor, never the whole page.
+/// Coordinates are in that ancestor's scroll-content space.
+pub fn reveal_scroll(current: f64, start: f64, end: f64, height: f64) -> f64 {
+    let current = if current.is_finite() {
+        current.max(0.)
+    } else {
+        0.
+    };
+    if !start.is_finite() || !end.is_finite() || !height.is_finite() || height <= 0. || end < start
+    {
+        return current;
+    }
+    let target = if start < current || end - start > height {
+        start
+    } else if end > current + height {
+        end - height
+    } else {
+        current
+    };
+    target.clamp(0., f64::from(i32::MAX))
+}
+
 pub fn search_conditions_message(message: &str, previous_summary: Option<&str>) -> String {
     if previous_summary == Some(message) {
         String::new()
@@ -1040,7 +1078,8 @@ mod tests {
         let source = include_str!("workspace.rs");
         assert!(source.contains("search_document"));
         assert!(source.contains("搜索当前文档"));
-        assert!(source.contains("m.navigate(target)"));
+        assert!(source.contains("m.select_search_hit(index)"));
+        assert!(source.contains("self.navigate(page)"));
         assert!(source.contains("跳转页码"));
         assert!(source.contains("page_jump_index"));
         assert!(source.contains("<input aria-label=\"搜索文档文字\" disabled=move||m.busy.get()"));
