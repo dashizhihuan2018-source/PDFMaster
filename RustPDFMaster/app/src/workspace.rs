@@ -5,7 +5,7 @@ use pdfmaster_ui::{
     RasterPlan, adjacent_page, command_status_message, fit_width_zoom, note_edit, page_batch_args,
     page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
     search_conditions_message, search_response_is_current, search_status_message, step_zoom,
-    visible_status,
+    update_note_edit, visible_status,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -54,6 +54,12 @@ struct NoteList {
     unsupported_count: usize,
 }
 
+#[derive(Clone, Debug)]
+struct NoteDraft {
+    page: usize,
+    original: TextNote,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct SearchHit {
     page_index: usize,
@@ -96,6 +102,8 @@ struct Model {
     text: RwSignal<String>,
     note_text: RwSignal<String>,
     notes: RwSignal<Option<Result<NoteList, String>>>,
+    note_draft: RwSignal<Option<NoteDraft>>,
+    note_edit_text: RwSignal<String>,
     search_query: RwSignal<String>,
     search_case_sensitive: RwSignal<bool>,
     search_result: RwSignal<Option<SearchResponse>>,
@@ -112,7 +120,10 @@ impl Model {
             .with(|d| d.as_ref().map_or(0, |d| d.info.page_count))
     }
     fn blocked(self) -> bool {
-        self.busy.get() || !self.loaded()
+        self.busy.get() || !self.loaded() || self.has_note_draft()
+    }
+    fn has_note_draft(self) -> bool {
+        self.note_draft.with(|draft| draft.is_some())
     }
     fn raster(self) -> Option<RasterPlan> {
         let density = web_sys::window().map_or(1., |w| w.device_pixel_ratio() as f32);
@@ -127,6 +138,10 @@ impl Model {
     }
     fn command_at_page(self, command: &'static str, args: Value, selected_page: Option<usize>) {
         if self.busy.get_untracked() {
+            return;
+        }
+        if self.has_note_draft() {
+            self.message.set("请先保存或取消便笺编辑。".into());
             return;
         }
         self.busy.set(true);
@@ -207,6 +222,10 @@ impl Model {
     }
     fn navigate(self, page: usize) {
         if self.busy.get_untracked() || !self.loaded() {
+            return;
+        }
+        if self.has_note_draft() {
+            self.message.set("请先保存或取消便笺编辑。".into());
             return;
         }
         if page >= self.count() {
@@ -414,6 +433,71 @@ impl Model {
             None => self.message.set("请先打开 PDF。".into()),
         }
     }
+    fn begin_note_edit(self, note: TextNote) {
+        if self.blocked() {
+            return;
+        }
+        self.note_edit_text.set(note.contents.clone());
+        self.note_draft.set(Some(NoteDraft {
+            page: self.page.get_untracked(),
+            original: note,
+        }));
+        self.message
+            .set("编辑便笺中；保存修改后仍需导出 PDF。".into());
+    }
+    fn cancel_note_edit(self) {
+        if self.busy.get_untracked() {
+            return;
+        }
+        self.note_draft.set(None);
+        self.note_edit_text.set(String::new());
+        self.message.set("已取消便笺编辑，PDF 保持不变。".into());
+    }
+    fn save_note(self) {
+        if self.busy.get_untracked() || !self.loaded() {
+            return;
+        }
+        let Some(draft) = self.note_draft.get_untracked() else {
+            return;
+        };
+        if draft.page != self.page.get_untracked() {
+            self.message
+                .set("页面已改变；请取消后重新选择便笺。".into());
+            return;
+        }
+        let edit = match update_note_edit(
+            draft.page,
+            draft.original.annotation_index,
+            &draft.original.contents,
+            &self.note_edit_text.get_untracked(),
+        ) {
+            Ok(edit) => edit,
+            Err(error) => {
+                self.message.set(error);
+                return;
+            }
+        };
+        self.busy.set(true);
+        spawn_local(async move {
+            match bridge::call::<Document>("edit_document", &json!({"edit":edit})).await {
+                Ok(document) => {
+                    self.message.set(
+                        document
+                            .warning
+                            .clone()
+                            .unwrap_or_else(|| "便笺已修改；请导出副本保存。".into()),
+                    );
+                    self.document.set(Some(document));
+                    self.note_draft.set(None);
+                    self.note_edit_text.set(String::new());
+                    self.search_result.set(None);
+                    self.render().await;
+                }
+                Err(error) => self.message.set(error),
+            }
+            self.busy.set(false);
+        });
+    }
 }
 
 #[component]
@@ -428,6 +512,8 @@ pub fn Workspace() -> impl IntoView {
         text: RwSignal::new(String::new()),
         note_text: RwSignal::new(String::new()),
         notes: RwSignal::new(None),
+        note_draft: RwSignal::new(None),
+        note_edit_text: RwSignal::new(String::new()),
         search_query: RwSignal::new(String::new()),
         search_case_sensitive: RwSignal::new(false),
         search_result: RwSignal::new(None),
@@ -514,12 +600,20 @@ pub fn Workspace() -> impl IntoView {
                                 <p class="note-meta">{format!("当前页 {} 条便笺",list.notes.len())}</p>
                                 <p class="note-meta">{if list.unsupported_count>0{format!("另有 {} 条其他类型批注尚不支持显示。",list.unsupported_count)}else{String::new()}}</p>
                                 {list.notes.into_iter().map(|note|view!{
-                                    <article class="note-item"><strong>{format!("便笺 {}",note.annotation_index+1)}</strong><p>{note.contents}</p><small>{format!("PDF 坐标 {:.0}, {:.0} · {:.0} × {:.0} pt",note.bounds.x,note.bounds.y,note.bounds.width,note.bounds.height)}</small></article>
+                                    <article class="note-item"><strong>{format!("便笺 {}",note.annotation_index+1)}</strong><p>{note.contents.clone()}</p><small>{format!("PDF 坐标 {:.0}, {:.0} · {:.0} × {:.0} pt",note.bounds.x,note.bounds.y,note.bounds.width,note.bounds.height)}</small><button disabled=move||m.blocked() on:click=move|_|m.begin_note_edit(note.clone())>"编辑便笺"</button></article>
                                 }).collect_view()}
                             }.into_any(),
                         }}
                     </div>
-                    <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。选择、修改、删除和弹窗仍在迁移。"</p>
+                    <Show when=move||m.has_note_draft()>
+                        <div class="note-editor" aria-label="便笺编辑">
+                            <textarea aria-label="编辑便笺内容" disabled=move||m.busy.get() prop:value=move||m.note_edit_text.get() on:input=move|event|m.note_edit_text.set(event_target_value(&event))></textarea>
+                            <button disabled=move||m.busy.get() on:click=move|_|m.save_note()>"保存便笺修改"</button>
+                            <button disabled=move||m.busy.get() on:click=move|_|m.cancel_note_edit()>"取消便笺编辑"</button>
+                            <p class="note-meta">"编辑框草稿不自动持久化；保存修改后仍需导出 PDF。"</p>
+                        </div>
+                    </Show>
+                    <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。删除、定位和弹窗仍在迁移；内容修改不是安全擦除。"</p>
                 </div>
                 <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
             </aside>

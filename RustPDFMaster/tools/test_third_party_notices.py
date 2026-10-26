@@ -210,12 +210,21 @@ class ThirdPartyNoticeContract(unittest.TestCase):
                 encoding="utf-8",
             )
             fake_about.chmod(0o755)
+            # Windows CreateProcess cannot execute a .sh file directly. Let Bash
+            # also derive fixture paths from its own PWD (MSYS /d/... rather
+            # than a Windows D:\... path interpreted as relative by the script).
             result = subprocess.run(
-                [str(GENERATOR), str(linked_output)],
-                env={**os.environ, "CARGO_ABOUT_BIN": str(fake_about)},
+                [
+                    "bash", "-c",
+                    'CARGO_ABOUT_BIN="$PWD/cargo-about" exec bash "$1" "$PWD/linked/notices"',
+                    "notice-fixture", GENERATOR.as_posix(),
+                ],
+                cwd=root,
+                env=os.environ.copy(),
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=15,
             )
             self.assertEqual(result.returncode, 2)
             self.assertIn("symbolic link component", result.stderr)

@@ -58,6 +58,27 @@ pub fn note_edit(
     )
 }
 
+/// Preserve the exact note snapshot so the core can reject stale annotation edits.
+pub fn update_note_edit(
+    page: usize,
+    annotation_index: usize,
+    expected_contents: &str,
+    contents: &str,
+) -> Result<serde_json::Value, String> {
+    if contents.trim().is_empty() {
+        return Err("便笺内容不能为空。".into());
+    }
+    if contents.len() > 64 * 1024 || expected_contents.len() > 1024 * 1024 {
+        return Err("便笺内容超过编辑预算，请缩短内容。".into());
+    }
+    if contents == expected_contents {
+        return Err("便笺内容未改变；可取消编辑。".into());
+    }
+    Ok(
+        serde_json::json!({"kind":"update_note","page":page,"annotation_index":annotation_index,"expected_contents":expected_contents,"contents":contents}),
+    )
+}
+
 pub fn valid_zoom(zoom: f32) -> f32 {
     if !zoom.is_finite() {
         1.0
@@ -226,6 +247,37 @@ pub fn raster_plan(width: f32, height: f32, rotation: i32, zoom: f32, density: f
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn note_update_preserves_snapshot_identity_and_unicode_without_trimming() {
+        let edit = update_note_edit(3, 9, " 原文\n🦀 ", " 新文\n<script>x</script> ").unwrap();
+        assert_eq!(
+            edit,
+            serde_json::json!({"kind":"update_note","page":3,"annotation_index":9,"expected_contents":" 原文\n🦀 ","contents":" 新文\n<script>x</script> "})
+        );
+        assert!(update_note_edit(0, 0, "", "new").is_ok());
+    }
+    #[test]
+    fn note_update_checks_utf8_budgets_and_rejects_empty_or_unchanged_input() {
+        for bad in ["", " \n\t", "old"] {
+            assert!(update_note_edit(0, 0, "old", bad).is_err());
+        }
+        assert!(update_note_edit(0, 0, "old", &"a".repeat(65536)).is_ok());
+        assert!(update_note_edit(0, 0, "old", &"a".repeat(65537)).is_err());
+        assert!(update_note_edit(0, 0, "old", &"🦀".repeat(16384)).is_ok());
+        assert!(update_note_edit(0, 0, "old", &"🦀".repeat(16385)).is_err());
+        assert!(update_note_edit(0, 0, &"a".repeat(1024 * 1024), "new").is_ok());
+        assert!(update_note_edit(0, 0, &"a".repeat(1024 * 1024 + 1), "new").is_err());
+    }
+    #[test]
+    fn note_editor_exposes_explicit_save_cancel_and_blocks_conflicting_commands() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains("m.save_note()"));
+        assert!(source.contains("m.cancel_note_edit()"));
+        assert!(source.contains("m.begin_note_edit(note.clone())"));
+        assert!(source.contains("self.has_note_draft()"));
+        assert!(source.contains("aria-label=\"编辑便笺内容\""));
+        assert!(!source.contains("inner_html"));
+    }
     #[test]
     fn note_creation_supports_unicode_and_adapts_to_small_pages_without_clipping() {
         let edit = note_edit(2, 595., 842., 0, " 中文便笺 🦀 ").unwrap();
