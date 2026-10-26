@@ -174,6 +174,7 @@ impl Model {
                         "open_document"
                             | "new_document"
                             | "edit_document"
+                            | "delete_note_document"
                             | "undo_document"
                             | "redo_document"
                     ) {
@@ -444,6 +445,12 @@ impl Model {
             None => self.message.set("请先打开 PDF。".into()),
         }
     }
+    fn delete_note(self, note: TextNote) {
+        if self.blocked() {
+            return;
+        }
+        self.command("delete_note_document", json!({"page":self.page.get_untracked(),"annotation_index":note.annotation_index,"expected_contents":note.contents}));
+    }
     fn begin_note_edit(self, note: TextNote) {
         if self.blocked() {
             return;
@@ -636,9 +643,9 @@ pub fn Workspace() -> impl IntoView {
                             Some(Ok(list)) => view!{
                                 <p class="note-meta">{format!("当前页 {} 条便笺",list.notes.len())}</p>
                                 <p class="note-meta">{if list.unsupported_count>0{format!("另有 {} 条其他类型批注尚不支持显示。",list.unsupported_count)}else{String::new()}}</p>
-                                {list.notes.into_iter().map(|note|view!{
-                                    <article class="note-item"><strong>{format!("便笺 {}",note.annotation_index+1)}</strong><p>{note.contents.clone()}</p><small>{format!("PDF 坐标 {:.0}, {:.0} · {:.0} × {:.0} pt",note.bounds.x,note.bounds.y,note.bounds.width,note.bounds.height)}</small><button disabled=move||m.blocked() on:click=move|_|m.begin_note_edit(note.clone())>"编辑便笺"</button></article>
-                                }).collect_view()}
+                                {list.notes.into_iter().map(|note| {let edit_note=note.clone();view!{
+                                    <article class="note-item"><strong>{format!("便笺 {}",note.annotation_index+1)}</strong><p>{note.contents.clone()}</p><small>{format!("PDF 坐标 {:.0}, {:.0} · {:.0} × {:.0} pt",note.bounds.x,note.bounds.y,note.bounds.width,note.bounds.height)}</small><button disabled=move||m.blocked() on:click=move|_|m.begin_note_edit(edit_note.clone())>"编辑便笺"</button><button class="danger" disabled=move||m.blocked() on:click=move|_|m.delete_note(note.clone())>"删除便笺…"</button></article>
+                                }}).collect_view()}
                             }.into_any(),
                         }}
                     </div>
@@ -654,7 +661,7 @@ pub fn Workspace() -> impl IntoView {
                         <button disabled=move||m.busy.get() on:click=move|_|m.command("document_info",json!({}))>"同步便笺编辑状态"</button>
                         <p class="note-meta">"编辑确认未返回时，可恢复当前进程的编辑入口；不会恢复未持久化的输入。"</p>
                     </Show>
-                    <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。删除、定位和弹窗仍在迁移；内容修改不是安全擦除。"</p>
+                    <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。仅支持受限 Text 便笺；标签、回复线程及歧义弹窗关系暂不编辑或删除。关系检查最多 16384 条。定位和弹窗显示仍在迁移；修改和删除均不是安全擦除。"</p>
                 </div>
                 <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
             </aside>

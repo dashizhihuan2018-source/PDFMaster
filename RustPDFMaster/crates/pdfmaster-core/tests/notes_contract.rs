@@ -126,6 +126,547 @@ fn assert_apply_unchanged(session: &mut Session, edit: Edit) {
 }
 
 #[test]
+fn note_lifecycle_rejects_malformed_or_cyclic_reply_references_without_mutation() {
+    for case in [
+        "direct",
+        "missing",
+        "cycle",
+        "depth64",
+        "depth65",
+        "generation",
+    ] {
+        let mut document = Document::load_mem(&fixture_pdf(2)).unwrap();
+        let note = document.add_object(text_annotation(
+            Some(text_string("root")),
+            valid_rect(),
+            None,
+        ));
+        let parent = match case {
+            "direct" => Object::Integer(7),
+            "missing" => Object::Reference((99999, 0)),
+            "cycle" => {
+                let id = document.new_object_id();
+                document.objects.insert(id, Object::Reference(id));
+                Object::Reference(id)
+            }
+            "generation" => Object::Reference((note.0, note.1 + 1)),
+            _ => {
+                let mut parent = Object::Reference(note);
+                let hops = if case == "depth64" { 64 } else { 65 };
+                for _ in 1..hops {
+                    parent = Object::Reference(document.add_object(parent));
+                }
+                parent
+            }
+        };
+        let mut reply = text_annotation(None, valid_rect(), None)
+            .as_dict()
+            .unwrap()
+            .clone();
+        reply.set("IRT", parent);
+        set_annots(&mut document, 1, vec![Object::Reference(note)].into());
+        set_annots(&mut document, 2, vec![Object::Dictionary(reply)].into());
+        let mut session = Session::open(&save(document)).unwrap();
+        let before = session.bytes().unwrap();
+        let info = session.info();
+        let error = session
+            .apply(delete_note(0, 0, "root"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(session.bytes().unwrap(), before);
+        assert_eq!(session.info(), info);
+        if case == "depth64" {
+            assert!(error.contains("threaded"), "{error}");
+        }
+        if case == "depth65" {
+            assert!(error.contains("depth exceeded"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn note_relationship_scan_accepts_exact_16384_and_rejects_16385_entries_atomically() {
+    for total in [16_384, 16_385] {
+        let mut document = Document::load_mem(&fixture_pdf(17)).unwrap();
+        let note = document.add_object(text_annotation(
+            Some(text_string("root")),
+            valid_rect(),
+            None,
+        ));
+        set_annots(&mut document, 1, vec![Object::Reference(note)].into());
+        let mut remaining: usize = total - 1;
+        for page in 2..=17 {
+            let count = remaining.min(1024);
+            let entries = (0..count)
+                .map(|_| Object::Dictionary(dictionary! {"Subtype"=>"Link", "Rect"=>valid_rect()}))
+                .collect::<Vec<_>>();
+            set_annots(&mut document, page, entries.into());
+            remaining -= count;
+        }
+        assert_eq!(remaining, 0);
+        let mut session = Session::open(&save(document)).unwrap();
+        if total == 16_384 {
+            session.apply(delete_note(0, 0, "root")).unwrap();
+            assert_eq!(session.notes(0).unwrap(), NoteList::default());
+            assert_eq!(session.notes(1).unwrap().unsupported_count, 1024);
+        } else {
+            assert_apply_unchanged(&mut session, delete_note(0, 0, "root"));
+        }
+    }
+}
+
+#[test]
+fn note_relationship_scan_rejects_malformed_other_page_without_mutation() {
+    for invalid in [
+        Object::Integer(5),
+        Object::Reference((99999, 0)),
+        vec![Object::Integer(5)].into(),
+    ] {
+        let mut document = Document::load_mem(&fixture_pdf(2)).unwrap();
+        let note = document.add_object(text_annotation(
+            Some(text_string("root")),
+            valid_rect(),
+            None,
+        ));
+        set_annots(&mut document, 1, vec![Object::Reference(note)].into());
+        set_annots(&mut document, 2, invalid);
+        let mut session = Session::open(&save(document)).unwrap();
+        assert_apply_unchanged(&mut session, delete_note(0, 0, "root"));
+    }
+}
+
+fn delete_note(page: usize, annotation_index: usize, contents: &str) -> Edit {
+    serde_json::from_value(serde_json::json!({
+        "kind":"delete_note", "page":page, "annotation_index":annotation_index,
+        "expected_contents":contents,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn note_popup_lifecycle_supports_optional_parent_and_reverse_links_but_never_claims_foreign_popups()
+{
+    for relationship in ["forward_only", "reverse_only", "foreign", "duplicate_root"] {
+        let mut document = Document::load_mem(&fixture_pdf(1)).unwrap();
+        let root = document.add_object(text_annotation(None, valid_rect(), None));
+        let other = document.add_object(text_annotation(
+            Some(text_string("other")),
+            valid_rect(),
+            None,
+        ));
+        let mut popup = dictionary! {"Subtype"=>"Popup", "Rect"=>valid_rect(), "Open"=>true};
+        if relationship != "forward_only" {
+            popup.set(
+                "Parent",
+                if relationship == "foreign" {
+                    other
+                } else {
+                    root
+                },
+            );
+        }
+        let popup = document.add_object(popup);
+        if relationship != "reverse_only" {
+            document
+                .get_object_mut(root)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap()
+                .set("Popup", popup);
+        }
+        let mut annots = vec![
+            Object::Reference(root),
+            Object::Reference(popup),
+            Object::Reference(other),
+        ];
+        if relationship == "duplicate_root" {
+            annots.push(Object::Reference(root));
+        }
+        set_annots(&mut document, 1, annots.into());
+        let source = save(document);
+        let mut session = Session::open(&source).unwrap();
+        let edit = Edit::UpdateNote {
+            page: 0,
+            annotation_index: 0,
+            expected_contents: String::new(),
+            contents: "changed".into(),
+        };
+        if relationship == "foreign" || relationship == "duplicate_root" {
+            assert_apply_unchanged(&mut session, edit);
+            assert_apply_unchanged(&mut session, delete_note(0, 0, ""));
+            continue;
+        }
+        session.apply(edit).unwrap();
+        let edited = session.bytes().unwrap();
+        let parsed = Document::load_mem(&edited).unwrap();
+        let root_dict = annotation_dictionary(&parsed, 1, 0);
+        assert_eq!(root_dict.get(b"Popup").unwrap(), &{
+            let page = parsed
+                .get_object(parsed.get_pages()[&1])
+                .unwrap()
+                .as_dict()
+                .unwrap();
+            let (_, entries) = parsed.dereference(page.get(b"Annots").unwrap()).unwrap();
+            entries.as_array().unwrap()[1].clone()
+        });
+        session.apply(delete_note(0, 0, "changed")).unwrap();
+        assert_eq!(session.notes(0).unwrap().notes[0].contents, "other");
+        assert_eq!(session.notes(0).unwrap().unsupported_count, 0);
+        session.undo().unwrap();
+        assert_eq!(session.bytes().unwrap(), edited);
+    }
+}
+
+#[test]
+fn note_lifecycle_rejects_replies_to_the_selected_root_on_another_page_atomically() {
+    let mut document = Document::load_mem(&fixture_pdf(2)).unwrap();
+    let note = document.add_object(text_annotation(
+        Some(text_string("thread root")),
+        valid_rect(),
+        None,
+    ));
+    let mut reply = text_annotation(Some(text_string("reply")), valid_rect(), None)
+        .as_dict()
+        .unwrap()
+        .clone();
+    reply.set("IRT", note);
+    set_annots(&mut document, 1, vec![Object::Reference(note)].into());
+    set_annots(&mut document, 2, vec![Object::Dictionary(reply)].into());
+    let mut session = Session::open(&save(document)).unwrap();
+    assert_apply_unchanged(&mut session, delete_note(0, 0, "thread root"));
+    assert_apply_unchanged(
+        &mut session,
+        Edit::UpdateNote {
+            page: 0,
+            annotation_index: 0,
+            expected_contents: "thread root".into(),
+            contents: "changed".into(),
+        },
+    );
+    assert_apply_unchanged(&mut session, delete_note(1, 0, "reply"));
+}
+
+#[test]
+fn update_note_rebinds_existing_page_backlinks_in_copied_root_and_popup() {
+    let mut document = Document::load_mem(&fixture_pdf(2)).unwrap();
+    let page1 = document.get_pages()[&1];
+    let page2 = document.get_pages()[&2];
+    let note = document.add_object(text_annotation(
+        Some(text_string("old")),
+        valid_rect(),
+        None,
+    ));
+    let popup = document.add_object(
+        dictionary! {"Subtype"=>"Popup", "Rect"=>valid_rect(), "Parent"=>note, "P"=>page1},
+    );
+    let root = document
+        .get_object_mut(note)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap();
+    root.set("Popup", popup);
+    root.set("P", page1);
+    let annots = document.add_object(vec![Object::Reference(note), Object::Reference(popup)]);
+    set_annots(&mut document, 1, Object::Reference(annots));
+    set_annots(&mut document, 2, Object::Reference(annots));
+    let mut session = Session::open(&save(document)).unwrap();
+    session
+        .apply(Edit::UpdateNote {
+            page: 1,
+            annotation_index: 0,
+            expected_contents: "old".into(),
+            contents: "new".into(),
+        })
+        .unwrap();
+    let parsed = Document::load_mem(&session.bytes().unwrap()).unwrap();
+    for index in [0, 1] {
+        assert_eq!(
+            annotation_dictionary(&parsed, 2, index).get(b"P").unwrap(),
+            &Object::Reference(page2)
+        );
+        assert_eq!(
+            annotation_dictionary(&parsed, 1, index).get(b"P").unwrap(),
+            &Object::Reference(page1)
+        );
+    }
+}
+
+#[test]
+fn updated_note_popup_is_rebound_on_its_page_and_can_be_deleted_without_changing_shared_page() {
+    let mut document = Document::load_mem(&fixture_pdf(2)).unwrap();
+    let note = document.add_object(text_annotation(
+        Some(text_string("before")),
+        valid_rect(),
+        None,
+    ));
+    let popup = document.add_object(dictionary! {
+        "Subtype"=>"Popup", "Rect"=>valid_rect(), "Parent"=>note,
+        "Open"=>true, "P"=>document.get_pages()[&1],
+    });
+    document
+        .get_object_mut(note)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("Popup", popup);
+    let annots = document.add_object(vec![Object::Reference(note), Object::Reference(popup)]);
+    set_annots(&mut document, 1, Object::Reference(annots));
+    set_annots(&mut document, 2, Object::Reference(annots));
+    let source = save(document);
+    let mut session = Session::open(&source).unwrap();
+    let untouched = session.notes(1).unwrap();
+    session
+        .apply(Edit::UpdateNote {
+            page: 0,
+            annotation_index: 0,
+            expected_contents: "before".into(),
+            contents: "after 🦀".into(),
+        })
+        .unwrap();
+    let edited = session.bytes().unwrap();
+    let parsed = Document::load_mem(&edited).unwrap();
+    let updated_note = annotation_dictionary(&parsed, 1, 0);
+    let updated_popup = annotation_dictionary(&parsed, 1, 1);
+    let page = parsed
+        .get_object(parsed.get_pages()[&1])
+        .unwrap()
+        .as_dict()
+        .unwrap();
+    let (_, entries) = parsed.dereference(page.get(b"Annots").unwrap()).unwrap();
+    let entries = entries.as_array().unwrap();
+    assert_eq!(updated_popup.get(b"Parent").unwrap(), &entries[0]);
+    assert_eq!(updated_note.get(b"Popup").unwrap(), &entries[1]);
+    assert_eq!(updated_popup.get(b"Open").unwrap(), &Object::Boolean(true));
+    assert_ne!(entries[0], Object::Reference(note));
+    assert_ne!(entries[1], Object::Reference(popup));
+    assert_eq!(session.notes(1).unwrap(), untouched);
+    assert_eq!(
+        annotation_dictionary(&parsed, 2, 1).get(b"Parent").unwrap(),
+        &Object::Reference(note)
+    );
+    session.apply(delete_note(0, 0, "after 🦀")).unwrap();
+    assert_eq!(session.notes(0).unwrap(), NoteList::default());
+    assert_eq!(session.notes(1).unwrap(), untouched);
+    session.undo().unwrap();
+    assert_eq!(session.bytes().unwrap(), edited);
+    session.undo().unwrap();
+    assert_eq!(session.bytes().unwrap(), source);
+}
+
+#[test]
+fn delete_note_reopens_and_undoes_without_changing_other_annotations_or_source() {
+    for indirect in [false, true] {
+        let mut document = Document::load_mem(&fixture_pdf(1)).unwrap();
+        let note = text_annotation(Some(text_string("删除 🦀")), valid_rect(), None);
+        let retained = text_annotation(Some(text_string("保留")), valid_rect(), None);
+        let values = if indirect {
+            vec![
+                Object::Reference(document.add_object(note)),
+                Object::Reference(document.add_object(retained)),
+            ]
+        } else {
+            vec![note, retained]
+        };
+        let annots = if indirect {
+            Object::Reference(document.add_object(values))
+        } else {
+            Object::Array(values)
+        };
+        set_annots(&mut document, 1, annots);
+        let source = save(document);
+        let mut session = Session::open(&source).unwrap();
+        let text = session.text(0).unwrap();
+        session.apply(delete_note(0, 0, "删除 🦀")).unwrap();
+        assert_eq!(session.notes(0).unwrap().notes.len(), 1);
+        assert_eq!(session.notes(0).unwrap().notes[0].contents, "保留");
+        assert_eq!(session.text(0).unwrap(), text);
+        assert_eq!(
+            Session::open(&source)
+                .unwrap()
+                .notes(0)
+                .unwrap()
+                .notes
+                .len(),
+            2
+        );
+        let exported = session.bytes().unwrap();
+        assert_eq!(
+            Session::open(&exported).unwrap().notes(0).unwrap(),
+            session.notes(0).unwrap()
+        );
+        session.undo().unwrap();
+        assert_eq!(session.bytes().unwrap(), source);
+        assert!(!session.info().dirty);
+        session.redo().unwrap();
+        assert_eq!(session.bytes().unwrap(), exported);
+    }
+}
+
+#[test]
+fn delete_note_copies_shared_annots_and_removes_only_its_associated_popup() {
+    let mut document = Document::load_mem(&fixture_pdf(2)).unwrap();
+    let note = document.add_object(text_annotation(
+        Some(text_string("with popup")),
+        valid_rect(),
+        None,
+    ));
+    let popup = document.add_object(dictionary! {
+        "Type"=>"Annot", "Subtype"=>"Popup", "Rect"=>valid_rect(), "Parent"=>note,
+    });
+    document
+        .get_object_mut(note)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("Popup", popup);
+    let retained = document.add_object(text_annotation(
+        Some(text_string("keep")),
+        valid_rect(),
+        None,
+    ));
+    let annots = document.add_object(vec![
+        Object::Reference(popup),
+        Object::Reference(retained),
+        Object::Reference(note),
+    ]);
+    set_annots(&mut document, 1, Object::Reference(annots));
+    set_annots(&mut document, 2, Object::Reference(annots));
+    let mut session = Session::open(&save(document)).unwrap();
+    let other_page = session.notes(1).unwrap();
+    session.apply(delete_note(0, 2, "with popup")).unwrap();
+    assert_eq!(session.notes(0).unwrap().unsupported_count, 0);
+    assert_eq!(session.notes(0).unwrap().notes.len(), 1);
+    assert_eq!(session.notes(0).unwrap().notes[0].contents, "keep");
+    assert_eq!(session.notes(1).unwrap(), other_page);
+    let parsed = Document::load_mem(&session.bytes().unwrap()).unwrap();
+    assert_eq!(
+        annotation_dictionary(&parsed, 1, 0)
+            .get(b"Contents")
+            .unwrap(),
+        &text_string("keep")
+    );
+    // Shared objects remain available to the untouched second page, not erased.
+    assert!(parsed.objects.contains_key(&note));
+    assert!(parsed.objects.contains_key(&popup));
+}
+
+#[test]
+fn delete_last_note_is_valid_and_stale_or_invalid_deletes_preserve_history() {
+    let source = document_with_annots(
+        1,
+        vec![text_annotation(
+            Some(text_string("last")),
+            valid_rect(),
+            None,
+        )]
+        .into(),
+    );
+    let mut session = Session::open(&source).unwrap();
+    for edit in [
+        delete_note(2, 0, "last"),
+        delete_note(0, 1, "last"),
+        delete_note(0, 0, "stale"),
+        delete_note(0, 0, &"x".repeat(MIB + 1)),
+    ] {
+        assert_apply_unchanged(&mut session, edit);
+    }
+    session.apply(delete_note(0, 0, "last")).unwrap();
+    assert_eq!(session.notes(0).unwrap(), NoteList::default());
+    assert!(
+        Session::open(&session.bytes().unwrap())
+            .unwrap()
+            .notes(0)
+            .unwrap()
+            .notes
+            .is_empty()
+    );
+    session.undo().unwrap();
+    assert!(session.info().can_redo);
+    assert_apply_unchanged(&mut session, delete_note(0, 0, "stale"));
+    assert!(session.info().can_redo);
+}
+
+#[test]
+fn delete_note_rejects_malformed_popup_ownership_and_tagged_notes_atomically() {
+    for invalid in ["wrong_parent", "wrong_subtype", "struct_parent"] {
+        let mut document = Document::load_mem(&fixture_pdf(1)).unwrap();
+        let note = document.add_object(text_annotation(
+            Some(text_string("target")),
+            valid_rect(),
+            None,
+        ));
+        let other = document.add_object(text_annotation(
+            Some(text_string("other")),
+            valid_rect(),
+            None,
+        ));
+        let popup = document.add_object(dictionary! {
+            "Subtype"=> if invalid=="wrong_subtype" {"Text"}else{"Popup"},
+            "Rect"=>valid_rect(), "Parent"=>if invalid=="wrong_parent" {other}else{note},
+        });
+        let target = document
+            .get_object_mut(note)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap();
+        target.set("Popup", popup);
+        if invalid == "struct_parent" {
+            target.set("StructParent", 0);
+        }
+        set_annots(
+            &mut document,
+            1,
+            vec![
+                Object::Reference(note),
+                Object::Reference(popup),
+                Object::Reference(other),
+            ]
+            .into(),
+        );
+        let mut session = Session::open(&save(document)).unwrap();
+        assert_apply_unchanged(&mut session, delete_note(0, 0, "target"));
+    }
+}
+
+#[test]
+fn delete_note_cannot_remove_an_unsupported_annotation_and_wire_tag_is_stable() {
+    let source = document_with_annots(
+        1,
+        vec![Object::Dictionary(
+            dictionary! {"Subtype"=>"Link","Rect"=>valid_rect()},
+        )]
+        .into(),
+    );
+    let mut session = Session::open(&source).unwrap();
+    assert_apply_unchanged(&mut session, delete_note(0, 0, ""));
+    let edit = delete_note(1, 4, "中文");
+    assert_eq!(
+        serde_json::to_value(edit).unwrap(),
+        serde_json::json!({"kind":"delete_note","page":1,"annotation_index":4,"expected_contents":"中文"})
+    );
+}
+
+#[test]
+fn delete_note_removes_a_popup_identified_by_parent_when_forward_link_is_absent() {
+    let mut document = Document::load_mem(&fixture_pdf(1)).unwrap();
+    let note = document.add_object(text_annotation(
+        Some(text_string("reverse")),
+        valid_rect(),
+        None,
+    ));
+    let popup =
+        document.add_object(dictionary! {"Subtype"=>"Popup", "Rect"=>valid_rect(), "Parent"=>note});
+    set_annots(
+        &mut document,
+        1,
+        vec![Object::Reference(note), Object::Reference(popup)].into(),
+    );
+    let mut session = Session::open(&save(document)).unwrap();
+    session.apply(delete_note(0, 0, "reverse")).unwrap();
+    assert_eq!(session.notes(0).unwrap(), NoteList::default());
+}
+
+#[test]
 fn notes_enumerate_direct_and_indirect_text_annotations_with_unicode_and_color() {
     let mut document = Document::load_mem(&fixture_pdf(2)).unwrap();
     let indirect = document.add_object(text_annotation(

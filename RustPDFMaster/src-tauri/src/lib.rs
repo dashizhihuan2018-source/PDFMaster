@@ -17,6 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 #[derive(Default)]
 struct Workspace {
     session: Option<Session>,
+    document_epoch: u64,
     name: String,
     journal: Option<recovery::Journal>,
     _journal_lock: Option<File>,
@@ -94,6 +95,119 @@ fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+    #[test]
+    fn exhausted_document_epoch_never_replaces_the_current_session() {
+        let (mut w, _directory) = note_workspace();
+        w.document_epoch = u64::MAX;
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let name = w.name.clone();
+        assert!(
+            w.replace_document(Session::blank(100., 100., 2).unwrap(), "new.pdf".into())
+                .is_err()
+        );
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(w.name, name);
+        assert_eq!(w.document_epoch, u64::MAX);
+    }
+
+    #[test]
+    fn page_confirmation_cannot_delete_an_identical_but_reopened_document() {
+        let mut w = Workspace {
+            session: Some(Session::blank(100., 100., 3).unwrap()),
+            ..Default::default()
+        };
+        let snapshot = w.session.as_ref().unwrap().bytes().unwrap();
+        let epoch = w.document_epoch;
+        w.replace_document(Session::open(&snapshot).unwrap(), "another.pdf".into())
+            .unwrap();
+        assert!(apply_confirmed_delete(&mut w, "1", 1, &snapshot, epoch).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), snapshot);
+    }
+
+    #[test]
+    fn note_confirmation_cannot_delete_an_identical_but_reopened_document() {
+        let (mut w, _directory) = note_workspace();
+        let selected = prepare_note_delete(&w, 0, 0, "原便笺 🦀").unwrap();
+        let identical = Session::open(&selected.snapshot).unwrap();
+        w.replace_document(identical, "another.pdf".into()).unwrap();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        assert!(apply_confirmed_note_delete(&mut w, &selected).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn note_deletion_requires_a_native_snapshot_and_cannot_use_generic_edit() {
+        let (mut w, _directory) = note_workspace();
+        let bytes = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        let selected = prepare_note_delete(&w, 0, 0, "原便笺 🦀").unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), bytes);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+        assert!(prepare_note_delete(&w, 0, 0, "stale").is_err());
+        assert!(
+            apply_single_edit(
+                &mut w,
+                Edit::DeleteNote {
+                    page: 0,
+                    annotation_index: 0,
+                    expected_contents: "原便笺 🦀".into()
+                }
+            )
+            .is_err()
+        );
+        let view = apply_confirmed_note_delete(&mut w, &selected).unwrap();
+        assert!(view.info.dirty);
+        assert!(workspace_notes(&w, 0).unwrap().notes.is_empty());
+        assert!(apply_confirmed_note_delete(&mut w, &selected).is_err());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), bytes);
+        assert_eq!(w.session.as_ref().unwrap().info().can_undo, info.can_undo);
+        assert!(w.session.as_ref().unwrap().info().can_redo);
+    }
+
+    #[test]
+    fn note_delete_rejects_changed_document_editor_and_export_without_mutation() {
+        let (mut w, _directory) = note_workspace();
+        let selected = prepare_note_delete(&w, 0, 0, "原便笺 🦀").unwrap();
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        assert!(prepare_note_delete(&w, 0, 0, "原便笺 🦀").is_err());
+        assert!(apply_confirmed_note_delete(&mut w, &selected).is_err());
+        w.cancel_note_editor(editor.id).unwrap();
+        let (export, _, _) = w.begin_export().unwrap();
+        assert!(prepare_note_delete(&w, 0, 0, "原便笺 🦀").is_err());
+        assert!(apply_confirmed_note_delete(&mut w, &selected).is_err());
+        w.release_export(export);
+        apply_single_edit(
+            &mut w,
+            Edit::Rotate {
+                page: 0,
+                degrees: 90,
+            },
+        )
+        .unwrap();
+        let changed = w.session.as_ref().unwrap().bytes().unwrap();
+        assert!(apply_confirmed_note_delete(&mut w, &selected).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), changed);
+        assert_eq!(
+            workspace_notes(&w, 0).unwrap().notes[0].contents,
+            "原便笺 🦀"
+        );
+    }
+
+    #[test]
+    fn confirmed_note_delete_preserves_dirty_state_when_checkpoint_fails() {
+        let (mut w, directory) = note_workspace();
+        w.journal = Some(recovery::Journal::new(
+            directory.path().join("missing/draft.json"),
+        ));
+        let selected = prepare_note_delete(&w, 0, 0, "原便笺 🦀").unwrap();
+        let view = apply_confirmed_note_delete(&mut w, &selected).unwrap();
+        assert!(view.info.dirty);
+        assert!(view.warning.is_some());
+        assert!(w.has_unsaved_work());
+        assert!(workspace_notes(&w, 0).unwrap().notes.is_empty());
+    }
+
     fn note_workspace() -> (Workspace, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let mut session = Session::blank(100., 100., 1).unwrap();
@@ -551,7 +665,7 @@ mod workspace_tests {
             })
             .unwrap();
         let changed = w.session.as_ref().unwrap().bytes().unwrap();
-        assert!(apply_confirmed_delete(&mut w, "1", 1, &snapshot).is_err());
+        assert!(apply_confirmed_delete(&mut w, "1", 1, &snapshot, 0).is_err());
         assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), changed);
         assert_eq!(w.session.as_ref().unwrap().info().page_count, 3);
     }
@@ -563,14 +677,14 @@ mod workspace_tests {
         };
         let before = w.session.as_ref().unwrap().bytes().unwrap();
         assert!(matches!(
-            apply_confirmed_delete(&mut w, "3,1", 2, &before).unwrap(),
+            apply_confirmed_delete(&mut w, "3,1", 2, &before, 0).unwrap(),
             PageBatchReply::Applied {
                 affected_count: 2,
                 ..
             }
         ));
         assert_eq!(w.session.as_ref().unwrap().info().page_count, 1);
-        assert!(apply_confirmed_delete(&mut w, "1", 1, &before).is_err());
+        assert!(apply_confirmed_delete(&mut w, "1", 1, &before, 0).is_err());
         w.session.as_mut().unwrap().undo().unwrap();
         assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
         assert_eq!(
@@ -700,6 +814,17 @@ mod workspace_tests {
 }
 
 impl Workspace {
+    fn replace_document(&mut self, session: Session, name: String) -> Reply<DocumentView> {
+        self.clean()?;
+        let epoch = self
+            .document_epoch
+            .checked_add(1)
+            .ok_or("文档会话编号已耗尽，请正常退出后重试。")?;
+        self.session = Some(session);
+        self.name = name;
+        self.document_epoch = epoch;
+        self.checkpoint()
+    }
     fn has_unsaved_work(&self) -> bool {
         self.dirty() || self.note_editor.is_some() || self.export_reservation.is_some()
     }
@@ -925,9 +1050,12 @@ fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentVie
     workspace.ensure_editor_idle()?;
     if matches!(
         edit,
-        Edit::RotatePages { .. } | Edit::DeletePages { .. } | Edit::DeletePage { .. }
+        Edit::RotatePages { .. }
+            | Edit::DeletePages { .. }
+            | Edit::DeletePage { .. }
+            | Edit::DeleteNote { .. }
     ) {
-        return Err("批量旋转和页面删除必须使用带页数确认的批处理入口。".into());
+        return Err("批量旋转、页面删除和便笺删除必须使用对应的原生确认入口。".into());
     }
     workspace
         .session
@@ -943,7 +1071,11 @@ fn apply_confirmed_delete(
     range: &str,
     count: usize,
     snapshot: &[u8],
+    document_epoch: u64,
 ) -> Reply<PageBatchReply> {
+    if workspace.document_epoch != document_epoch {
+        return Err("确认期间已切换文档，请重新选择页面；文档未修改。".into());
+    }
     let current = workspace
         .session
         .as_ref()
@@ -954,6 +1086,105 @@ fn apply_confirmed_delete(
         return Err("确认期间文档已改变，请重新选择页面；文档未修改。".into());
     }
     apply_page_batch(workspace, range, PageBatchOperation::Delete, Some(count))
+}
+
+struct PreparedNoteDelete {
+    document_epoch: u64,
+    page: usize,
+    annotation_index: usize,
+    contents: String,
+    snapshot: Vec<u8>,
+}
+
+fn prepare_note_delete(
+    workspace: &Workspace,
+    page: usize,
+    annotation_index: usize,
+    expected: &str,
+) -> Reply<PreparedNoteDelete> {
+    workspace.ensure_editor_idle()?;
+    if expected.len() > 1024 * 1024 {
+        return Err("便笺原始内容超出预算。".into());
+    }
+    let snapshot = workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .bytes()
+        .map_err(|error| error.to_string())?;
+    // Preflight the actual core operation on a disposable copy before prompting.
+    let mut candidate = Session::open(&snapshot).map_err(|error| error.to_string())?;
+    candidate
+        .apply(Edit::DeleteNote {
+            page,
+            annotation_index,
+            expected_contents: expected.to_owned(),
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(PreparedNoteDelete {
+        document_epoch: workspace.document_epoch,
+        page,
+        annotation_index,
+        contents: expected.to_owned(),
+        snapshot,
+    })
+}
+
+fn apply_confirmed_note_delete(
+    workspace: &mut Workspace,
+    selected: &PreparedNoteDelete,
+) -> Reply<DocumentView> {
+    workspace.ensure_editor_idle()?;
+    if workspace.document_epoch != selected.document_epoch {
+        return Err("确认期间已切换文档，请重新选择便笺；文档未修改。".into());
+    }
+    let session = workspace.session.as_mut().ok_or("请先打开 PDF")?;
+    if session.bytes().map_err(|error| error.to_string())? != selected.snapshot {
+        return Err("确认期间文档已改变，请重新选择便笺；文档未修改。".into());
+    }
+    session
+        .apply(Edit::DeleteNote {
+            page: selected.page,
+            annotation_index: selected.annotation_index,
+            expected_contents: selected.contents.clone(),
+        })
+        .map_err(|error| error.to_string())?;
+    workspace.checkpoint()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn delete_note_document(
+    app: tauri::AppHandle,
+    page: usize,
+    annotation_index: usize,
+    expected_contents: String,
+    state: State<'_, Store>,
+) -> Reply<Option<DocumentView>> {
+    let selected = {
+        let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+        prepare_note_delete(&workspace, page, annotation_index, &expected_contents)?
+    };
+    let preview: String = selected.contents.chars().take(120).collect();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let dialog = app.dialog().message(format!("确认删除第 {} 页的选中便笺？\n{}\n关联弹窗会一并移除。可通过撤销恢复；此操作不是安全擦除，保存仍需导出副本。", page + 1, preview))
+        .title("删除便笺")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("删除便笺".into(), "取消".into()));
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let dialog = dialog.parent(
+        &app.get_webview_window("main")
+            .ok_or("确认窗口不存在；文档未修改。")?,
+    );
+    dialog.show(move |confirmed| {
+        let _ = sender.send(confirmed);
+    });
+    if !receiver
+        .await
+        .map_err(|_| "系统确认窗口不可用；文档未修改。")?
+    {
+        return Ok(None);
+    }
+    let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    apply_confirmed_note_delete(&mut workspace, &selected).map(Some)
 }
 
 #[tauri::command]
@@ -979,23 +1210,19 @@ async fn open_document(
         .map_err(|e| e.to_string())?;
     let session = Session::open(&bytes).map_err(|e| e.to_string())?;
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
-    w.clean()?;
-    w.session = Some(session);
-    w.name = path
+    let name = path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .into();
-    w.checkpoint().map(Some)
+    w.replace_document(session, name).map(Some)
 }
 
 #[tauri::command]
 async fn new_document(state: State<'_, Store>) -> Reply<Option<DocumentView>> {
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
-    w.clean()?;
-    w.session = Some(Session::blank(595., 842., 1).map_err(|e| e.to_string())?);
-    w.name = "未命名.pdf".into();
-    w.checkpoint().map(Some)
+    let session = Session::blank(595., 842., 1).map_err(|e| e.to_string())?;
+    w.replace_document(session, "未命名.pdf".into()).map(Some)
 }
 
 #[tauri::command]
@@ -1086,7 +1313,7 @@ async fn batch_pages(
     operation: PageBatchOperation,
     state: State<'_, Store>,
 ) -> Reply<PageBatchReply> {
-    let (count, page_count, snapshot) = {
+    let (count, page_count, snapshot, document_epoch) = {
         let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
         match apply_page_batch(&mut workspace, &range, operation, None)? {
             PageBatchReply::ConfirmationRequired { count, page_count } => {
@@ -1096,7 +1323,7 @@ async fn batch_pages(
                     .ok_or("请先打开 PDF")?
                     .bytes()
                     .map_err(|error| error.to_string())?;
-                (count, page_count, snapshot)
+                (count, page_count, snapshot, workspace.document_epoch)
             }
             reply => return Ok(reply),
         }
@@ -1131,7 +1358,7 @@ async fn batch_pages(
         return Ok(PageBatchReply::Cancelled);
     }
     let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
-    apply_confirmed_delete(&mut workspace, &range, count, &snapshot)
+    apply_confirmed_delete(&mut workspace, &range, count, &snapshot, document_epoch)
 }
 #[tauri::command]
 async fn undo_document(state: State<'_, Store>) -> Reply<Option<DocumentView>> {
@@ -1249,7 +1476,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,search_document,edit_document,batch_pages,undo_document,redo_document,export_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

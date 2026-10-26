@@ -273,7 +273,7 @@ mod tests {
         let source = include_str!("workspace.rs");
         assert!(source.contains("m.save_note()"));
         assert!(source.contains("m.cancel_note_edit()"));
-        assert!(source.contains("m.begin_note_edit(note.clone())"));
+        assert!(source.contains("m.begin_note_edit(edit_note.clone())"));
         assert!(source.contains("self.has_note_draft()"));
         assert!(source.contains("aria-label=\"编辑便笺内容\""));
         assert!(!source.contains("inner_html"));
@@ -299,6 +299,14 @@ mod tests {
         assert!(compact.contains("<Showwhen=move||m.loaded()&&!m.has_note_draft()>"));
         assert!(compact.contains("on:click=move|_|m.command(\"document_info\",json!({}))"));
         assert!(source.contains("同步便笺编辑状态"));
+    }
+    #[test]
+    fn note_delete_uses_the_native_confirmed_route_not_a_generic_edit_or_js_confirm() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains("m.delete_note(note.clone())"));
+        assert!(source.contains("\"delete_note_document\""));
+        assert!(!source.contains("confirm_with_message"));
+        assert!(source.contains("删除便笺"));
     }
     #[test]
     fn note_creation_supports_unicode_and_adapts_to_small_pages_without_clipping() {

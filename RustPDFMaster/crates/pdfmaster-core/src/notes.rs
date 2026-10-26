@@ -88,12 +88,72 @@ pub(crate) fn update_note(
         ));
     }
 
+    // Share a read-only ownership audit without cloning the entire PDF again.
+    annots_without_note(document, pages, page, annotation_index, expected_contents)?;
+    let (_, old_id) = resolve_with_id(document, &annotation_object)?;
     let mut annotation = resolve(document, &annotation_object)?
         .as_dict()
         .map_err(|_| PdfMasterError::Malformed("annotation entry must be a dictionary".into()))?
         .clone();
     annotation.set("Contents", text_string(contents));
-    let annotation_id = document.add_object(annotation);
+    if annotation.has(b"P") {
+        annotation.set("P", page_id);
+    }
+    let annotation_id = document.new_object_id();
+    let mut popup_ids = HashSet::new();
+    if let Ok(popup) = annotation.get(b"Popup") {
+        let id = resolve_with_id(document, popup)?
+            .1
+            .ok_or_else(|| PdfMasterError::Malformed("annotation Popup must be indirect".into()))?;
+        popup_ids.insert(id);
+    }
+    for value in &annots {
+        let (value, id) = resolve_with_id(document, value)?;
+        let dictionary = value
+            .as_dict()
+            .map_err(|_| PdfMasterError::Malformed("annotation must be a dictionary".into()))?;
+        if resolve(
+            document,
+            dictionary
+                .get(b"Subtype")
+                .map_err(|_| PdfMasterError::Malformed("annotation is missing Subtype".into()))?,
+        )?
+        .as_name()
+        .ok()
+            == Some(b"Popup")
+            && let Ok(parent) = dictionary.get(b"Parent")
+            && old_id.is_some()
+            && resolve_with_id(document, parent)?.1 == old_id
+        {
+            popup_ids.insert(id.ok_or(PdfMasterError::InvalidOperation(
+                "direct popup rebinding is not supported",
+            ))?);
+        }
+    }
+    if popup_ids.len() > 1 {
+        return Err(PdfMasterError::Malformed(
+            "conflicting popup ownership".into(),
+        ));
+    }
+    if let Some(old_popup) = popup_ids.into_iter().next() {
+        let mut popup = document
+            .get_object(old_popup)
+            .and_then(Object::as_dict)
+            .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
+            .clone();
+        popup.set("Parent", annotation_id);
+        if popup.has(b"P") {
+            popup.set("P", page_id);
+        }
+        let new_popup = document.add_object(popup);
+        annotation.set("Popup", new_popup);
+        for value in &mut annots {
+            if resolve_with_id(document, value)?.1 == Some(old_popup) {
+                *value = Object::Reference(new_popup);
+            }
+        }
+    }
+    document.objects.insert(annotation_id, annotation.into());
     annots[annotation_index] = Object::Reference(annotation_id);
     let annots_id = document.add_object(annots);
     document
@@ -102,6 +162,216 @@ pub(crate) fn update_note(
         .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
         .set("Annots", annots_id);
     validate_notes_page(document, page_id, &pages[page])
+}
+
+/// Remove page membership, not the shared indirect objects or historical bytes.
+/// This is an undoable annotation operation, never a secure-erasure primitive.
+pub(crate) fn delete_note(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    annotation_index: usize,
+    expected_contents: &str,
+) -> Result<()> {
+    let remaining =
+        annots_without_note(document, pages, page, annotation_index, expected_contents)?;
+    let page_id = page_object_ids(document)?[page];
+    // Copy the array so another page sharing it remains byte-for-byte semantic.
+    let annots_id = document.add_object(remaining);
+    document
+        .get_object_mut(page_id)
+        .and_then(Object::as_dict_mut)
+        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
+        .set("Annots", annots_id);
+    validate_notes_page(document, page_id, &pages[page])
+}
+
+fn annots_without_note(
+    document: &Document,
+    pages: &[PageInfo],
+    page: usize,
+    annotation_index: usize,
+    expected_contents: &str,
+) -> Result<Vec<Object>> {
+    validate_page_index(page, pages.len())?;
+    if expected_contents.len() > MAX_DECODED_CONTENTS_BYTES {
+        return Err(PdfMasterError::Budget("expected annotation contents"));
+    }
+    let page_id = page_object_ids(document)?[page];
+    let notes = enumerate_notes(document, page_id, &pages[page])?;
+    let current = notes
+        .notes
+        .iter()
+        .find(|note| note.annotation_index == annotation_index)
+        .ok_or(PdfMasterError::InvalidOperation(
+            "Text annotation index is unavailable",
+        ))?;
+    if current.contents != expected_contents {
+        return Err(PdfMasterError::InvalidOperation(
+            "annotation contents changed since it was read",
+        ));
+    }
+    let annots = validated_annots_for_add(document, page_id, &pages[page])?;
+    let (target, target_id) = resolve_with_id(document, &annots[annotation_index])?;
+    let target = target
+        .as_dict()
+        .map_err(|_| PdfMasterError::Malformed("annotation must be a dictionary".into()))?;
+    if target.has(b"StructParent") {
+        return Err(PdfMasterError::InvalidOperation(
+            "tagged annotation removal is not yet supported",
+        ));
+    }
+    if target.has(b"IRT") {
+        return Err(PdfMasterError::InvalidOperation(
+            "threaded annotation lifecycle is not yet supported",
+        ));
+    }
+    if let Some(target_id) = target_id {
+        // Replies may live on another page and may be direct dictionaries.
+        // Do not orphan them or silently redirect them to an obsolete COW root.
+        let mut scanned = 0usize;
+        for id in page_object_ids(document)? {
+            let page = document
+                .get_object(id)
+                .and_then(Object::as_dict)
+                .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+            let Ok(entries) = page.get(b"Annots") else {
+                continue;
+            };
+            let entries = resolve(document, entries)?
+                .as_array()
+                .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into()))?;
+            scanned = scanned
+                .checked_add(entries.len())
+                .ok_or(PdfMasterError::Budget("annotation relationship scan"))?;
+            if scanned > 16_384 {
+                return Err(PdfMasterError::Budget("annotation relationship scan"));
+            }
+            for entry in entries {
+                let dictionary = resolve(document, entry)?.as_dict().map_err(|_| {
+                    PdfMasterError::Malformed("annotation must be a dictionary".into())
+                })?;
+                if let Ok(parent) = dictionary.get(b"IRT") {
+                    parent.as_reference().map_err(|_| {
+                        PdfMasterError::Malformed("annotation IRT must be indirect".into())
+                    })?;
+                    if resolve_with_id(document, parent)?.1 == Some(target_id) {
+                        return Err(PdfMasterError::InvalidOperation(
+                            "threaded annotation lifecycle is not yet supported",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let popup_id = match target.get(b"Popup") {
+        Ok(popup) => {
+            popup.as_reference().map_err(|_| {
+                PdfMasterError::Malformed("annotation Popup must be indirect".into())
+            })?;
+            let (popup, popup_id) = resolve_with_id(document, popup)?;
+            let popup = popup.as_dict().map_err(|_| {
+                PdfMasterError::Malformed("annotation Popup must be a dictionary".into())
+            })?;
+            if resolve(
+                document,
+                popup
+                    .get(b"Subtype")
+                    .map_err(|_| PdfMasterError::Malformed("Popup is missing Subtype".into()))?,
+            )?
+            .as_name()
+            .ok()
+                != Some(b"Popup")
+            {
+                return Err(PdfMasterError::Malformed(
+                    "annotation Popup subtype is invalid".into(),
+                ));
+            }
+            if popup.has(b"StructParent") {
+                return Err(PdfMasterError::InvalidOperation(
+                    "tagged popup removal is not yet supported",
+                ));
+            }
+            if let Ok(parent) = popup.get(b"Parent") {
+                parent.as_reference().map_err(|_| {
+                    PdfMasterError::Malformed("Popup Parent must be indirect".into())
+                })?;
+                if target_id.is_none() || resolve_with_id(document, parent)?.1 != target_id {
+                    return Err(PdfMasterError::Malformed(
+                        "Popup belongs to another annotation".into(),
+                    ));
+                }
+            }
+            popup_id
+        }
+        Err(_) => None,
+    };
+    let mut remove = HashSet::from([annotation_index]);
+    let mut owned_popups = popup_id.into_iter().collect::<HashSet<_>>();
+    for (index, value) in annots.iter().enumerate() {
+        if index == annotation_index {
+            continue;
+        }
+        let (value, id) = resolve_with_id(document, value)?;
+        let dictionary = value
+            .as_dict()
+            .map_err(|_| PdfMasterError::Malformed("annotation must be a dictionary".into()))?;
+        if resolve(
+            document,
+            dictionary
+                .get(b"Subtype")
+                .map_err(|_| PdfMasterError::Malformed("annotation is missing Subtype".into()))?,
+        )?
+        .as_name()
+        .ok()
+            == Some(b"Popup")
+        {
+            let belongs_to_target = if let Ok(parent) = dictionary.get(b"Parent") {
+                parent.as_reference().map_err(|_| {
+                    PdfMasterError::Malformed("Popup Parent must be indirect".into())
+                })?;
+                target_id.is_some() && resolve_with_id(document, parent)?.1 == target_id
+            } else {
+                false
+            };
+            if popup_id.is_some() && id == popup_id || belongs_to_target {
+                if dictionary.has(b"StructParent") {
+                    return Err(PdfMasterError::InvalidOperation(
+                        "tagged popup removal is not yet supported",
+                    ));
+                }
+                if popup_id.is_some() && id != popup_id {
+                    return Err(PdfMasterError::Malformed(
+                        "conflicting popup ownership".into(),
+                    ));
+                }
+                remove.insert(index);
+                if let Some(id) = id {
+                    owned_popups.insert(id);
+                }
+            }
+        }
+    }
+    for (index, value) in annots.iter().enumerate() {
+        if !remove.contains(&index)
+            && let Ok(other_popup) = resolve(document, value)?
+                .as_dict()
+                .and_then(|value| value.get(b"Popup"))
+            && resolve_with_id(document, other_popup)?
+                .1
+                .is_some_and(|id| owned_popups.contains(&id))
+        {
+            return Err(PdfMasterError::InvalidOperation(
+                "popup is shared with another annotation",
+            ));
+        }
+    }
+    let remaining = annots
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, value)| (!remove.contains(&index)).then_some(value))
+        .collect::<Vec<_>>();
+    Ok(remaining)
 }
 
 pub(crate) fn validated_annots_for_add(
@@ -293,7 +563,15 @@ fn decode_contents(document: &Document, object: &Object) -> Result<String> {
 }
 
 fn resolve<'a>(document: &'a Document, object: &'a Object) -> Result<&'a Object> {
+    resolve_with_id(document, object).map(|(value, _)| value)
+}
+
+fn resolve_with_id<'a>(
+    document: &'a Document,
+    object: &'a Object,
+) -> Result<(&'a Object, Option<ObjectId>)> {
     let mut current = object;
+    let mut resolved_id = None;
     let mut seen = HashSet::new();
     let mut reference_count = 0usize;
     loop {
@@ -313,8 +591,9 @@ fn resolve<'a>(document: &'a Document, object: &'a Object) -> Result<&'a Object>
                 current = document.objects.get(id).ok_or_else(|| {
                     PdfMasterError::Malformed("annotation object reference is missing".into())
                 })?;
+                resolved_id = Some(*id);
             }
-            value => return Ok(value),
+            value => return Ok((value, resolved_id)),
         }
     }
 }

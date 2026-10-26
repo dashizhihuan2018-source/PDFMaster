@@ -123,6 +123,11 @@ pub enum Edit {
         expected_contents: String,
         contents: String,
     },
+    DeleteNote {
+        page: usize,
+        annotation_index: usize,
+        expected_contents: String,
+    },
 }
 
 #[derive(Debug)]

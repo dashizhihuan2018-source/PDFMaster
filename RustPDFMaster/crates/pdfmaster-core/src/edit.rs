@@ -7,7 +7,7 @@ use crate::document::{
     Color, Edit, MAX_PAGES, MAX_TEXT_BYTES, PageInfo, PdfMasterError, Rect, Result, add_blank_page,
     materialize_page_attributes, page_object_ids, validate_page_index, validate_page_size,
 };
-use crate::notes::{update_note, validate_notes_page, validated_annots_for_add};
+use crate::notes::{delete_note, update_note, validate_notes_page, validated_annots_for_add};
 
 pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit) -> Result<()> {
     match edit {
@@ -51,6 +51,11 @@ pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit
             &expected_contents,
             &contents,
         ),
+        Edit::DeleteNote {
+            page,
+            annotation_index,
+            expected_contents,
+        } => delete_note(document, pages, page, annotation_index, &expected_contents),
     }
 }
 
