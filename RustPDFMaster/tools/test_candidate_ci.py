@@ -294,6 +294,10 @@ class CandidateCiContract(unittest.TestCase):
             self.assertIn(contract, smoke)
         self.assertIn("not packaged GUI acceptance or full parity evidence", smoke)
 
+    def test_ci_executes_home_shell_route_contracts_not_only_library_tests(self):
+        script = self.read_required(TOOLS / "ci-check.sh")
+        self.assertIn("test --locked --manifest-path app/Cargo.toml --lib --test shell_routes", script)
+
     def test_artifact_guard_hash_zip_and_pe_contracts(self):
         guard = TOOLS / "ci-artifact-guard.py"
         with tempfile.TemporaryDirectory() as temporary:

@@ -9,6 +9,7 @@ This is an **in-progress full rewrite**, not the installed PDF Master replacemen
 - `crates/pdfmaster-core`: transactional PDF operations and rendering via lopdf / hayro. Unsupported cases fail explicitly; complex geometry, Unicode content editing and several resource classes remain incomplete. It is **not yet approved for arbitrary untrusted PDFs**.
 - `crates/pdfmaster-drawing`: shared bounded midpoint/quadratic smoothing and quarter-turn point mapping for preview and PDF InkList; retains the original SwiftyDraw-derived MIT attribution.
 - `app`: Leptos Rust UI; no handwritten JavaScript application frontend.
+- `app/src/home.rs`, `app/src/shell.rs`, `app/shell.css`: original-derived home/sidebar/tool catalog and home/current-document navigation. Switching views preserves the single native session and form inputs; busy/note/Ink guards prevent hiding unfinished editors. Multi-document tabs, original icon assets, recents/favorites persistence and the mode-based workbench remain incomplete.
 - `src-tauri`: native dialogs, guarded desktop lifecycle, private local draft journal and no-clobber desktop export. A Rust UIKit adapter stages the complete PDF before iOS export and verifies provider readback; local simulator cancel/save/reopen has been exercised. Remote providers and physical devices remain unverified.
 - `cross-platform/parity.json`: 801 legacy XCTest method contracts; all three platforms remain pending until actual ported-contract evidence is attached. This is not a complete UX inventory and not a test pass report.
 - `tools/baseline.rs`: read-only legacy contract extractor using Rust std.
@@ -22,7 +23,7 @@ rustup target add wasm32-unknown-unknown aarch64-apple-ios-sim aarch64-apple-ios
 cargo install trunk --version 0.21.14 --locked
 cargo install tauri-cli --version 2.12.4 --locked
 cargo test -p pdfmaster-core
-cargo test --manifest-path app/Cargo.toml --lib
+cargo test --manifest-path app/Cargo.toml --lib --test shell_routes
 cargo test --manifest-path src-tauri/Cargo.toml --lib --test security_contract
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 NO_COLOR=true cargo tauri build --debug --bundles app

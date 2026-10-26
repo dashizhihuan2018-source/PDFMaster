@@ -5,6 +5,7 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
     current.saturating_add_signed(delta as isize).min(count - 1)
 }
 pub mod ink;
+pub mod shell;
 
 #[allow(clippy::too_many_arguments)]
 pub fn line_edit(

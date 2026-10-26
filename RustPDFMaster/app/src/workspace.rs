@@ -1,7 +1,10 @@
 #[path = "bridge.rs"]
 mod bridge;
+#[path = "home.rs"]
+mod home;
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::ink::{Frame, InkAction, InkGesture, InkImageHandoff};
+use pdfmaster_ui::shell::{HomeSection, Route, document_reply_route, switch_route};
 use wasm_bindgen::JsCast;
 fn image_event_source(event: &web_sys::Event) -> Option<String> {
     event
@@ -120,6 +123,7 @@ enum PageBatchReply {
 
 #[derive(Clone, Copy)]
 struct Model {
+    route: RwSignal<Route>,
     document: RwSignal<Option<Document>>,
     page: RwSignal<usize>,
     zoom: RwSignal<f32>,
@@ -152,6 +156,50 @@ struct Model {
 }
 
 impl Model {
+    fn switch_to(self, target: Route) {
+        let current = self.route.get_untracked();
+        let next = switch_route(
+            current,
+            target,
+            self.loaded(),
+            self.busy.get_untracked() || self.has_note_draft() || self.has_ink(),
+        );
+        if next != target {
+            self.message
+                .set("请先结束当前操作，保存或取消便笺／手绘编辑，再切换界面。".into());
+        }
+        self.route.set(next);
+        if next != current && matches!(next, Route::Home(_)) {
+            leptos::leptos_dom::helpers::request_animation_frame(move || {
+                if let Some(scroll) = web_sys::window()
+                    .and_then(|w| w.document())
+                    .and_then(|d| d.get_element_by_id("home-scroll"))
+                {
+                    scroll.set_scroll_top(0);
+                }
+            });
+        }
+    }
+    fn show_tool(self, id: &'static str) {
+        if id == "blank" {
+            self.command("new_document", json!({}));
+            return;
+        }
+        let Some(target) = pdfmaster_ui::shell::tool(id).and_then(|t| t.workbench_target) else {
+            return;
+        };
+        self.switch_to(Route::Document);
+        if self.route.get_untracked() == Route::Document {
+            leptos::leptos_dom::helpers::request_animation_frame(move || {
+                if let Some(element) = web_sys::window()
+                    .and_then(|w| w.document())
+                    .and_then(|d| d.get_element_by_id(target))
+                {
+                    element.scroll_into_view_with_bool(true);
+                }
+            });
+        }
+    }
     fn complete_ink_handoff(self) {
         self.ink_handoff.set(false);
         self.ink_image.set(None);
@@ -539,6 +587,8 @@ impl Model {
                     }
                     let page_count = doc.info.page_count;
                     self.document.set(Some(doc));
+                    self.route
+                        .update(|route| *route = document_reply_route(*route, command, true));
                     if matches!(
                         command,
                         "open_document"
@@ -814,7 +864,19 @@ impl Model {
         else {
             return;
         };
-        let available = (reader.client_width() - 40).max(1) as f32;
+        let mobile = web_sys::window()
+            .and_then(|w| w.inner_width().ok())
+            .and_then(|v| v.as_f64())
+            .is_some_and(|w| w <= 720.);
+        let shell_width = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("shell-tabs"))
+            .map(|e| e.client_width());
+        let Some(available) =
+            pdfmaster_ui::shell::reader_fit_available(reader.client_width(), shell_width, mobile)
+        else {
+            return;
+        };
         if let Some(zoom) = self.document.with_untracked(|d| {
             d.as_ref()
                 .and_then(|d| d.info.pages.get(self.page.get_untracked()))
@@ -1081,6 +1143,7 @@ impl Model {
 #[component]
 pub fn Workspace() -> impl IntoView {
     let m = Model {
+        route: RwSignal::new(Route::Home(HomeSection::Home)),
         document: RwSignal::new(None),
         page: RwSignal::new(0),
         zoom: RwSignal::new(1.),
@@ -1114,12 +1177,14 @@ pub fn Workspace() -> impl IntoView {
     let surface = NodeRef::<leptos::html::Div>::new();
     m.command("document_info", json!({}));
     view! {
-        <main class="workspace">
-            <header class="titlebar">
-                <div class="identity"><span class="app-mark">"P"</span><span>"PDF Master"</span><small>"RUST"</small></div>
-                <span class="document-title">{move||m.document.with(|d|d.as_ref().map_or("文档工作台".into(),|d|format!("{}{}",d.name,if d.info.dirty{" · 未保存"}else{""})))}</span>
-                <span class="build-state">"迁移候选 · 非正式版"</span>
-            </header>
+        <div class="application-shell">
+            <nav class="shell-tabs" id="shell-tabs" aria-label="首页和当前文档（多文档标签尚未迁移）">
+                <button class="shell-home-tab" class:active=move||matches!(m.route.get(),Route::Home(_)) aria-label="主界面标签" title="主界面" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))><img src="32x32.png" alt=""/></button>
+                <Show when=move||m.loaded()><button class="shell-document-tab" class:active=move||m.route.get()==Route::Document disabled=move||m.busy.get() on:click=move|_|m.switch_to(Route::Document)>{move||m.document.with(|d|d.as_ref().map(|d|format!("{}{}",d.name,if d.info.dirty{" •"}else{""})).unwrap_or_default())}</button></Show>
+                <button class="shell-plus" aria-label="新标签：返回主界面" title="返回主界面；多文档标签尚未迁移" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
+            </nav>
+            <div class="home-host" hidden=move||m.route.get()==Route::Document><home::Dashboard model=m/></div>
+        <main class="workspace" hidden=move||m.route.get()!=Route::Document>
             <nav class="commandbar" aria-label="文档操作">
                 <button class="primary" disabled=move||m.busy.get() on:click=move|_|m.command("open_document",json!({}))>"打开 PDF"</button>
                 <button disabled=move||m.busy.get() on:click=move|_|m.command("new_document",json!({}))>"新建"</button>
@@ -1180,7 +1245,7 @@ pub fn Workspace() -> impl IntoView {
                         <p class="muted search-limit">{move||m.search_result.with(|r|r.as_ref().map(|r|r.limitation.clone()).unwrap_or_default())}</p>
                     </Show>
                 </div>
-                <div class="tool-group"><h3>"页面"</h3>
+                <div class="tool-group" id="tool-pages"><h3>"页面"</h3>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"rotate","page":m.page.get_untracked(),"degrees":90}))>"顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"duplicate_page","page":m.page.get_untracked(),"index":m.page.get_untracked()+1}))>"复制当前页"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"insert_blank","index":m.page.get_untracked()+1,"width":595.,"height":842.}))>"在后方插入空白页"</button>
@@ -1188,7 +1253,7 @@ pub fn Workspace() -> impl IntoView {
                     <button disabled={move||m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.move_page(1)>"当前页后移"</button>
                     <button class="danger" disabled={move || m.blocked()||m.count()<=1} on:click=move|_|m.delete_current_page()>"删除当前页"</button>
                 </div>
-                <div class="tool-group"><h3>"批量页面"</h3>
+                <div class="tool-group" id="tool-batch"><h3>"批量页面"</h3>
                     <input aria-label="批量页码范围" disabled=move||m.busy.get() placeholder="例如 1-3,5" prop:value=move||m.page_range.get() on:input=move|e|m.page_range.set(event_target_value(&e))/>
                     <button disabled=move||m.blocked() on:click=move|_|m.batch_pages("rotate_90")>"批量顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.command("extract_pages_document",json!({"range":m.page_range.get_untracked()}))>"提取页面到新 PDF"</button>
@@ -1197,8 +1262,8 @@ pub fn Workspace() -> impl IntoView {
                     <button class="danger" disabled=move||m.blocked()||m.count()<=1 on:click=move|_|m.batch_pages("delete")>"批量删除"</button>
                     <p class="muted">"页码从 1 开始；删除会先显示选中页数并要求确认。"</p>
                 </div>
-                <div class="tool-group"><h3>"文字批注"</h3><textarea aria-label="文字批注内容" placeholder="输入要添加的文字" prop:value=move||m.text.get() on:input=move|e|m.text.set(event_target_value(&e))></textarea><button disabled=move||m.blocked() on:click=move|_|m.add_text()>"添加到页面中部"</button><p class="muted">"字体与复杂 PDF 兼容性仍在迁移验证中。"</p></div>
-                <div class="tool-group notes-panel"><h3>"便笺与评论"</h3>
+                <div class="tool-group" id="tool-text"><h3>"文字批注"</h3><textarea aria-label="文字批注内容" placeholder="输入要添加的文字" prop:value=move||m.text.get() on:input=move|e|m.text.set(event_target_value(&e))></textarea><button disabled=move||m.blocked() on:click=move|_|m.add_text()>"添加到页面中部"</button><p class="muted">"字体与复杂 PDF 兼容性仍在迁移验证中。"</p></div>
+                <div class="tool-group notes-panel" id="tool-notes"><h3>"便笺与评论"</h3>
                     <textarea aria-label="便笺内容" disabled=move||m.busy.get() placeholder="支持中文和 emoji；保存为 PDF 便笺" prop:value=move||m.note_text.get() on:input=move|event|m.note_text.set(event_target_value(&event))></textarea>
                     <button disabled=move||m.blocked() on:click=move|_|m.add_note()>"添加便笺到左上方"</button>
                     <div class="note-list" aria-label="当前页便笺">
@@ -1228,7 +1293,7 @@ pub fn Workspace() -> impl IntoView {
                     </Show>
                     <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。仅支持受限 Text 便笺；标签、回复线程及歧义弹窗关系暂不编辑或删除。关系检查最多 16384 条。定位和弹窗显示仍在迁移；修改和删除均不是安全擦除。"</p>
                 </div>
-                <div class="tool-group ink-panel"><h3>"手绘"</h3>
+                <div class="tool-group ink-panel" id="tool-ink"><h3>"手绘"</h3>
                     <button disabled=move||m.blocked() aria-pressed=move||m.ink_enabled.get().to_string() on:click=move|_|m.ink_enabled.update(|v|*v = !*v)>{move||if m.ink_enabled.get(){"退出手绘模式"}else{"进入手绘模式"}}</button>
                     <p class="note-meta">{move||if m.ink_enabled.get(){"在页面上拖动绘制；抬笔后提交一笔。阅读滚动请先退出手绘模式。"}else{"可使用鼠标、触控或笔绘制。颜色与线宽使用下方图形参数，在落笔时固定。"}}</p>
                     <Show when=move||m.has_ink()>
@@ -1269,5 +1334,6 @@ pub fn Workspace() -> impl IntoView {
             </aside>
             <footer class="statusbar"><span role="status" aria-live="polite">{move||m.document.with(|d|visible_status(d.as_ref().and_then(|d|d.warning.as_deref()), &m.message.get(), m.busy.get()))}</span><span class="flex"></span><Show when=move||m.loaded()><button aria-label="上一页" disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),-1,m.count()))>"‹"</button><span>{move||format!("{} / {}",m.page.get()+1,m.count())}</span><button aria-label="下一页" disabled={move || m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),1,m.count()))>"›"</button><label class="page-jump-label"><span>"页码"</span><input aria-label="跳转页码" inputmode="numeric" prop:value=move||m.page_jump.get() on:input=move|e|m.page_jump.set(event_target_value(&e))/></label><button class="page-jump-button" disabled=move||m.blocked() on:click=move|_|m.jump_to_page()>"转到"</button><span class="page-dimensions">{move||m.document.with(|d|d.as_ref().and_then(|d|d.info.pages.get(m.page.get())).map(|p|format!("{:.0} × {:.0} pt · {}°",p.width,p.height,p.rotation)).unwrap_or_default())}</span></Show></footer>
         </main>
+        </div>
     }
 }
