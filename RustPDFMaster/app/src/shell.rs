@@ -100,7 +100,7 @@ const fn entry(
 // Availability intentionally follows implemented Rust actions, not Swift's
 // availability flags. Matching labels must not make missing functionality live.
 pub const TOOLS: [Tool; 28] = [
-    entry("annotate", "批注", 0, "#ffd60a", Some("tool-text")),
+    entry("annotate", "批注", 0, "#ffd60a", Some("mode-annotation")),
     entry("edit", "编辑", 0, "#0a84ff", None),
     entry("sign", "签署 PDF", 0, "#bf5af2", None),
     entry("forms", "填写表单", 0, "#64d2ff", None),

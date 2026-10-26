@@ -2,9 +2,12 @@
 mod bridge;
 #[path = "home.rs"]
 mod home;
+#[path = "workbench_view.rs"]
+mod workbench;
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::ink::{Frame, InkAction, InkGesture, InkImageHandoff};
 use pdfmaster_ui::shell::{HomeSection, Route, document_reply_route, switch_route};
+use pdfmaster_ui::workbench::{Action, Chrome, Mode, Panel, fit_page_zoom};
 use wasm_bindgen::JsCast;
 fn image_event_source(event: &web_sys::Event) -> Option<String> {
     event
@@ -160,6 +163,7 @@ mod batch_reply_contract {
 #[derive(Clone, Copy)]
 struct Model {
     route: RwSignal<Route>,
+    chrome: RwSignal<Chrome>,
     document: RwSignal<Option<Document>>,
     page: RwSignal<usize>,
     zoom: RwSignal<f32>,
@@ -192,6 +196,105 @@ struct Model {
 }
 
 impl Model {
+    fn close_chrome_popups(self) {
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            // There are exactly two local menus. Bound the DOM work even if a
+            // future markup change introduces an unexpected open element.
+            for _ in 0..2 {
+                let Ok(Some(menu)) = document.query_selector(".workbench-toolbar details[open]")
+                else {
+                    break;
+                };
+                let _ = menu.remove_attribute("open");
+            }
+        }
+    }
+    fn select_mode(self, mode: Mode) {
+        let blocked = self.blocked();
+        if blocked {
+            return;
+        }
+        self.close_chrome_popups();
+        self.ink_enabled.set(false);
+        self.chrome
+            .update(|chrome| *chrome = chrome.select_mode(mode, blocked));
+        self.message
+            .set("选择二级工具后才会修改文档；灰色工具尚未迁移。".into());
+    }
+    fn select_panel(self, panel: Option<Panel>) {
+        let blocked = self.blocked();
+        if blocked {
+            return;
+        }
+        self.close_chrome_popups();
+        if panel != Some(Panel::Ink) {
+            self.ink_enabled.set(false);
+        }
+        self.chrome
+            .update(|chrome| *chrome = chrome.select_panel(panel, blocked));
+    }
+    fn toggle_sidebar(self) {
+        let blocked = self.blocked();
+        self.chrome
+            .update(|chrome| *chrome = chrome.toggle_sidebar(blocked));
+    }
+    fn choose_zoom(self, value: &str) {
+        if self.blocked() {
+            return;
+        }
+        match value {
+            "page" => self.fit_page(),
+            "width" => self.fit_width(),
+            "1" | "1.25" | "1.5" | "2" | "3" => {
+                self.zoom.set(value.parse().unwrap_or(1.));
+                self.refresh();
+            }
+            _ => {}
+        }
+    }
+    fn fit_page(self) {
+        if self.blocked() {
+            return;
+        }
+        self.close_chrome_popups();
+        let Some(reader) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("pdf-reader"))
+        else {
+            return;
+        };
+        let zoom = self.document.with_untracked(|d| {
+            d.as_ref()
+                .and_then(|d| d.info.pages.get(self.page.get_untracked()))
+                .and_then(|p| {
+                    fit_page_zoom(
+                        p.width,
+                        p.height,
+                        p.rotation,
+                        reader.client_width() as f32 - 40.,
+                        reader.client_height() as f32 - 40.,
+                    )
+                })
+        });
+        if let Some(zoom) = zoom {
+            self.zoom.set(zoom);
+            self.refresh();
+        }
+    }
+    fn run_strip_action(self, action: Action) {
+        if self.blocked() {
+            return;
+        }
+        match action {
+            Action::Panel(panel)=>self.select_panel(Some(panel)),
+            Action::InsertBlank=>self.edit(json!({"kind":"insert_blank","index":self.page.get_untracked()+1,"width":595.,"height":842.})),
+            Action::InsertPdf=>self.command("insert_pdf_document",json!({"index":self.page.get_untracked()+1})),
+            Action::Rotate=>self.edit(json!({"kind":"rotate","page":self.page.get_untracked(),"degrees":90})),
+            Action::Extract=>{self.select_panel(Some(Panel::Batch));self.page_range.set((self.page.get_untracked()+1).to_string());},
+            Action::DeleteCurrent=>self.delete_current_page(),
+            Action::Export=>self.command("export_document",json!({})),
+        }
+    }
     fn switch_to(self, target: Route) {
         let current = self.route.get_untracked();
         let next = switch_route(
@@ -226,14 +329,20 @@ impl Model {
         };
         self.switch_to(Route::Document);
         if self.route.get_untracked() == Route::Document {
-            leptos::leptos_dom::helpers::request_animation_frame(move || {
-                if let Some(element) = web_sys::window()
-                    .and_then(|w| w.document())
-                    .and_then(|d| d.get_element_by_id(target))
-                {
-                    element.scroll_into_view_with_bool(true);
-                }
-            });
+            let mode = match id {
+                "pages" | "merge" => Mode::Pages,
+                "draw" => Mode::Drawing,
+                _ => Mode::Annotation,
+            };
+            self.select_mode(mode);
+            let panel = match target {
+                "tool-notes" => Some(Panel::Notes),
+                "tool-pages" => Some(Panel::Pages),
+                "tool-batch" => Some(Panel::Batch),
+                "tool-ink" => Some(Panel::Ink),
+                _ => None,
+            };
+            self.select_panel(panel);
         }
     }
     fn complete_ink_handoff(self) {
@@ -622,6 +731,13 @@ impl Model {
                         status="手绘会话尚未结束；未提交的笔画无法从进程恢复，请取消／同步手绘后继续。".into();
                     }
                     let page_count = doc.info.page_count;
+                    self.chrome.update(|chrome| {
+                        *chrome = chrome.document_opened(
+                            doc.note_editor.is_some(),
+                            doc.ink_editor.is_some(),
+                            matches!(command, "open_document" | "new_document"),
+                        )
+                    });
                     self.document.set(Some(doc));
                     self.route
                         .update(|route| *route = document_reply_route(*route, command, true));
@@ -925,6 +1041,7 @@ impl Model {
         if self.blocked() {
             return;
         }
+        self.close_chrome_popups();
         self.set_fit_width();
         self.refresh();
     }
@@ -1180,6 +1297,13 @@ impl Model {
 pub fn Workspace() -> impl IntoView {
     let m = Model {
         route: RwSignal::new(Route::Home(HomeSection::Home)),
+        chrome: RwSignal::new(Chrome {
+            sidebar: !web_sys::window()
+                .and_then(|w| w.inner_width().ok())
+                .and_then(|v| v.as_f64())
+                .is_some_and(|w| w <= 720.),
+            ..Chrome::default()
+        }),
         document: RwSignal::new(None),
         page: RwSignal::new(0),
         zoom: RwSignal::new(1.),
@@ -1220,21 +1344,10 @@ pub fn Workspace() -> impl IntoView {
                 <button class="shell-plus" aria-label="新标签：返回主界面" title="返回主界面；多文档标签尚未迁移" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
             </nav>
             <div class="home-host" hidden=move||m.route.get()==Route::Document><home::Dashboard model=m/></div>
-        <main class="workspace" hidden=move||m.route.get()!=Route::Document>
-            <nav class="commandbar" aria-label="文档操作">
-                <button class="primary" disabled=move||m.busy.get() on:click=move|_|m.command("open_document",json!({}))>"打开 PDF"</button>
-                <button disabled=move||m.busy.get() on:click=move|_|m.command("new_document",json!({}))>"新建"</button>
-                <span class="separator"></span>
-                <button disabled=move||m.blocked() on:click=move|_|m.command("export_document",json!({}))>"导出副本"</button>
-                <button disabled=move||m.blocked()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_undo)) on:click=move|_|m.command("undo_document",json!({}))>"↶ 撤销"</button>
-                <button disabled=move||m.blocked()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_redo)) on:click=move|_|m.command("redo_document",json!({}))>"↷ 重做"</button>
-                <span class="flex"></span>
-                <button aria-label="缩小" disabled=move||m.blocked() on:click=move|_|m.zoom_by(0.8)>"−"</button>
-                <output class="zoom">{move||format!("{:.0}%",m.zoom.get()*100.)}</output>
-                <button aria-label="放大" disabled=move||m.blocked() on:click=move|_|m.zoom_by(1.25)>"+"</button>
-                <button disabled=move||m.blocked() on:click=move|_|m.fit_width()>"适合宽度"</button>
-            </nav>
-            <aside class="pages" aria-label="页面列表">
+        <main class="workspace" class:reader-sidebar-hidden=move||!m.chrome.get().sidebar class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
+            <workbench::Toolbar model=m/>
+            <workbench::SecondaryTools model=m/>
+            <aside class="pages" aria-label="页面列表（缩略图尚未迁移）" hidden=move||!m.chrome.get().sidebar>
                 <div class="section-label">"页面"<span>{move||m.count()}</span></div>
                 <For each={move || (0..m.count()).collect::<Vec<_>>()} key=|p|*p children=move|p|view!{
                     <button class="page-entry" class:selected=move||m.page.get()==p disabled=move||m.busy.get() on:click=move|_|m.navigate(p)>
@@ -1264,9 +1377,10 @@ pub fn Workspace() -> impl IntoView {
                     </Show></div>
                 </Show>
             </section>
-            <aside class="inspector">
-                <h2>"文档工具"</h2>
-                <div class="tool-group search-panel"><h3>"文档搜索"</h3>
+            <aside class="inspector" aria-label="当前工具参数" hidden=move||m.chrome.get().panel.is_none()>
+                <div class="inspector-heading"><h2>"工具参数"</h2><button aria-label="关闭工具参数" disabled=move||m.blocked() on:click=move|_|m.select_panel(None)>"×"</button></div>
+                <workbench::FileActions model=m/>
+                <div class="tool-group search-panel" hidden=move||m.chrome.get().panel!=Some(Panel::Search)><h3>"文档搜索"</h3>
                     <input aria-label="搜索文档文字" disabled=move||m.busy.get() placeholder="输入关键词" prop:value=move||m.search_query.get() on:input=move|e|{m.search_query.set(event_target_value(&e));m.invalidate_search();}/>
                     <label class="search-case"><input type="checkbox" disabled=move||m.busy.get() prop:checked=move||m.search_case_sensitive.get() on:change=move|e|{m.search_case_sensitive.set(event_target_checked(&e));m.invalidate_search();}/><span>"区分大小写"</span></label>
                     <button disabled=move||m.blocked() on:click=move|_|m.search()>"搜索当前文档"</button>
@@ -1281,7 +1395,7 @@ pub fn Workspace() -> impl IntoView {
                         <p class="muted search-limit">{move||m.search_result.with(|r|r.as_ref().map(|r|r.limitation.clone()).unwrap_or_default())}</p>
                     </Show>
                 </div>
-                <div class="tool-group" id="tool-pages"><h3>"页面"</h3>
+                <div class="tool-group" id="tool-pages" hidden=move||m.chrome.get().panel!=Some(Panel::Pages)><h3>"当前页操作"</h3>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"rotate","page":m.page.get_untracked(),"degrees":90}))>"顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"duplicate_page","page":m.page.get_untracked(),"index":m.page.get_untracked()+1}))>"复制当前页"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"insert_blank","index":m.page.get_untracked()+1,"width":595.,"height":842.}))>"在后方插入空白页"</button>
@@ -1289,7 +1403,7 @@ pub fn Workspace() -> impl IntoView {
                     <button disabled={move||m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.move_page(1)>"当前页后移"</button>
                     <button class="danger" disabled={move || m.blocked()||m.count()<=1} on:click=move|_|m.delete_current_page()>"删除当前页"</button>
                 </div>
-                <div class="tool-group" id="tool-batch"><h3>"批量页面"</h3>
+                <div class="tool-group" id="tool-batch" hidden=move||m.chrome.get().panel!=Some(Panel::Batch)><h3>"批量页面"</h3>
                     <input aria-label="批量页码范围" disabled=move||m.busy.get() placeholder="例如 1-3,5" prop:value=move||m.page_range.get() on:input=move|e|m.page_range.set(event_target_value(&e))/>
                     <button disabled=move||m.blocked() on:click=move|_|m.batch_pages("rotate_90")>"批量顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.command("extract_pages_document",json!({"range":m.page_range.get_untracked()}))>"提取页面到新 PDF"</button>
@@ -1298,8 +1412,8 @@ pub fn Workspace() -> impl IntoView {
                     <button class="danger" disabled=move||m.blocked()||m.count()<=1 on:click=move|_|m.batch_pages("delete")>"批量删除"</button>
                     <p class="muted">"页码从 1 开始；删除会先显示选中页数并要求确认。"</p>
                 </div>
-                <div class="tool-group" id="tool-text"><h3>"文字批注"</h3><textarea aria-label="文字批注内容" placeholder="输入要添加的文字" prop:value=move||m.text.get() on:input=move|e|m.text.set(event_target_value(&e))></textarea><button disabled=move||m.blocked() on:click=move|_|m.add_text()>"添加到页面中部"</button><p class="muted">"字体与复杂 PDF 兼容性仍在迁移验证中。"</p></div>
-                <div class="tool-group notes-panel" id="tool-notes"><h3>"便笺与评论"</h3>
+                <div class="tool-group" id="tool-text" hidden=move||m.chrome.get().panel!=Some(Panel::Text)><h3>"文字批注"</h3><textarea aria-label="文字批注内容" placeholder="输入要添加的文字" prop:value=move||m.text.get() on:input=move|e|m.text.set(event_target_value(&e))></textarea><button disabled=move||m.blocked() on:click=move|_|m.add_text()>"添加到页面中部"</button><p class="muted">"字体与复杂 PDF 兼容性仍在迁移验证中。"</p></div>
+                <div class="tool-group notes-panel" id="tool-notes" hidden=move||m.chrome.get().panel!=Some(Panel::Notes)><h3>"便笺与评论"</h3>
                     <textarea aria-label="便笺内容" disabled=move||m.busy.get() placeholder="支持中文和 emoji；保存为 PDF 便笺" prop:value=move||m.note_text.get() on:input=move|event|m.note_text.set(event_target_value(&event))></textarea>
                     <button disabled=move||m.blocked() on:click=move|_|m.add_note()>"添加便笺到左上方"</button>
                     <div class="note-list" aria-label="当前页便笺">
@@ -1329,16 +1443,18 @@ pub fn Workspace() -> impl IntoView {
                     </Show>
                     <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。仅支持受限 Text 便笺；标签、回复线程及歧义弹窗关系暂不编辑或删除。关系检查最多 16384 条。定位和弹窗显示仍在迁移；修改和删除均不是安全擦除。"</p>
                 </div>
-                <div class="tool-group ink-panel" id="tool-ink"><h3>"手绘"</h3>
+                <div class="tool-group ink-panel" id="tool-ink" hidden=move||m.chrome.get().panel!=Some(Panel::Ink)><h3>"手绘"</h3>
+                    <label class="shape-label">"笔迹颜色 #RRGGBB"<input aria-label="笔迹颜色" disabled=move||m.blocked() prop:value=move||m.shape_stroke.get() on:input=move|e|m.shape_stroke.set(event_target_value(&e))/></label>
+                    <label class="shape-label">"笔迹线宽 (pt)"<input aria-label="笔迹线宽" inputmode="decimal" disabled=move||m.blocked() prop:value=move||m.shape_line.get() on:input=move|e|m.shape_line.set(event_target_value(&e))/></label>
                     <button disabled=move||m.blocked() aria-pressed=move||m.ink_enabled.get().to_string() on:click=move|_|m.ink_enabled.update(|v|*v = !*v)>{move||if m.ink_enabled.get(){"退出手绘模式"}else{"进入手绘模式"}}</button>
-                    <p class="note-meta">{move||if m.ink_enabled.get(){"在页面上拖动绘制；抬笔后提交一笔。阅读滚动请先退出手绘模式。"}else{"可使用鼠标、触控或笔绘制。颜色与线宽使用下方图形参数，在落笔时固定。"}}</p>
+                    <p class="note-meta">{move||if m.ink_enabled.get(){"在页面上拖动绘制；抬笔后提交一笔。阅读滚动请先退出手绘模式。"}else{"可使用鼠标、触控或笔绘制。上方笔迹颜色与线宽在落笔时固定；当前仍与图形默认参数共享，独立样式待迁移。"}}</p>
                     <Show when=move||m.has_ink()>
                         <button disabled=move||m.busy.get()||!m.ink_gesture.with(|s|s.as_ref().is_some_and(|s|s.ended&&s.guard.is_some()&&!s.committing&&!s.cancelled)) on:click=move|_|m.retry_ink()>"重试提交手绘"</button>
                     </Show>
                     <button disabled=move||m.busy.get()||!m.loaded() on:click=move|_|m.cancel_ink()>"取消／同步手绘"</button>
                     <p class="muted">"手绘中阻止正常关闭及冲突操作；采样点在提交前未持久化，崩溃或强制退出仍可能丢失。当前仅迁移添加与整笔撤销，选取、改样式与橡皮擦仍待迁移。"</p>
                 </div>
-                <div class="tool-group shape-panel"><h3>"图形批注"</h3>
+                <div class="tool-group shape-panel" hidden=move||m.chrome.get().panel!=Some(Panel::Shapes)><h3>"图形批注"</h3>
                     <div class="note-list" aria-label="当前页图形批注">{move||match m.shapes.get() {
                         None=>view!{<p class="note-meta">"打开 PDF 后显示当前页受支持样式的图形。"</p>}.into_any(),
                         Some(Err(e))=>view!{<p class="note-error">{format!("无法读取图形：{e}")}</p>}.into_any(),

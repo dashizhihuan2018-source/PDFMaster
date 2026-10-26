@@ -1,6 +1,16 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 85ab4255 (2026-10-26)
+## Current snapshot: development 820d10f5 (2026-10-27)
+
+Exactly **137 tracked Rust/workflow files** from development `820d10f5d440e48e19f9900546ccb5ca02b12e17`, plus this record. Only reviewed candidate source is synchronized; private history, user files/screenshots, memory, credentials and generated/build files are excluded. Formal Swift releases, website and installation remain unchanged.
+
+The original-derived reader now has three toolbar groups, six primary mode positions, ordered secondary strips and context-only panels. Unsupported actions remain disabled, editing text is not misrepresented by adding a text annotation, and page clipboard copy is not misrepresented by duplicate. Fit-page uses actual reader dimensions and rotation. Narrow windows preserve all groups in independent scrollable rows; this is an explicit platform adaptation, not accepted original UI parity. Guarded note/Ink editors remain visible and block conflicting mode/panel transitions.
+
+Local verification passed: **175 core +3 drawing, 67 UI, 74 native +4 security, 30 tools**, three workspace formatting/host-Clippy, separate WASM Clippy and locked release WASM build. Independent read-only review found no remaining Critical/Important issue within this Chrome slice after zoom-readout/narrow-window fixes; it did not run GUI/builds. A new Mac arm64 ad-hoc bundle and unsigned iOS arm64 simulator archive built with all five exact notices. Actual Mac checks on a synthetic blank PDF covered 125% preset -> zoom out -> 100%, fit-page, secondary-strip order and retaining unapplied text across mode/panel changes. Further GUI interaction was interrupted by external window changes; no later command outcome is claimed. iOS installation/launch reached the candidate home on a new dedicated simulator, but UI clicks were blocked by the automation surface, so new mobile reader behavior remains unverified. Neither build establishes complete UI or functional parity.
+
+Previous hosted run `40348196671` succeeded on exact preceding public `a48c30f9789e1321a8935ad5d837d9c1649e7fcb`, corresponding to development85ab4255. All three complete downloaded artifacts matched their SHA-256 manifests; both ZIPs passed safety/CRC and five-notice equality, and NSIS container validation passed. That run does not certify this new Chrome snapshot. Current-source hosted CI must be verified separately. Inventory remains **24 partial /46 unsupported /0 complete**, with **801 legacy contracts pending**. Actual Windows runtime, physical iOS, exact icons/thumbnails/multi-tabs/inline editing, formal three-platform release and final Rustall/public skill delivery remain unfinished.
+
+## Historical snapshot: development 85ab4255 (superseded)
 
 Exactly **133 tracked Rust/workflow files** from development `85ab4255b0dd23921962dd200eb375f4623342ec`, plus this record. This includes the original-derived home slice below and a bounded host-CI repair. Only candidate source is synchronized; private development history, user documents/screenshots, memory, credentials and build outputs are excluded. Formal Swift releases, website and installation remain unchanged.
 

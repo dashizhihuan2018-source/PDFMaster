@@ -1,0 +1,58 @@
+/* Original-derived workbench geometry; exact icons/inline editing remain pending. */
+.application-shell .workspace.workspace{--primary-height:46px;--secondary-height:0px;position:relative;grid-template-columns:176px minmax(0,1fr);grid-template-rows:var(--primary-height) var(--secondary-height) minmax(0,1fr) 38px;padding:0}
+.application-shell .workspace.has-secondary{--secondary-height:34px}
+.application-shell .workspace.reader-sidebar-hidden{grid-template-columns:0 minmax(0,1fr)}
+.workbench-toolbar{grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:12px;padding:0 12px;background:var(--shell-top);border-bottom:1px solid var(--line);min-width:0;z-index:12}
+.workbench-group{display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap}
+.workbench-right{justify-content:flex-end}.workbench-modes{justify-content:center;gap:8px}
+.workbench-toolbar button,.workbench-secondary button,.chrome-popup summary{height:28px;min-height:28px;flex-shrink:0;padding:3px 6px;margin:0;border:0;border-radius:6px;background:transparent;font-size:12px;color:var(--text);display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.workbench-toolbar button:disabled,.workbench-secondary button:disabled{opacity:.36}
+.workbench-toolbar button:hover:enabled,.workbench-secondary button:hover:enabled,.chrome-popup summary:hover{background:#292929}
+.workbench-toolbar button:active:enabled,.workbench-secondary button:active:enabled{background:color(srgb .08 .13 .2)}
+.workbench-toolbar .active,.workbench-secondary .active{background:color(srgb .12 .2 .3);color:#eee}
+.workbench-toolbar .chrome-icon-button{width:24px;padding:3px}
+.workbench-icon{width:18px;height:18px;flex-shrink:0;display:block}
+.chrome-zoom{width:80px;height:28px;min-width:80px;background:var(--shell-top);color:var(--text);border:0;border-radius:4px;font:11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.chrome-search{width:110px;height:26px;min-width:64px;padding:3px 7px;background:#282828;border:1px solid #444;border-radius:5px;color:#eee;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.chrome-popup{position:relative;flex-shrink:0}.chrome-popup summary{list-style:none;cursor:pointer;padding:3px}.chrome-popup summary::-webkit-details-marker{display:none}
+.chrome-popup-content{position:absolute;top:34px;left:0;display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:190px;padding:10px;background:var(--panel);border:1px solid #444;border-radius:8px;box-shadow:0 8px 24px #0006;z-index:20}
+.chrome-popup-content strong{font-size:12px;font-weight:500;padding:4px 6px}.chrome-popup-content button{justify-content:flex-start;text-align:left;width:100%}
+.workbench-secondary{grid-column:1/-1;grid-row:2;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--shell-top);border-bottom:1px solid var(--line);min-width:0;z-index:11}
+.workbench-secondary .chrome-strip-tool{font-size:11px}.workbench-secondary .icon-only{width:28px;padding:4px}.workbench-secondary .danger{color:#ff453a}
+.application-shell .workspace .pages{grid-column:1;grid-row:3;min-width:0;min-height:0;background:var(--panel)}
+.application-shell .workspace .page-entry.selected{background:color(srgb .12 .2 .3);border-color:var(--accent)}
+.application-shell .workspace .reader{grid-column:2;grid-row:3;min-width:0;min-height:0;padding:20px;background:var(--canvas);background-image:none}
+.application-shell .workspace .statusbar{grid-column:1/-1;grid-row:4;min-width:0;background:var(--canvas);color:#999}
+.application-shell .workspace .inspector{position:absolute;grid-area:auto;top:calc(var(--primary-height) + var(--secondary-height) + 12px);right:12px;bottom:auto;width:min(320px,calc(100% - 24px));max-height:calc(100% - var(--primary-height) - var(--secondary-height) - 62px);padding:14px 16px;background:var(--panel);border:1px solid #444;border-radius:8px;box-shadow:0 8px 24px #0006;overflow:auto;z-index:10;display:block}
+.inspector-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px}.application-shell .inspector-heading h2{margin:0;font-size:13px}.inspector-heading button{height:28px;width:28px;padding:0;border:0;background:transparent;font-size:20px}
+.application-shell .inspector .tool-group{min-width:0;margin:0;padding:0;border:0}.application-shell .inspector .migration-note{margin-top:14px}
+.application-shell .inspector input,.application-shell .inspector textarea{background:var(--shell-top);color:#eee}.application-shell .inspector button{background:#303030}.application-shell .inspector button:hover:enabled{background:#3a3a3a}
+.application-shell .inspector-heading button{background:transparent}.application-shell .inspector input:focus-visible,.application-shell .inspector textarea:focus-visible,.chrome-search:focus-visible,.chrome-zoom:focus-visible,.chrome-popup summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:1100px) and (min-width:1051px){.workbench-toolbar{gap:6px;padding:0 8px}.workbench-group{gap:4px}.workbench-toolbar .chrome-mode{padding:3px 4px}.chrome-search{width:90px}}
+/* Keep the original three groups reachable on narrow desktop windows too. */
+@media(max-width:1050px){
+ .application-shell .workspace.workspace{--primary-height:132px}
+ .application-shell .workspace.has-secondary{--secondary-height:44px}
+ .workbench-toolbar{grid-template-columns:minmax(0,1fr);grid-template-rows:44px 44px 44px;gap:0;padding:0 6px}
+ .workbench-group{height:44px;overflow-x:auto;overflow-y:hidden;justify-content:flex-start;gap:4px;scrollbar-width:none}
+ .workbench-toolbar button,.workbench-secondary button,.chrome-popup summary{min-height:44px;height:44px;min-width:44px}
+ .workbench-toolbar .chrome-icon-button{width:44px}.workbench-icon{width:20px;height:20px}.chrome-zoom{font-size:16px;height:44px;width:80px}.chrome-search{font-size:16px;height:36px;width:110px;min-width:110px}
+ .workbench-toolbar .chrome-mode{padding:3px 10px}.workbench-secondary{justify-content:flex-start;overflow-x:auto;gap:4px;padding:0 6px}.workbench-secondary .icon-only{width:44px}
+ .chrome-popup-content{position:fixed;top:calc(env(safe-area-inset-top,0px) + 44px + var(--primary-height));left:8px;right:8px;max-height:45dvh;overflow:auto;min-width:0}
+}
+/* Mobile adaptation: keep all three original groups, with independent scroll
+   rows and 44pt targets, rather than clipping the right-hand controls. */
+@media(max-width:720px){
+ .application-shell .workspace.workspace{--primary-height:132px;grid-template-columns:0 minmax(0,1fr);grid-template-rows:var(--primary-height) var(--secondary-height) minmax(0,1fr) auto}
+ .application-shell .workspace.has-secondary{--secondary-height:44px}
+ .workbench-toolbar{grid-template-columns:minmax(0,1fr);grid-template-rows:44px 44px 44px;gap:0;padding:0 6px}
+ .workbench-group{height:44px;overflow-x:auto;overflow-y:hidden;justify-content:flex-start;gap:4px;scrollbar-width:none}
+ .workbench-toolbar button,.workbench-secondary button,.chrome-popup summary{min-height:44px;height:44px;min-width:44px}
+ .workbench-toolbar .chrome-icon-button{width:44px}.workbench-icon{width:20px;height:20px}.chrome-zoom{font-size:16px;height:44px;width:80px}.chrome-search{font-size:16px;height:36px;width:110px;min-width:110px}
+ .workbench-toolbar .chrome-mode{padding:3px 10px}.workbench-secondary{justify-content:flex-start;overflow-x:auto;gap:4px;padding:0 6px}.workbench-secondary .icon-only{width:44px}
+ .chrome-popup-content{position:fixed;top:calc(env(safe-area-inset-top,0px) + 44px + var(--primary-height));left:8px;right:8px;max-height:45dvh;overflow:auto;min-width:0}
+ .application-shell .workspace .reader{grid-column:2;grid-row:3;padding:20px}
+ .application-shell .workspace .pages{display:block;position:absolute;top:calc(var(--primary-height) + var(--secondary-height));bottom:68px;left:0;width:176px;z-index:9;box-shadow:4px 0 20px #0005}
+ .application-shell .workspace .inspector{top:auto;bottom:68px;left:8px;right:8px;width:auto;max-height:44dvh}
+ .application-shell .workspace .statusbar{grid-row:4}.application-shell .workspace .inspector-heading button{height:44px;width:44px}
+}
