@@ -96,6 +96,8 @@ pub fn command_status_message(command: &str, restored: bool, warning: Option<&st
         } else {
             "页面已提取并回读验证；原文与未保存状态保持不变。".into()
         }
+    } else if command == "insert_pdf_document" {
+        "PDF 页面已插入，可一次撤销；请导出完整副本保存修改。".into()
     } else if restored {
         "已恢复上次未保存的本地草稿，请导出副本。".into()
     } else if command == "export_document" {
@@ -252,6 +254,23 @@ pub fn raster_plan(width: f32, height: f32, rotation: i32, zoom: f32, density: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn insertion_ui_uses_current_page_native_picker_and_marks_unsaved() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains(
+            "m.command(\"insert_pdf_document\",json!({\"index\":m.page.get_untracked()+1}))"
+        ));
+        assert!(source.contains("在当前页后插入 PDF"));
+        assert_eq!(
+            super::command_status_message("insert_pdf_document", false, None),
+            "PDF 页面已插入，可一次撤销；请导出完整副本保存修改。"
+        );
+        assert_eq!(
+            super::command_status_message("insert_pdf_document", true, Some("草稿故障")),
+            "草稿故障"
+        );
+        assert!(source.contains("| \"insert_pdf_document\""));
+    }
     #[test]
     fn extraction_ui_uses_native_range_command_and_never_claims_source_saved() {
         let source = include_str!("workspace.rs");

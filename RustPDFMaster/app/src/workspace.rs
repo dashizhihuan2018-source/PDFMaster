@@ -175,6 +175,7 @@ impl Model {
                             | "new_document"
                             | "edit_document"
                             | "delete_note_document"
+                            | "insert_pdf_document"
                             | "undo_document"
                             | "redo_document"
                     ) {
@@ -630,6 +631,7 @@ pub fn Workspace() -> impl IntoView {
                     <input aria-label="批量页码范围" disabled=move||m.busy.get() placeholder="例如 1-3,5" prop:value=move||m.page_range.get() on:input=move|e|m.page_range.set(event_target_value(&e))/>
                     <button disabled=move||m.blocked() on:click=move|_|m.batch_pages("rotate_90")>"批量顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.command("extract_pages_document",json!({"range":m.page_range.get_untracked()}))>"提取页面到新 PDF"</button>
+                    <button disabled=move||m.blocked() on:click=move|_|m.command("insert_pdf_document",json!({"index":m.page.get_untracked()+1}))>"在当前页后插入 PDF"</button>
                     <button class="danger" disabled=move||m.blocked()||m.count()<=1 on:click=move|_|m.batch_pages("delete")>"批量删除"</button>
                     <p class="muted">"页码从 1 开始；删除会先显示选中页数并要求确认。"</p>
                 </div>

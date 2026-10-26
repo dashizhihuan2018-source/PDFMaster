@@ -3,10 +3,13 @@
 mod document;
 mod edit;
 mod extract;
+mod insert;
 mod notes;
 mod ranges;
 mod render;
 
-pub use document::{Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session};
+pub use document::{
+    Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session, TextReader,
+};
 pub use notes::{NoteList, TextNote};
 pub use ranges::{PageRange, PageRangeError};

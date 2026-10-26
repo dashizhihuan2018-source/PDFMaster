@@ -95,6 +95,71 @@ fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::
 mod workspace_tests {
     use super::*;
     #[test]
+    fn insertion_is_reserved_checkpointed_and_one_undo_transaction() {
+        let (mut w, directory) = note_workspace();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let incoming = Session::blank(150., 200., 2).unwrap().bytes().unwrap();
+        let id = w.begin_insertion(1).unwrap();
+        assert!(w.clean().is_err());
+        assert!(w.begin_export().is_err());
+        assert!(w.begin_note_editor(0, 0, "原便笺 🦀").is_err());
+        let view = w.finish_insertion(id, 1, &incoming).unwrap();
+        assert_eq!(view.info.page_count, 3);
+        assert!(view.info.dirty);
+        assert!(view.warning.is_none());
+        assert!(directory.path().join("draft.json").is_file());
+        assert!(w.export_reservation.is_none());
+        assert!(w.has_unsaved_work());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn insertion_cancel_invalid_and_stale_tokens_preserve_current_document() {
+        let (w, _directory) = note_workspace();
+        let store = Mutex::new(w);
+        let before = store
+            .lock()
+            .unwrap()
+            .session
+            .as_ref()
+            .unwrap()
+            .bytes()
+            .unwrap();
+        assert!(store.lock().unwrap().begin_insertion(2).is_err());
+        let first = store.lock().unwrap().begin_insertion(0).unwrap();
+        {
+            let _scope = ExportReservation {
+                store: &store,
+                id: first,
+            };
+        }
+        let mut w = store.lock().unwrap();
+        assert!(!w.has_unsaved_work());
+        let second = w.begin_insertion(0).unwrap();
+        assert!(w.finish_insertion(first, 0, b"bad").is_err());
+        assert_eq!(w.export_reservation, Some(second));
+        assert!(w.finish_insertion(second, 0, b"bad").is_err());
+        assert!(w.export_reservation.is_none());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert!(!w.has_unsaved_work());
+    }
+
+    #[test]
+    fn insertion_keeps_applied_bytes_and_warning_if_checkpoint_fails() {
+        let (mut w, _directory) = note_workspace();
+        let incoming = Session::blank(150., 200., 1).unwrap().bytes().unwrap();
+        let id = w.begin_insertion(0).unwrap();
+        w.journal = None;
+        let view = w.finish_insertion(id, 0, &incoming).unwrap();
+        assert_eq!(view.info.page_count, 2);
+        assert!(view.info.dirty);
+        assert!(view.warning.is_some());
+        assert!(w.clean().is_err());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().info().page_count, 1);
+    }
+    #[test]
     fn extraction_exports_a_new_document_without_acknowledging_source_or_recovery() {
         let (mut w, directory) = note_workspace();
         w.name = "测试原文.pdf".into();
@@ -902,7 +967,7 @@ impl Workspace {
     }
     fn ensure_editor_idle(&self) -> Reply<()> {
         if self.export_reservation.is_some() {
-            Err("正在导出 PDF，请等待保存面板和回读完成或取消导出。".into())
+            Err("正在处理 PDF 文件，请等待文件面板和读写完成或取消操作。".into())
         } else if self.note_editor.is_some() {
             Err("请先保存或取消便笺编辑；编辑框内容尚未写入 PDF。".into())
         } else {
@@ -961,6 +1026,39 @@ impl Workspace {
         // journal, even when every page was selected.
         self.release_export(id);
         self.view()
+    }
+    fn begin_insertion(&mut self, index: usize) -> Reply<u32> {
+        self.ensure_editor_idle()?;
+        let count = self
+            .session
+            .as_ref()
+            .ok_or("请先打开 PDF")?
+            .info()
+            .page_count;
+        if index > count {
+            return Err("插入位置超出当前文档页数。".into());
+        }
+        let id = self
+            .next_export_id
+            .checked_add(1)
+            .ok_or("文件操作编号已耗尽，请先安全保存并重启应用。")?;
+        self.next_export_id = id;
+        self.export_reservation = Some(id);
+        Ok(id)
+    }
+    fn finish_insertion(&mut self, id: u32, index: usize, bytes: &[u8]) -> Reply<DocumentView> {
+        if self.export_reservation != Some(id) {
+            return Err("插入会话已改变，文档未修改。".into());
+        }
+        // Release only this token while still holding the mutex. The core
+        // publishes an atomic transaction; persistence failure stays visible.
+        self.release_export(id);
+        self.session
+            .as_mut()
+            .ok_or("请先打开 PDF")?
+            .insert_pdf(bytes, index)
+            .map_err(|error| error.to_string())?;
+        self.checkpoint()
     }
     fn finish_reserved_export(&mut self, id: u32, bytes: &[u8]) -> Reply<DocumentView> {
         if self.export_reservation != Some(id) {
@@ -1544,6 +1642,41 @@ async fn extract_pages_document(
     Ok(Some(view))
 }
 
+#[tauri::command(rename_all = "snake_case")]
+async fn insert_pdf_document(
+    app: tauri::AppHandle,
+    state: State<'_, Store>,
+    index: usize,
+) -> Reply<Option<DocumentView>> {
+    let id = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .begin_insertion(index)?;
+    let reservation = ExportReservation {
+        store: state.inner(),
+        id,
+    };
+    let Some(file) = app
+        .dialog()
+        .file()
+        .add_filter("PDF 文档", &["pdf"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|_| "不能访问所选 PDF")?;
+    // Native picker URL only, never an IPC-supplied path. Readback enforces
+    // regular-file and bounded size checks before the core parses the bytes.
+    let bytes = export_staging::readback_pdf(&path)
+        .map_err(|_| "无法读取所选 PDF，文件须为普通文件且不超过 32MiB。")?;
+    let view = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .finish_insertion(id, index, &bytes)?;
+    drop(reservation);
+    Ok(Some(view))
+}
+
 async fn publish_pdf_copy(app: &tauri::AppHandle, copy_name: &str, bytes: &[u8]) -> Reply<bool> {
     // Validate before either platform publishes; use the same picker/provider
     // and exact bounded readback for full exports and derived extraction.
@@ -1613,7 +1746,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

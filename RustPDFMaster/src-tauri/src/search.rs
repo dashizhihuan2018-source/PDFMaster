@@ -96,8 +96,9 @@ pub(crate) fn search_session(
     case_sensitive: bool,
 ) -> Result<SearchResponse, String> {
     let page_count = session.info().page_count;
+    let reader = session.text_reader().map_err(|error| error.to_string())?;
     search_with_loader(page_count, query, case_sensitive, |page| {
-        session.text(page).map_err(|error| error.to_string())
+        reader.text(page).map_err(|error| error.to_string())
     })
 }
 

@@ -1,6 +1,20 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development b86d9196 (2026-10-26)
+## Current snapshot: development 0f2ec54f (2026-10-26)
+
+Exactly **117 tracked Rust/workflow files** from development `0f2ec54f343b2281265940b8ca4cd999a7ad46b0`, plus this manifest. Historical sections below do not certify this source. This remains incomplete candidate source, not a formal Release; existing formal software and Releases are unchanged. Private history, documents, credentials, memory and generated/build files are excluded.
+
+New single-PDF insertion imports admitted page-reachable graphs into fresh object IDs, preserves selected resources/geometry/local destinations/notes and commits as one undoable transaction. Native bounded file picking shares the export reservation without exposing filesystem paths to IPC. Failed admission leaves the original session/history unchanged. Incoming global forms/tagged structure, document color/layer policy and mismatched document languages explicitly remain unsupported; this is not unrestricted merge or secure erasure. Multi-file merge, clipboard and full original UI remain pending.
+
+Inherited-font text reading now resolves nearest whole Resources, including direct dictionaries and null inheritance, in a lazily normalized cached snapshot. Search shares that snapshot; successful edits/undo/redo invalidate the cache, while failed edits and save checkpoints preserve it. A malformed later page does not block a preceding valid page. This does not establish arbitrary-PDF text fidelity.
+
+Local verification: **140 core, 32 UI, 62 native +4 security, 29 tools** passed; three workspace fmt and core/host/WASM/iOS-simulator clippy passed. A parallel native/build invocation initially produced missing rustdoc dependency artifacts; serial native verification after packaging passed, including rustdoc. Review examined pasted production logic and reported tests only, not an independent checkout or GUI.
+
+macOS self-owned fixture GUI verified picker cancellation, insertion, one-step undo/redo, search on imported text, full export/readback and reopen. After the final malformed-root guard, the rebuilt binary was separately exercised for reopen/insertion/undo and exited normally. Final macOS binary SHA-256: `ca5031fb773b7eea878dddb2511ebf60a78b5d8cfdbbc4c411b8cee6cc42f0dc`. The new iOS simulator archive completed (arm64/IOSSIMULATOR/min16.0/SDK27.0), binary SHA-256 `d223d903dbaf4066a70787542d271db0469cc2c419b94f920de8c2f893afd7c3`; both bundles contain five exact notice files. New iOS runtime, physical device/signing, Windows runtime and user acceptance remain unverified. No formal installation replacement occurred.
+
+Hosted run `40274044269` still runs against preceding public `e344432bd133f6b1542c8e1db4ffbe9579228464`, not this source: last observation Windows NSIS packaging and Mac iOS-simulator packaging were in progress. No duplicate run is dispatched while it is live. The inventory is **22 partial /48 unsupported /0 complete**, with 801 legacy rows pending. Full replica, formal three-platform publication and final Rustall skill/public skill delivery remain unfinished.
+
+## Historical snapshot: development b86d9196 (superseded)
 
 The current source is exactly **115 tracked Rust/workflow files** from development `b86d919690e63b6d750f5efd8330a5fafe1b168e`, plus this manifest. Everything under the historical headings below describes older snapshots only. This remains a candidate source import, not a product Release. No private development history, user documents, credentials, memory, generated project or build cache is included; the formal installed application and existing Releases are unchanged.
 

@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use lopdf::{Dictionary, Document, LoadOptions, Object, ObjectId, Stream, dictionary};
 use serde::{Deserialize, Serialize};
@@ -138,6 +139,112 @@ pub struct Session {
     saved_bytes: Vec<u8>,
     undo: Vec<Vec<u8>>,
     redo: Vec<Vec<u8>>,
+    text_cache: OnceLock<TextReader>,
+}
+
+/// Immutable, reusable text-extraction view. This owns one document snapshot;
+/// searching many pages must not clone the complete PDF for every page.
+#[derive(Clone, Debug)]
+pub struct TextReader {
+    state: Arc<Mutex<TextState>>,
+    page_count: usize,
+}
+
+#[derive(Debug)]
+struct TextState {
+    document: Document,
+    page_ids: Vec<ObjectId>,
+    normalized: HashSet<ObjectId>,
+    direct_resources: HashMap<ObjectId, ObjectId>,
+}
+
+impl TextReader {
+    pub fn text(&self, page: usize) -> Result<String> {
+        validate_page_index(page, self.page_count)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| PdfMasterError::Malformed("text snapshot lock is unavailable".into()))?;
+        state.normalize_page(page)?;
+        state
+            .document
+            .extract_text_with_limit(&[(page + 1) as u32], MAX_DECOMPRESSED_TEXT_BYTES)
+            .map_err(|error| PdfMasterError::Malformed(error.to_string()))
+    }
+}
+
+impl TextState {
+    fn normalize_page(&mut self, index: usize) -> Result<()> {
+        let id = self.page_ids[index];
+        if self.normalized.contains(&id) {
+            return Ok(());
+        }
+        let mut owner = id;
+        let mut seen = HashSet::new();
+        let mut selected = None;
+        for _ in 0..64 {
+            if !seen.insert(owner) {
+                return Err(PdfMasterError::Malformed(
+                    "text resource inheritance cycle".into(),
+                ));
+            }
+            let dictionary = self
+                .document
+                .get_object(owner)
+                .and_then(Object::as_dict)
+                .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+            let resources = dictionary.get(b"Resources").ok().cloned();
+            let parent = dictionary.get(b"Parent").ok().cloned();
+            if let Some(resources) = resources {
+                let resolved = dereference(&self.document, &resources)?;
+                if !matches!(resolved, Object::Null) {
+                    resolved
+                        .as_dict()
+                        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+                    let resource_id = if let Object::Reference(id) = resources {
+                        id
+                    } else if let Some(id) = self.direct_resources.get(&owner) {
+                        *id
+                    } else {
+                        self.document
+                            .max_id
+                            .checked_add(1)
+                            .ok_or(PdfMasterError::Budget("text normalization object IDs"))?;
+                        let id = self.document.add_object(resources);
+                        self.direct_resources.insert(owner, id);
+                        id
+                    };
+                    selected = Some(Object::Reference(resource_id));
+                    break;
+                }
+            }
+            match parent {
+                Some(parent) if !matches!(dereference(&self.document, &parent)?, Object::Null) => {
+                    owner = parent
+                        .as_reference()
+                        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+                }
+                _ => {
+                    selected = Some(Object::Dictionary(Dictionary::new()));
+                    break;
+                }
+            }
+        }
+        let selected = selected.ok_or_else(|| {
+            PdfMasterError::Malformed("text resource inheritance depth exceeded".into())
+        })?;
+        let page = self
+            .document
+            .get_object_mut(id)
+            .and_then(Object::as_dict_mut)
+            .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+        page.set("Resources", selected);
+        // lopdf merges ancestor fonts, but PDF Resources inherits as a whole.
+        // Only this never-saved snapshot is modified; Kids traversal is unchanged.
+        page.remove(b"Parent");
+        self.normalized.insert(id);
+        Ok(())
+    }
 }
 
 impl Session {
@@ -150,6 +257,7 @@ impl Session {
             saved_bytes: bytes.to_vec(),
             undo: Vec::new(),
             redo: Vec::new(),
+            text_cache: OnceLock::new(),
         })
     }
 
@@ -205,6 +313,10 @@ impl Session {
     pub fn apply(&mut self, edit: Edit) -> Result<()> {
         let mut candidate = self.document.clone();
         apply_edit(&mut candidate, &self.pages, edit)?;
+        self.commit_document(candidate)
+    }
+
+    pub(crate) fn commit_document(&mut self, candidate: Document) -> Result<()> {
         let bytes = serialize(&candidate)?;
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(PdfMasterError::Budget("serialized document size"));
@@ -216,6 +328,7 @@ impl Session {
         self.document = candidate;
         self.current_bytes = bytes;
         self.pages = pages;
+        self.text_cache.take();
         Ok(())
     }
 
@@ -227,6 +340,7 @@ impl Session {
         self.document = document;
         self.current_bytes = bytes;
         self.pages = pages;
+        self.text_cache.take();
         Ok(())
     }
 
@@ -238,6 +352,7 @@ impl Session {
         self.document = document;
         self.current_bytes = bytes;
         self.pages = pages;
+        self.text_cache.take();
         Ok(())
     }
 
@@ -251,9 +366,25 @@ impl Session {
 
     pub fn text(&self, page: usize) -> Result<String> {
         validate_page_index(page, self.pages.len())?;
-        self.document
-            .extract_text_with_limit(&[(page + 1) as u32], MAX_DECOMPRESSED_TEXT_BYTES)
-            .map_err(|error| PdfMasterError::Malformed(error.to_string()))
+        self.text_reader()?.text(page)
+    }
+
+    pub fn text_reader(&self) -> Result<TextReader> {
+        if let Some(reader) = self.text_cache.get() {
+            return Ok(reader.clone());
+        }
+        let ids = page_object_ids(&self.document)?;
+        let reader = TextReader {
+            page_count: ids.len(),
+            state: Arc::new(Mutex::new(TextState {
+                document: self.document.clone(),
+                page_ids: ids,
+                normalized: HashSet::new(),
+                direct_resources: HashMap::new(),
+            })),
+        };
+        let _ = self.text_cache.set(reader.clone());
+        Ok(self.text_cache.get().cloned().unwrap_or(reader))
     }
 }
 
@@ -684,4 +815,48 @@ fn history_bytes(first: &[Vec<u8>], second: &[Vec<u8>]) -> usize {
         .iter()
         .chain(second)
         .fold(0usize, |total, bytes| total.saturating_add(bytes.len()))
+}
+
+#[cfg(test)]
+mod text_reader_tests {
+    use super::*;
+    #[test]
+    fn text_snapshot_is_cached_per_successful_document_revision() {
+        let mut session = Session::blank(100., 100., 1).unwrap();
+        let first = session.text_reader().unwrap();
+        session.text(0).unwrap();
+        let second = session.text_reader().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first.state, &second.state));
+        assert!(session.apply(Edit::DeletePage { page: 2 }).is_err());
+        session.mark_saved();
+        assert!(std::sync::Arc::ptr_eq(
+            &first.state,
+            &session.text_reader().unwrap().state
+        ));
+        session
+            .apply(Edit::Rotate {
+                page: 0,
+                degrees: 90,
+            })
+            .unwrap();
+        let edited = session.text_reader().unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first.state, &edited.state));
+        session.undo().unwrap();
+        let undone = session.text_reader().unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&edited.state, &undone.state));
+        session.redo().unwrap();
+        assert!(!std::sync::Arc::ptr_eq(
+            &undone.state,
+            &session.text_reader().unwrap().state
+        ));
+        assert_eq!(first.text(0).unwrap(), "");
+    }
+    #[test]
+    fn exhausted_object_counter_cannot_panic_during_read_only_normalization() {
+        let mut session = Session::blank(100., 100., 1).unwrap();
+        session.document.max_id = u32::MAX;
+        let before = session.bytes().unwrap();
+        assert!(session.text(0).is_err());
+        assert_eq!(session.bytes().unwrap(), before);
+    }
 }

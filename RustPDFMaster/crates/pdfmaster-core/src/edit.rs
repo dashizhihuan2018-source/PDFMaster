@@ -437,7 +437,7 @@ fn root_pages_id(document: &Document) -> Result<ObjectId> {
         .map_err(|error| PdfMasterError::Malformed(error.to_string()))
 }
 
-fn flatten_page_tree(document: &mut Document, ids: &[ObjectId]) -> Result<()> {
+pub(crate) fn flatten_page_tree(document: &mut Document, ids: &[ObjectId]) -> Result<()> {
     let root = root_pages_id(document)?;
     materialize_page_attributes(document, ids)?;
     for id in ids {

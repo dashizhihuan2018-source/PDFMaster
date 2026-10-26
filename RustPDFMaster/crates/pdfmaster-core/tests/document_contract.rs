@@ -80,6 +80,121 @@ fn save(mut doc: Document) -> Vec<u8> {
     output
 }
 
+#[test]
+fn text_resolves_direct_and_indirect_inherited_font_resources_read_only() {
+    for indirect in [false, true] {
+        let mut doc =
+            Document::load_mem(&fixture_pdf(&[(120., 80.)], Some("inherited-font"))).unwrap();
+        let page_id = doc.get_pages()[&1];
+        let page = doc.get_object_mut(page_id).unwrap().as_dict_mut().unwrap();
+        let parent = page.get(b"Parent").unwrap().as_reference().unwrap();
+        let resources = page.remove(b"Resources").unwrap();
+        let resources = if indirect {
+            Object::Reference(doc.add_object(resources))
+        } else {
+            resources
+        };
+        doc.get_object_mut(parent)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("Resources", resources);
+        let source = save(doc);
+        let session = Session::open(&source).unwrap();
+        let info = session.info();
+        assert!(session.text(0).unwrap().contains("inherited-font-0"));
+        assert_eq!(session.bytes().unwrap(), source);
+        assert_eq!(session.info(), info);
+    }
+}
+
+#[test]
+fn text_does_not_merge_fonts_from_overridden_ancestor_resources() {
+    let mut doc =
+        Document::load_mem(&fixture_pdf(&[(120., 80.)], Some("not-valid-without-font"))).unwrap();
+    let page_id = doc.get_pages()[&1];
+    let page = doc.get_object_mut(page_id).unwrap().as_dict_mut().unwrap();
+    let parent = page.get(b"Parent").unwrap().as_reference().unwrap();
+    let resources = page.remove(b"Resources").unwrap();
+    page.set("Resources", Dictionary::new());
+    let resources_id = doc.add_object(resources);
+    doc.get_object_mut(parent)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("Resources", resources_id);
+    let source = save(doc);
+    let session = Session::open(&source).unwrap();
+    let result = session.text(0);
+    assert!(
+        result.is_err() || !result.unwrap().contains("not-valid-without-font"),
+        "local Resources replaces the entire inherited dictionary"
+    );
+    assert_eq!(session.bytes().unwrap(), source);
+}
+
+#[test]
+fn reusable_text_reader_is_an_immutable_snapshot_and_preserves_page_selection() {
+    let mut session =
+        Session::open(&fixture_pdf(&[(120., 80.), (120., 80.)], Some("snapshot"))).unwrap();
+    let reader = session.text_reader().unwrap();
+    session.apply(Edit::DeletePage { page: 0 }).unwrap();
+    assert!(reader.text(0).unwrap().contains("snapshot-0"));
+    assert!(reader.text(1).unwrap().contains("snapshot-1"));
+    assert!(reader.text(2).is_err());
+    assert!(session.text(0).unwrap().contains("snapshot-1"));
+}
+
+#[test]
+fn text_treats_direct_and_indirect_null_resources_as_absent_not_empty() {
+    for indirect in [false, true] {
+        let mut doc =
+            Document::load_mem(&fixture_pdf(&[(120., 80.)], Some("null-inheritance"))).unwrap();
+        let id = doc.get_pages()[&1];
+        let page = doc.get_object_mut(id).unwrap().as_dict_mut().unwrap();
+        let parent = page.get(b"Parent").unwrap().as_reference().unwrap();
+        let resources = page.remove(b"Resources").unwrap();
+        let absent = if indirect {
+            Object::Reference(doc.add_object(Object::Null))
+        } else {
+            Object::Null
+        };
+        doc.get_object_mut(id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("Resources", absent);
+        doc.get_object_mut(parent)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("Resources", resources);
+        let session = Session::open(&save(doc)).unwrap();
+        assert!(session.text(0).unwrap().contains("null-inheritance"));
+    }
+}
+
+#[test]
+fn text_reader_does_not_couple_valid_pages_to_other_pages_bad_resources() {
+    let mut doc = Document::load_mem(&fixture_pdf(
+        &[(120., 80.), (120., 80.)],
+        Some("valid-page"),
+    ))
+    .unwrap();
+    let second = doc.get_pages()[&2];
+    doc.get_object_mut(second)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("Resources", 42);
+    let session = Session::open(&save(doc)).unwrap();
+    assert!(session.text(0).unwrap().contains("valid-page-0"));
+    let reader = session.text_reader().unwrap();
+    assert!(reader.text(0).unwrap().contains("valid-page-0"));
+    assert!(reader.text(1).is_err());
+    assert!(reader.text(0).unwrap().contains("valid-page-0"));
+}
+
 fn nested_inherited_fixture() -> Vec<u8> {
     let mut doc = Document::with_version("1.7");
     let root_pages = doc.new_object_id();
