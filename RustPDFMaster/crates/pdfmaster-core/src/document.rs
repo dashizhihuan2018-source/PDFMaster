@@ -75,6 +75,13 @@ pub struct Color {
     pub b: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeKind {
+    Rectangle,
+    Ellipse,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Edit {
@@ -117,6 +124,14 @@ pub enum Edit {
         bounds: Rect,
         contents: String,
         color: Color,
+    },
+    AddShape {
+        page: usize,
+        bounds: Rect,
+        shape: ShapeKind,
+        stroke: Color,
+        fill: Option<Color>,
+        line_width: f32,
     },
     UpdateNote {
         page: usize,

@@ -131,6 +131,32 @@ fn read_insertion_files(paths: &[std::path::PathBuf]) -> Reply<Vec<Vec<u8>>> {
 mod workspace_tests {
     use super::*;
     #[test]
+    fn shape_edits_use_shared_journal_history_and_editor_reservation_guards() {
+        let (mut w, directory) = note_workspace();
+        w.checkpoint().unwrap();
+        let request = serde_json::json!({"kind":"add_shape","page":0,"shape":"rectangle","bounds":{"x":10.,"y":10.,"width":50.,"height":40.},"stroke":{"r":0.,"g":0.,"b":1.},"fill":null,"line_width":2.});
+        let edit: Edit = serde_json::from_value(request).unwrap();
+        let original = w.session.as_ref().unwrap().bytes().unwrap();
+        let reservation = w.begin_insertion(1).unwrap();
+        assert!(apply_single_edit(&mut w, edit.clone()).is_err());
+        w.release_export(reservation);
+        let view = apply_single_edit(&mut w, edit).unwrap();
+        assert!(view.info.dirty);
+        assert!(view.warning.is_none());
+        assert_eq!(
+            w.session
+                .as_ref()
+                .unwrap()
+                .notes(0)
+                .unwrap()
+                .unsupported_count,
+            1
+        );
+        assert!(directory.path().join("draft.json").is_file());
+        w.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), original);
+    }
+    #[test]
     fn batch_insertion_checkpoints_once_and_keeps_late_failure_atomic() {
         let (mut w, directory) = note_workspace();
         w.checkpoint().unwrap();

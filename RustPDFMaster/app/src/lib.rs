@@ -5,6 +5,77 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
     current.saturating_add_signed(delta as isize).min(count - 1)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn shape_edit(
+    page: usize,
+    width: f32,
+    height: f32,
+    shape: &str,
+    bounds: &str,
+    stroke: &str,
+    fill: &str,
+    line: &str,
+) -> Result<serde_json::Value, String> {
+    if !matches!(shape, "rectangle" | "ellipse")
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.
+        || height <= 0.
+        || width > 20_000.
+        || height > 20_000.
+    {
+        return Err("图形类型或页面尺寸无效。".into());
+    }
+    if [bounds, stroke, fill, line]
+        .iter()
+        .any(|value| value.len() > 256)
+    {
+        return Err("图形输入过长，未修改文档。".into());
+    }
+    let values = bounds
+        .split(',')
+        .map(|value| value.trim().parse::<f32>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "图形范围须为 x,y,宽,高，单位 pt。")?;
+    let [x, y, w, h] = values.as_slice() else {
+        return Err("图形范围需要四个逗号分隔的数值。".into());
+    };
+    if values.iter().any(|value| !value.is_finite())
+        || *x < 0.
+        || *y < 0.
+        || *w <= 0.
+        || *h <= 0.
+        || x + w > width
+        || y + h > height
+    {
+        return Err("图形须完整位于页面内，宽高必须为正数。".into());
+    }
+    let line = line.trim().parse::<f32>().map_err(|_| "请输入有效线宽。")?;
+    if !line.is_finite() || line <= 0. || line >= w.min(*h) {
+        return Err("线宽必须为正数且小于图形的宽和高。".into());
+    }
+    let parse_color = |value: &str| -> Result<serde_json::Value, String> {
+        let value = value.trim();
+        let hex = value
+            .strip_prefix('#')
+            .filter(|value| value.len() == 6 && value.bytes().all(|v| v.is_ascii_hexdigit()))
+            .ok_or("颜色须为 #RRGGBB，填充留空表示透明。")?;
+        let value = u32::from_str_radix(hex, 16).map_err(|_| "颜色无效。")?;
+        Ok(
+            serde_json::json!({"r":((value>>16)&255) as f32/255.,"g":((value>>8)&255) as f32/255.,"b":(value&255) as f32/255.}),
+        )
+    };
+    let stroke = parse_color(stroke)?;
+    let fill = if fill.trim().is_empty() {
+        serde_json::Value::Null
+    } else {
+        parse_color(fill)?
+    };
+    Ok(
+        serde_json::json!({"kind":"add_shape","page":page,"shape":shape,"bounds":{"x":x,"y":y,"width":w,"height":h},"stroke":stroke,"fill":fill,"line_width":line}),
+    )
+}
+
 /// A page move has a destination only for an existing adjacent page. Return
 /// its new index as well so selection follows the moved page, not its neighbor.
 pub fn page_move_edit(
@@ -256,6 +327,136 @@ pub fn raster_plan(width: f32, height: f32, rotation: i32, zoom: f32, density: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shape_request_uses_source_geometry_and_full_rgb_style() {
+        let edit = super::shape_edit(
+            3,
+            200.,
+            120.,
+            "ellipse",
+            "20, 20, 100, 60",
+            "#fF0000",
+            "#0000ff",
+            "4",
+        )
+        .unwrap();
+        assert_eq!(edit["kind"], "add_shape");
+        assert_eq!(edit["shape"], "ellipse");
+        assert_eq!(edit["page"], 3);
+        assert_eq!(edit["bounds"]["width"], 100.);
+        assert_eq!(edit["stroke"]["r"], 1.);
+        assert_eq!(edit["fill"]["b"], 1.);
+        let edit = super::shape_edit(0, 200., 120., "rectangle", "0,0,100,60", "#123456", "", "1")
+            .unwrap();
+        assert!(edit["fill"].is_null());
+    }
+    #[test]
+    fn shape_request_rejects_bad_geometry_style_and_unbounded_inputs() {
+        for bounds in [
+            "",
+            "1,2,3",
+            "1,2,3,4,5",
+            "NaN,0,10,10",
+            "0,0,inf,10",
+            "-1,0,10,10",
+            "190,0,20,10",
+        ] {
+            assert!(
+                super::shape_edit(0, 200., 120., "rectangle", bounds, "#000000", "", "1").is_err()
+            );
+        }
+        for line in ["NaN", "inf", "0", "-1", "60"] {
+            assert!(
+                super::shape_edit(
+                    0,
+                    200.,
+                    120.,
+                    "rectangle",
+                    "20,20,100,60",
+                    "#000000",
+                    "",
+                    line
+                )
+                .is_err()
+            );
+        }
+        for color in ["red", "#abc", "#12345678", "123456", "#zz1122"] {
+            assert!(
+                super::shape_edit(0, 200., 120., "rectangle", "20,20,100,60", color, "", "1")
+                    .is_err()
+            );
+            assert!(
+                super::shape_edit(
+                    0,
+                    200.,
+                    120.,
+                    "rectangle",
+                    "20,20,100,60",
+                    "#000000",
+                    color,
+                    "1"
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            super::shape_edit(
+                0,
+                f32::NAN,
+                120.,
+                "rectangle",
+                "20,20,100,60",
+                "#000000",
+                "",
+                "1"
+            )
+            .is_err()
+        );
+        assert!(
+            super::shape_edit(
+                0,
+                200.,
+                120.,
+                "triangle",
+                "20,20,100,60",
+                "#000000",
+                "",
+                "1"
+            )
+            .is_err()
+        );
+        assert!(
+            super::shape_edit(
+                0,
+                200.,
+                120.,
+                "ellipse",
+                &"0".repeat(1000),
+                "#000000",
+                "",
+                "1"
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn workspace_exposes_explicit_shape_inputs_and_both_shapes() {
+        let source = include_str!("workspace.rs");
+        for label in [
+            "图形范围 x,y,宽,高",
+            "图形描边颜色",
+            "图形填充颜色",
+            "图形线宽",
+            "添加矩形批注",
+            "添加椭圆批注",
+        ] {
+            assert!(source.contains(label), "missing {label}");
+        }
+        assert!(source.contains("m.add_shape(\"rectangle\")"));
+        assert!(source.contains("m.add_shape(\"ellipse\")"));
+        assert!(source.contains("其他类型批注未列入便笺列表"));
+        assert!(!source.contains("其他类型批注尚不支持显示"));
+    }
     #[test]
     fn batch_insertion_ui_preserves_single_entry_and_exposes_one_transaction_status() {
         let source = include_str!("workspace.rs");

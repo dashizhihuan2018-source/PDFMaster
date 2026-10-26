@@ -4,8 +4,8 @@ use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::{
     RasterPlan, adjacent_page, command_status_message, fit_width_zoom, note_edit, page_batch_args,
     page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
-    search_conditions_message, search_response_is_current, search_status_message, step_zoom,
-    update_note_edit, visible_status,
+    search_conditions_message, search_response_is_current, search_status_message, shape_edit,
+    step_zoom, update_note_edit, visible_status,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -112,6 +112,10 @@ struct Model {
     search_result: RwSignal<Option<SearchResponse>>,
     page_jump: RwSignal<String>,
     page_range: RwSignal<String>,
+    shape_bounds: RwSignal<String>,
+    shape_stroke: RwSignal<String>,
+    shape_fill: RwSignal<String>,
+    shape_line: RwSignal<String>,
 }
 
 impl Model {
@@ -422,6 +426,34 @@ impl Model {
             .unwrap_or((595., 842.));
         self.edit(json!({"kind":"add_text","page":self.page.get_untracked(),"bounds":{"x":36.,"y":height*0.5,"width":(width-72.).max(20.),"height":60.},"text":text,"font_size":18.,"color":{"r":0.1,"g":0.1,"b":0.1}}));
     }
+    fn add_shape(self, shape: &'static str) {
+        if self.blocked() {
+            return;
+        }
+        let page = self.page.get_untracked();
+        let edit = self.document.with_untracked(|document| {
+            document
+                .as_ref()
+                .and_then(|d| d.info.pages.get(page))
+                .map(|info| {
+                    shape_edit(
+                        page,
+                        info.width,
+                        info.height,
+                        shape,
+                        &self.shape_bounds.get_untracked(),
+                        &self.shape_stroke.get_untracked(),
+                        &self.shape_fill.get_untracked(),
+                        &self.shape_line.get_untracked(),
+                    )
+                })
+        });
+        match edit {
+            Some(Ok(edit)) => self.edit(edit),
+            Some(Err(error)) => self.message.set(error),
+            None => self.message.set("请先打开 PDF。".into()),
+        }
+    }
     fn add_note(self) {
         if self.blocked() {
             return;
@@ -565,6 +597,10 @@ pub fn Workspace() -> impl IntoView {
         search_result: RwSignal::new(None),
         page_jump: RwSignal::new(String::new()),
         page_range: RwSignal::new(String::new()),
+        shape_bounds: RwSignal::new("36,36,120,80".into()),
+        shape_stroke: RwSignal::new("#4F46E5".into()),
+        shape_fill: RwSignal::new(String::new()),
+        shape_line: RwSignal::new("2".into()),
     };
     m.command("document_info", json!({}));
     view! {
@@ -647,7 +683,7 @@ pub fn Workspace() -> impl IntoView {
                             Some(Err(error)) => view!{<p class="note-error">{format!("无法读取批注：{error}")}</p>}.into_any(),
                             Some(Ok(list)) => view!{
                                 <p class="note-meta">{format!("当前页 {} 条便笺",list.notes.len())}</p>
-                                <p class="note-meta">{if list.unsupported_count>0{format!("另有 {} 条其他类型批注尚不支持显示。",list.unsupported_count)}else{String::new()}}</p>
+                                <p class="note-meta">{if list.unsupported_count>0{format!("另有 {} 条其他类型批注未列入便笺列表；页面外观取决于渲染兼容性。",list.unsupported_count)}else{String::new()}}</p>
                                 {list.notes.into_iter().map(|note| {let edit_note=note.clone();view!{
                                     <article class="note-item"><strong>{format!("便笺 {}",note.annotation_index+1)}</strong><p>{note.contents.clone()}</p><small>{format!("PDF 坐标 {:.0}, {:.0} · {:.0} × {:.0} pt",note.bounds.x,note.bounds.y,note.bounds.width,note.bounds.height)}</small><button disabled=move||m.blocked() on:click=move|_|m.begin_note_edit(edit_note.clone())>"编辑便笺"</button><button class="danger" disabled=move||m.blocked() on:click=move|_|m.delete_note(note.clone())>"删除便笺…"</button></article>
                                 }}).collect_view()}
@@ -667,6 +703,15 @@ pub fn Workspace() -> impl IntoView {
                         <p class="note-meta">"编辑确认未返回时，可恢复当前进程的编辑入口；不会恢复未持久化的输入。"</p>
                     </Show>
                     <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。仅支持受限 Text 便笺；标签、回复线程及歧义弹窗关系暂不编辑或删除。关系检查最多 16384 条。定位和弹窗显示仍在迁移；修改和删除均不是安全擦除。"</p>
+                </div>
+                <div class="tool-group shape-panel"><h3>"图形批注"</h3>
+                    <label class="shape-label">"范围 x,y,宽,高 (pt)"<input aria-label="图形范围 x,y,宽,高" disabled=move||m.blocked() prop:value=move||m.shape_bounds.get() on:input=move|e|m.shape_bounds.set(event_target_value(&e))/></label>
+                    <label class="shape-label">"描边 #RRGGBB"<input aria-label="图形描边颜色" disabled=move||m.blocked() prop:value=move||m.shape_stroke.get() on:input=move|e|m.shape_stroke.set(event_target_value(&e))/></label>
+                    <label class="shape-label">"填充（留空透明）"<input aria-label="图形填充颜色" disabled=move||m.blocked() prop:value=move||m.shape_fill.get() on:input=move|e|m.shape_fill.set(event_target_value(&e))/></label>
+                    <label class="shape-label">"线宽 (pt)"<input aria-label="图形线宽" inputmode="decimal" disabled=move||m.blocked() prop:value=move||m.shape_line.get() on:input=move|e|m.shape_line.set(event_target_value(&e))/></label>
+                    <button disabled=move||m.blocked() on:click=move|_|m.add_shape("rectangle")>"添加矩形批注"</button>
+                    <button disabled=move||m.blocked() on:click=move|_|m.add_shape("ellipse")>"添加椭圆批注"</button>
+                    <p class="shape-label">"原始页面坐标，左下角为原点；旋转页也使用未旋转坐标。保存为独立 PDF 批注，可撤销；拖拽、选中修改和线条／手绘仍在迁移。"</p>
                 </div>
                 <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
             </aside>

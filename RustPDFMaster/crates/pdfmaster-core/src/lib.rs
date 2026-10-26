@@ -7,9 +7,11 @@ mod insert;
 mod notes;
 mod ranges;
 mod render;
+mod shapes;
 
 pub use document::{
-    Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session, TextReader,
+    Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session, ShapeKind,
+    TextReader,
 };
 pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};
 pub use notes::{NoteList, TextNote};

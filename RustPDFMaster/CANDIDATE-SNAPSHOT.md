@@ -1,6 +1,20 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 67ba929d (2026-10-26)
+## Current snapshot: development c5a9ab1d (2026-10-26)
+
+Exactly **119 tracked Rust/workflow files** from development `c5a9ab1dc9fb7270d073a833c083135207e3833c`, plus this manifest. This is incomplete candidate source, not a product Release; older sections below do not certify the current source. Formal installed software and Releases remain unchanged. No private development history, user documents, screenshots, credentials, memory or generated/build files are included.
+
+Rectangle/ellipse creation adds independent PDF Square/Circle annotations with Form appearance streams, opaque RGB stroke/optional fill and explicit line width. Numeric bounds use unrotated source-page coordinates with a bottom-left origin, including rotated pages. Invalid edits preserve document bytes/history/redo; shared annotation membership is copied without modifying existing contents/resources. Save/reopen and extraction/insertion preserve appearances and page backlinks. Line width must be positive and strictly smaller than both shape dimensions. Dragging, selection/update/delete, alpha styles, lines/arrows and ink remain incomplete. The shared note validator currently rejects some otherwise valid existing off-page/zero-area annotations or non-RGB Text-note colors; this known compatibility gap is documented and tested, not called invalid PDF input.
+
+Local verification: **153 core, 36 UI, 66 native +4 security, 29 tools** passed; three-workspace fmt and core/host/WASM/iOS-simulator Clippy passed. A read-only reviewer inspected the actual working tree and independently ran seven shape contracts; no Critical/Important issue was found for this bounded slice. Its Minor compatibility note is explicitly disclosed and covered by an eighth regression contract. The later UI copy correction has a failure-first source-wiring test; static wiring checks are not GUI acceptance.
+
+Mac GUI created a red-stroke blue-fill rectangle and an unfilled green ellipse, undid only the ellipse, rejected zero line width without consuming redo, redid, exported/read back a new 1217-byte PDF and reopened both shapes with fresh history. Independent Poppler rendered both correctly; the output SHA-256 stayed `47933868d59fafa902faf5228e56286a472dbdde6bdebc1b3696477bd6168751`. Initial runtime binary was `b8dd217dd340b3d92dc18fa11575cc4d2b85a579da515be378afbc1bcb7501c9`; after the note-sidebar wording fix, the final arm64 binary `023c757391003346a541b744b222accd22f6b6636bccdfa7f955d5294ec19353` reopened the same PDF, rendered both shapes and showed the corrected wording. Both were normally quit; five bundled notices match. One save action was stopped by a UI binding-change warning; re-querying/rebinding the same bundle ID completed it with unchanged process path/hash, without claiming a crash or its cause.
+
+The new iOS simulator archive built (arm64/IOSSIMULATOR/min16/SDK27), binary SHA-256 `81df6bbf2586fc78f7cf383f53f41c1ad05fc31718b33ebd2288900f0e0c666e`; its five notices match. This new shape archive was not installed/run. Previous batch-insertion runtime evidence is not shape acceptance. Hosted run `40283157308` remains on preceding public `d47dad0b6b9ff4b6333b99066aa8870bbbf84f3e`; at observation Mac was building its iOS archive and Windows verifying workspaces. No replacement run is dispatched while it is live. Neither it nor earlier successful run `40277738310` certifies this new source.
+
+Inventory: **24 partial /46 unsupported /0 complete**, with 801 legacy rows pending. Complete replica, actual Windows install/runtime, physical iOS, signing/notarization, formal three-platform publication and final Rustall skill/public skill delivery remain unfinished.
+
+## Historical snapshot: development 67ba929d (superseded)
 
 Exactly **117 tracked Rust/workflow files** from development `67ba929de7660ee379f2c8077569abf02451299e`, plus this manifest. Older sections below are historical. Incomplete candidate source only; formal installed software and Releases remain unchanged. No private development history, documents, screenshots, credentials, memory or generated/build files are included.
 

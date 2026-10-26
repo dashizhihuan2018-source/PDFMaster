@@ -38,6 +38,16 @@ pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit
             contents,
             color,
         } => add_note(document, pages, page, bounds, &contents, color),
+        Edit::AddShape {
+            page,
+            bounds,
+            shape,
+            stroke,
+            fill,
+            line_width,
+        } => crate::shapes::add_shape(
+            document, pages, page, bounds, shape, stroke, fill, line_width,
+        ),
         Edit::UpdateNote {
             page,
             annotation_index,
@@ -389,7 +399,7 @@ fn add_note(
     validate_notes_page(document, page_id, &pages[page])
 }
 
-fn validate_rect(bounds: Rect, page: &PageInfo) -> Result<()> {
+pub(crate) fn validate_rect(bounds: Rect, page: &PageInfo) -> Result<()> {
     if !bounds.x.is_finite()
         || !bounds.y.is_finite()
         || !bounds.width.is_finite()
@@ -417,7 +427,7 @@ fn reject_rotated_edit(page: &PageInfo) -> Result<()> {
     Ok(())
 }
 
-fn validate_color(color: Color) -> Result<()> {
+pub(crate) fn validate_color(color: Color) -> Result<()> {
     if [color.r, color.g, color.b]
         .into_iter()
         .any(|component| !component.is_finite() || !(0.0..=1.0).contains(&component))
