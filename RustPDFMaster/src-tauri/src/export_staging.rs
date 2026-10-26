@@ -1,8 +1,18 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "ios", test))]
+use std::path::PathBuf;
 use std::{fs::File, io::Read};
 
 /// Only called for a native picker/coordinator URL; never takes a web path.
 pub fn readback_pdf(path: &Path) -> Result<Vec<u8>, String> {
+    // Windows refuses File::open on a directory before handle metadata can be
+    // inspected. Classify it consistently, then recheck the opened handle to
+    // avoid trusting only this path-based preflight.
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("无法检查导出回读文件（{:?}）", error.kind()))?;
+    if !metadata.is_file() {
+        return Err("导出提供器返回的不是普通文件；未保存状态仍保留。".into());
+    }
     let file =
         File::open(path).map_err(|error| format!("无法打开导出回读文件（{:?}）", error.kind()))?;
     let metadata = file
@@ -25,11 +35,13 @@ pub fn readback_pdf(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 /// Holds the complete export payload alive until the native picker completes.
+#[cfg(any(target_os = "ios", test))]
 pub struct PreparedExport {
     _directory: tempfile::TempDir,
     pub path: PathBuf,
 }
 
+#[cfg(any(target_os = "ios", test))]
 impl PreparedExport {
     pub fn new(cache: &Path, name: &str, bytes: &[u8]) -> Result<Self, String> {
         if bytes.is_empty() || bytes.len() > 32 * 1024 * 1024 {
@@ -52,6 +64,7 @@ impl PreparedExport {
     }
 }
 
+#[cfg(any(target_os = "ios", test))]
 pub fn verify_completion(
     completed: bool,
     readback: Option<&[u8]>,

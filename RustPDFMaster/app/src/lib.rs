@@ -90,6 +90,12 @@ pub fn valid_zoom(zoom: f32) -> f32 {
 pub fn command_status_message(command: &str, restored: bool, warning: Option<&str>) -> String {
     if let Some(warning) = warning {
         warning.to_owned()
+    } else if command == "extract_pages_document" {
+        if restored {
+            "页面已提取并回读验证；恢复的原文草稿仍未保存，请另行导出完整副本。".into()
+        } else {
+            "页面已提取并回读验证；原文与未保存状态保持不变。".into()
+        }
     } else if restored {
         "已恢复上次未保存的本地草稿，请导出副本。".into()
     } else if command == "export_document" {
@@ -246,6 +252,26 @@ pub fn raster_plan(width: f32, height: f32, rotation: i32, zoom: f32, density: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extraction_ui_uses_native_range_command_and_never_claims_source_saved() {
+        let source = include_str!("workspace.rs");
+        assert!(source.contains(
+            "m.command(\"extract_pages_document\",json!({\"range\":m.page_range.get_untracked()}))"
+        ));
+        assert!(source.contains("提取页面到新 PDF"));
+        assert_eq!(
+            super::command_status_message("extract_pages_document", false, None),
+            "页面已提取并回读验证；原文与未保存状态保持不变。"
+        );
+        assert_eq!(
+            super::command_status_message("extract_pages_document", true, None),
+            "页面已提取并回读验证；恢复的原文草稿仍未保存，请另行导出完整副本。"
+        );
+        assert_eq!(
+            super::command_status_message("extract_pages_document", true, Some("恢复警告")),
+            "恢复警告"
+        );
+    }
     use super::*;
     #[test]
     fn note_update_preserves_snapshot_identity_and_unicode_without_trimming() {

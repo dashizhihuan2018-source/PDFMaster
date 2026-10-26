@@ -1,4 +1,3 @@
-#[cfg(any(target_os = "ios", test))]
 mod export_staging;
 #[cfg(target_os = "ios")]
 mod ios_export;
@@ -95,6 +94,79 @@ fn workspace_notes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core::
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+    #[test]
+    fn extraction_exports_a_new_document_without_acknowledging_source_or_recovery() {
+        let (mut w, directory) = note_workspace();
+        w.name = "测试原文.pdf".into();
+        w.session
+            .as_mut()
+            .unwrap()
+            .apply(Edit::InsertBlank {
+                index: 1,
+                width: 100.,
+                height: 100.,
+            })
+            .unwrap();
+        w.checkpoint().unwrap();
+        w.restored = true;
+        w.recovery_fault = true;
+        w.recovery_warning = Some("保留恢复警告".into());
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        let journal = std::fs::read(directory.path().join("draft.json")).unwrap();
+        let (id, name, bytes) = w.begin_extraction("2").unwrap();
+        assert_eq!(name, "测试原文-提取页面.pdf");
+        assert_eq!(Session::open(&bytes).unwrap().info().page_count, 1);
+        assert!(w.begin_export().is_err());
+        assert!(w.begin_extraction("1").is_err());
+        assert!(w.clean().is_err());
+        let view = w.finish_extraction(id).unwrap();
+        assert!(view.info.dirty);
+        assert!(view.restored);
+        assert_eq!(view.warning.as_deref(), Some("保留恢复警告"));
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+        assert_eq!(
+            std::fs::read(directory.path().join("draft.json")).unwrap(),
+            journal
+        );
+        assert!(w.export_reservation.is_none());
+        assert!(w.has_unsaved_work());
+    }
+
+    #[test]
+    fn extraction_cancel_invalid_range_and_stale_completion_preserve_source() {
+        let (w, _directory) = note_workspace();
+        let store = Mutex::new(w);
+        let before = store
+            .lock()
+            .unwrap()
+            .session
+            .as_ref()
+            .unwrap()
+            .bytes()
+            .unwrap();
+        assert!(store.lock().unwrap().begin_extraction("0").is_err());
+        assert!(store.lock().unwrap().export_reservation.is_none());
+        let (first, _, _) = store.lock().unwrap().begin_extraction("1").unwrap();
+        {
+            let _scope = ExportReservation {
+                store: &store,
+                id: first,
+            };
+        }
+        assert!(!store.lock().unwrap().has_unsaved_work());
+        let mut w = store.lock().unwrap();
+        let (second, _, _) = w.begin_extraction("1").unwrap();
+        assert!(w.finish_extraction(first).is_err());
+        assert_eq!(w.export_reservation, Some(second));
+        let view = w.finish_extraction(second).unwrap();
+        assert!(!view.info.dirty);
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        assert!(w.begin_extraction("1").is_err());
+        assert_eq!(w.note_editor.as_ref().unwrap().id, editor.id);
+    }
     #[test]
     fn exhausted_document_epoch_never_replaces_the_current_session() {
         let (mut w, _directory) = note_workspace();
@@ -635,7 +707,7 @@ mod workspace_tests {
     }
     #[test]
     fn search_command_wire_contract_is_explicitly_snake_case() {
-        let source = include_str!("lib.rs");
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
         assert!(
             source.contains(
                 "#[tauri::command(rename_all = \"snake_case\")]\nasync fn search_document"
@@ -644,7 +716,7 @@ mod workspace_tests {
     }
     #[test]
     fn page_batch_command_wire_contract_is_explicitly_snake_case() {
-        let source = include_str!("lib.rs");
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
         assert!(
             source.contains("#[tauri::command(rename_all = \"snake_case\")]\nasync fn batch_pages")
         );
@@ -857,6 +929,38 @@ impl Workspace {
         if self.export_reservation == Some(id) {
             self.export_reservation = None;
         }
+    }
+    fn begin_extraction(&mut self, range: &str) -> Reply<(u32, String, Vec<u8>)> {
+        self.ensure_editor_idle()?;
+        let session = self.session.as_ref().ok_or("请先打开 PDF")?;
+        let pages = PageRange::parse(range, session.info().page_count)
+            .map_err(|error| format!("页码范围无效：{error}"))?;
+        let bytes = session
+            .extract_pages(&pages)
+            .map_err(|error| error.to_string())?;
+        let id = self
+            .next_export_id
+            .checked_add(1)
+            .ok_or("导出会话编号已耗尽，请先安全保存并重启应用。")?;
+        let name = format!(
+            "{}-提取页面.pdf",
+            Path::new(&self.name)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+        self.next_export_id = id;
+        self.export_reservation = Some(id);
+        Ok((id, name, bytes))
+    }
+    fn finish_extraction(&mut self, id: u32) -> Reply<DocumentView> {
+        if self.export_reservation != Some(id) {
+            return Err("提取会话已改变，不能确认本次导出。".into());
+        }
+        // Derived exports never mark the source saved or checkpoint a clean
+        // journal, even when every page was selected.
+        self.release_export(id);
+        self.view()
     }
     fn finish_reserved_export(&mut self, id: u32, bytes: &[u8]) -> Reply<DocumentView> {
         if self.export_reservation != Some(id) {
@@ -1404,29 +1508,8 @@ async fn export_document(
             .unwrap_or_default()
             .to_string_lossy()
     );
-    // Validate the complete snapshot before either platform publishes it.
-    Session::open(&bytes).map_err(|e| e.to_string())?;
-    #[cfg(target_os = "ios")]
-    if !ios_export::export(&app, &copy_name, &bytes).await? {
+    if !publish_pdf_copy(&app, &copy_name, &bytes).await? {
         return Ok(None);
-    }
-    #[cfg(not(target_os = "ios"))]
-    {
-        let Some(target) = app
-            .dialog()
-            .file()
-            .set_file_name(&copy_name)
-            .add_filter("PDF 文档", &["pdf"])
-            .blocking_save_file()
-        else {
-            return Ok(None);
-        };
-        let target = target.into_path().map_err(|_| "不能访问导出位置")?;
-        // Parse before publishing; persist no-clobber, read back exact bytes, then update dirty state.
-        storage::export_new(&target, &bytes).map_err(|e| e.to_string())?;
-        if std::fs::read(&target).map_err(|e| e.to_string())? != bytes {
-            return Err("导出回读不一致，文档仍保留未保存状态。".into());
-        }
     }
     let view = {
         let mut w = state.lock().map_err(|_| "文档状态不可用")?;
@@ -1434,6 +1517,60 @@ async fn export_document(
     };
     drop(reservation);
     Ok(Some(view))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn extract_pages_document(
+    app: tauri::AppHandle,
+    state: State<'_, Store>,
+    range: String,
+) -> Reply<Option<DocumentView>> {
+    let (id, name, bytes) = {
+        let mut w = state.lock().map_err(|_| "文档状态不可用")?;
+        w.begin_extraction(&range)?
+    };
+    let reservation = ExportReservation {
+        store: state.inner(),
+        id,
+    };
+    if !publish_pdf_copy(&app, &name, &bytes).await? {
+        return Ok(None);
+    }
+    let view = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .finish_extraction(id)?;
+    drop(reservation);
+    Ok(Some(view))
+}
+
+async fn publish_pdf_copy(app: &tauri::AppHandle, copy_name: &str, bytes: &[u8]) -> Reply<bool> {
+    // Validate before either platform publishes; use the same picker/provider
+    // and exact bounded readback for full exports and derived extraction.
+    Session::open(bytes).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "ios")]
+    if !ios_export::export(app, copy_name, bytes).await? {
+        return Ok(false);
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let Some(target) = app
+            .dialog()
+            .file()
+            .set_file_name(copy_name)
+            .add_filter("PDF 文档", &["pdf"])
+            .blocking_save_file()
+        else {
+            return Ok(false);
+        };
+        let target = target.into_path().map_err(|_| "不能访问导出位置")?;
+        // Parse before publishing; persist no-clobber, read back exact bytes, then update dirty state.
+        storage::export_new(&target, bytes).map_err(|e| e.to_string())?;
+        if export_staging::readback_pdf(&target)? != bytes {
+            return Err("导出回读不一致，文档仍保留未保存状态。".into());
+        }
+    }
+    Ok(true)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1476,7 +1613,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

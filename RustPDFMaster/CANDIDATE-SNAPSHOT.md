@@ -1,6 +1,18 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development e004fbc9 (2026-10-26)
+## Current snapshot: development b86d9196 (2026-10-26)
+
+The current source is exactly **115 tracked Rust/workflow files** from development `b86d919690e63b6d750f5efd8330a5fafe1b168e`, plus this manifest. Everything under the historical headings below describes older snapshots only. This remains a candidate source import, not a product Release. No private development history, user documents, credentials, memory, generated project or build cache is included; the formal installed application and existing Releases are unchanged.
+
+New page extraction builds a fresh PDF from a one-based UI range in source-page order, preserving selected resources, geometry, notes/Popup cycles and links between selected pages. Legacy and name-tree destinations are resolved using a single bounded index, then remapped. The native save/readback reservation is shared with full exports, but extraction never marks the source saved, changes its history or clears recovered-draft warnings. Desktop writes are no-clobber and exact-readback bounded; iOS uses the existing staged-copy provider flow.
+
+Local verification: **125 core, 31 UI, 59 native +4 security, 29 tools**; fmt and core/host/WASM/iOS-simulator clippy passed with warnings denied. The local iOS simulator archive completed: arm64/IOSSIMULATOR, minimum16.0, SDK27.0; binary SHA-256 `4bde74d74868142bd1fd6a7e27ff2888d86f473915383dbb7754db8e9b4263be`; five notice files match exactly. No new simulator installation/runtime acceptance, signed device IPA or App Store submission is claimed. Mac GUI remains unverified because the host is locked. Review covered pasted production code and reported tests, not an independent checkout/test run.
+
+Extraction is **not secure erasure**: selected-page reachable resources/metadata remain. Tagged/widget extraction, links to excluded pages, global bookmarks/forms/attachments, broader annotations, differing MediaBox/CropBox admission and full UI/platform acceptance remain incomplete. The feature inventory stays 21 partial/49 unsupported/0 complete; 801 legacy rows remain pending. A separate inherited-font-resource text-reading defect in source documents remains tracked, although extracted/materialized pages read and render correctly in the focused fixture.
+
+Preceding run `40269470137` at public `60ae8940952a4e646d168aaa744a2a07f6754532` is terminal: Mac success; Windows native unit suite 43 passed/3 failed after the Git Bash notice fixture passed. Two failed source-wiring tests assumed LF instead of CRLF; the third opened a directory before Windows could classify it. This snapshot normalizes line endings in those assertions and preflights/rechecks regular-file metadata without leaking paths. Actual new Windows verification is pending the next exact-source run; older CI/artifacts do not certify this snapshot. Windows install/run, physical iOS, signing/notarization, formal three-platform publication, full replica and final Rustall skill remain unfinished.
+
+## Historical snapshot: development e004fbc9 (superseded)
 
 This current source is the explicit 113 tracked Rust/workflow files from development `e004fbc9e9b214a093d0a28cb1b7fe9ec6d26383`, plus this manifest. Prior paragraphs below are historical background and do not override this section. No private development history, user documents, screenshots, credentials, memories, generated projects or build cache are included. Existing formal application and Releases are unchanged.
 

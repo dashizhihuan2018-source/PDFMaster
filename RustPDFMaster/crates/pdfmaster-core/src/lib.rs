@@ -2,6 +2,7 @@
 
 mod document;
 mod edit;
+mod extract;
 mod notes;
 mod ranges;
 mod render;
