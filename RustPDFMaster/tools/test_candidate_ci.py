@@ -93,6 +93,8 @@ class CandidateCiContract(unittest.TestCase):
 
         check = self.read_required(TOOLS / "ci-check.sh")
         self.assertLess(check.index("generate-third-party-notices.sh"), check.index('cargo "+$rust_version"'))
+        self.assertIn('export PDFMASTER_TEST_BASH="$(cygpath -w "$BASH")"', check)
+        self.assertIn('export PDFMASTER_TEST_BASH="$BASH"', check)
 
         config = json.loads(self.read_required(TAURI_CONFIG))
         self.assertEqual(config["build"]["beforeBuildCommand"], "bash tools/prepare-tauri-build.sh")

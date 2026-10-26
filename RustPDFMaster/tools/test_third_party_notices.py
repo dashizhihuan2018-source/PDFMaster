@@ -26,6 +26,17 @@ EXPECTED_OUTPUTS = {
 }
 
 
+def fixture_bash(environment=None, platform=None) -> str:
+    environment = os.environ if environment is None else environment
+    platform = os.name if platform is None else platform
+    explicit = environment.get("PDFMASTER_TEST_BASH")
+    if explicit:
+        return explicit
+    if platform == "nt":
+        raise RuntimeError("PDFMASTER_TEST_BASH must identify the current Git Bash, not WSL")
+    return "bash"
+
+
 def load_validator():
     spec = importlib.util.spec_from_file_location("third_party_notice_validator", VALIDATOR)
     if spec is None or spec.loader is None:
@@ -57,6 +68,13 @@ class ThirdPartyNoticeContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.validator = load_validator()
+
+    def test_fixture_selects_explicit_git_bash_and_refuses_windows_path_fallback(self) -> None:
+        git_bash = "C:/Program Files/Git/bin/bash.exe"
+        self.assertEqual(fixture_bash({"PDFMASTER_TEST_BASH": git_bash}, "nt"), git_bash)
+        self.assertEqual(fixture_bash({}, "posix"), "bash")
+        with self.assertRaisesRegex(RuntimeError, "PDFMASTER_TEST_BASH"):
+            fixture_bash({}, "nt")
 
     def write_complete_fixture(self, root: Path) -> None:
         for name in EXPECTED_OUTPUTS:
@@ -216,8 +234,8 @@ class ThirdPartyNoticeContract(unittest.TestCase):
             # than a Windows D:\... path interpreted as relative by the script).
             result = subprocess.run(
                 [
-                    "bash", "-c",
-                    'CARGO_ABOUT_BIN="$PWD/cargo-about" exec bash "$1" "$PWD/linked/notices"',
+                    fixture_bash(), "-c",
+                    'CARGO_ABOUT_BIN="$PWD/cargo-about" exec "$BASH" "$1" "$PWD/linked/notices"',
                     "notice-fixture", GENERATOR.as_posix(),
                 ],
                 cwd=root,

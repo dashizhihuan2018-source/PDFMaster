@@ -8,6 +8,13 @@ cd "$project_root"
 export NO_COLOR=true
 rust_version="1.96.0"
 python_bin="${PYTHON_BIN:-python3}"
+# Python on Windows searches System32 before Git's Bash and can launch WSL.
+# Pass the exact shell already running this script, converted for CreateProcess.
+if [[ "${OS:-}" == "Windows_NT" ]]; then
+  export PDFMASTER_TEST_BASH="$(cygpath -w "$BASH")"
+else
+  export PDFMASTER_TEST_BASH="$BASH"
+fi
 
 bash tools/generate-third-party-notices.sh target/third-party-notices
 PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m unittest -v tools/test_third_party_notices.py
