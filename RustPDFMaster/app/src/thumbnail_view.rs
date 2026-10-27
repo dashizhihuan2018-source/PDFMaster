@@ -70,7 +70,11 @@ pub(super) fn SidebarResizer(model: Model) -> impl IntoView {
         blur.remove();
     });
     Effect::new(move |_| {
-        if !m.chrome.get().sidebar || m.route.get() != Route::Document || m.blocked() {
+        if !m.chrome.get().sidebar
+            || m.overview_visible.get()
+            || m.route.get() != Route::Document
+            || m.blocked()
+        {
             m.sidebar_width.update(|w| w.cancel_active());
         }
         if m.route.get() == Route::Document {
@@ -81,7 +85,7 @@ pub(super) fn SidebarResizer(model: Model) -> impl IntoView {
     });
     view! {
         <div class="sidebar-resizer" role="separator" tabindex="0" aria-label="调整阅读器侧栏宽度" title="拖动调整侧栏宽度；方向键微调，Home / End 到边界"
-            aria-orientation="vertical" aria-controls="pdf-reader-sidebar" hidden=move||!m.chrome.get().sidebar
+            aria-orientation="vertical" aria-controls="pdf-reader-sidebar" hidden=move||!m.chrome.get().sidebar||m.overview_visible.get()
             aria-disabled=move||m.blocked().to_string()
             aria-valuemin=move||Width::bounds(m.sidebar_viewport.get()).0.to_string()
             aria-valuemax=move||Width::bounds(m.sidebar_viewport.get()).1.to_string()
@@ -241,6 +245,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
         let _ = m.page.get();
         let _ = m.document.get();
         if m.chrome.get().sidebar
+            && !m.overview_visible.get()
             && m.sidebar_mode.get() == Mode::Thumbnails
             && m.route.get() == Route::Document
         {
@@ -254,6 +259,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
         if !m.busy.get()
             && m.loaded()
             && m.chrome.get().sidebar
+            && !m.overview_visible.get()
             && m.sidebar_mode.get() == Mode::Thumbnails
             && m.route.get() == Route::Document
             && let Some(page) = m.thumbnail_cache.with(|cache| cache.next(window))
@@ -267,6 +273,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
             && !m.busy.get()
             && m.loaded()
             && m.chrome.get().sidebar
+            && !m.overview_visible.get()
             && m.sidebar_mode.get() == Mode::Outline
             && m.route.get() == Route::Document
         {
@@ -277,6 +284,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
         let selected = m.search_selection.get();
         if m.sidebar_mode.get() == Mode::Search
             && m.chrome.get().sidebar
+            && !m.overview_visible.get()
             && m.route.get() == Route::Document
             && let Some(index) = selected
         {
@@ -290,7 +298,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
         }
     });
     view! {
-        <aside class="pages thumbnail-sidebar" id="pdf-reader-sidebar" aria-label="阅读器侧栏" hidden=move||!m.chrome.get().sidebar>
+        <aside class="pages thumbnail-sidebar" id="pdf-reader-sidebar" aria-label="阅读器侧栏" hidden=move||!m.chrome.get().sidebar||m.overview_visible.get()>
             <div class="sidebar-modes" role="group" aria-label="阅读器侧栏模式">
                 <button aria-label="缩略图" title="缩略图" class:active=move||m.sidebar_mode.get()==Mode::Thumbnails aria-pressed=move||(m.sidebar_mode.get()==Mode::Thumbnails).to_string() disabled=move||m.blocked() on:click=move|_|m.select_sidebar_mode(Mode::Thumbnails)><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h5v5H3z M12 3h5v5h-5z M3 12h5v5H3z M12 12h5v5h-5z"/></svg></button>
                 <button aria-label="大纲" title="大纲" class:active=move||m.sidebar_mode.get()==Mode::Outline aria-pressed=move||(m.sidebar_mode.get()==Mode::Outline).to_string() disabled=move||m.blocked() on:click=move|_|m.select_sidebar_mode(Mode::Outline)><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h2 M8 5h9 M3 10h2 M8 10h9 M3 15h2 M8 15h9"/></svg></button>

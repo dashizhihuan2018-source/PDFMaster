@@ -328,6 +328,7 @@ pub(super) fn AnnotationSidebar(model: Model) -> impl IntoView {
             && !m.blocked()
             && m.loaded()
             && m.chrome.get().sidebar
+            && !m.overview_visible.get()
             && m.sidebar_mode.get() == Mode::Annotations
             && m.route.get() == Route::Document
         {

@@ -4,6 +4,8 @@ mod annotation_view;
 mod bridge;
 #[path = "home.rs"]
 mod home;
+#[path = "overview_view.rs"]
+mod overview_view;
 #[path = "thumbnail_view.rs"]
 mod thumbnail_view;
 #[path = "workbench_view.rs"]
@@ -147,6 +149,8 @@ struct TabPresentation {
     shape_line: String,
     line_points: String,
     ink_enabled: bool,
+    overview_visible: bool,
+    overview_scale: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -266,6 +270,15 @@ struct Model {
     tab_presentations: RwSignal<std::collections::BTreeMap<u32, TabPresentation>>,
     thumbnail_cache: RwSignal<pdfmaster_ui::thumbnails::Cache>,
     thumbnail_window: RwSignal<pdfmaster_ui::thumbnails::Window>,
+    overview_visible: RwSignal<bool>,
+    overview_scale: RwSignal<f64>,
+    overview_selection: RwSignal<pdfmaster_ui::overview::Selection>,
+    overview_layout: RwSignal<pdfmaster_ui::overview::Layout>,
+    overview_window: RwSignal<pdfmaster_ui::thumbnails::Window>,
+    overview_cache: RwSignal<pdfmaster_ui::thumbnails::Cache>,
+    overview_preparation: RwSignal<pdfmaster_ui::outline::ProjectionCache<u32>>,
+    overview_drag: RwSignal<Option<overview_view::Pointer>>,
+    overview_marker: RwSignal<Option<usize>>,
     sidebar_mode: RwSignal<pdfmaster_ui::outline::Mode>,
     sidebar_width: RwSignal<pdfmaster_ui::sidebar_width::Width>,
     sidebar_viewport: RwSignal<f64>,
@@ -332,6 +345,8 @@ impl Model {
                 shape_line: self.shape_line.get_untracked(),
                 line_points: self.line_points.get_untracked(),
                 ink_enabled: self.ink_enabled.get_untracked(),
+                overview_visible: self.overview_visible.get_untracked(),
+                overview_scale: self.overview_scale.get_untracked(),
             };
             self.tab_presentations.update(|tabs| {
                 tabs.insert(id, state);
@@ -374,6 +389,8 @@ impl Model {
             shape_line: "2".into(),
             line_points: "72,200,300,300".into(),
             ink_enabled: false,
+            overview_visible: false,
+            overview_scale: 1.,
         });
         self.page
             .set(state.page.min(document.info.page_count.saturating_sub(1)));
@@ -392,6 +409,8 @@ impl Model {
         self.shape_line.set(state.shape_line);
         self.line_points.set(state.line_points);
         self.ink_enabled.set(state.ink_enabled);
+        self.overview_visible.set(state.overview_visible);
+        self.overview_scale.set(state.overview_scale);
     }
     fn close_tab(self, id: u32) {
         if self.blocked() {
@@ -427,6 +446,18 @@ impl Model {
         });
     }
     fn replace_document_view(self, document: Option<Document>) {
+        self.overview_preparation.update(|c| c.invalidate());
+        self.overview_cache.update(|c| {
+            c.invalidate();
+        });
+        self.overview_drag.set(None);
+        self.overview_marker.set(None);
+        self.overview_selection.update(|s| {
+            s.reset(
+                self.page.get_untracked(),
+                document.as_ref().map(|d| d.info.page_count).unwrap_or(0),
+            )
+        });
         self.annotation_navigation.update(|nav| nav.cancel());
         self.annotation_cache.update(|cache| cache.invalidate());
         self.annotation_selection.set(None);
@@ -466,6 +497,14 @@ impl Model {
         self.ink_enabled.set(false);
         self.chrome
             .update(|chrome| *chrome = chrome.select_mode(mode, blocked));
+        self.overview_visible.set(mode == Mode::Pages);
+        if mode == Mode::Pages {
+            self.overview_selection
+                .update(|s| s.reset(self.page.get_untracked(), self.count()));
+            leptos::leptos_dom::helpers::request_animation_frame(move || {
+                self.measure_overview(true)
+            });
+        }
         self.message
             .set("选择二级工具后才会修改文档；灰色工具尚未迁移。".into());
     }
@@ -477,6 +516,12 @@ impl Model {
         let blocked = self.blocked();
         if blocked {
             return;
+        }
+        if matches!(
+            panel,
+            Some(Panel::Pages | Panel::Text | Panel::Notes | Panel::Ink | Panel::Shapes)
+        ) {
+            self.overview_visible.set(false);
         }
         self.close_chrome_popups();
         if panel != Some(Panel::Ink) {
@@ -491,7 +536,7 @@ impl Model {
             .update(|chrome| *chrome = chrome.toggle_sidebar(blocked));
     }
     fn choose_zoom(self, value: &str) {
-        if self.blocked() {
+        if self.blocked() || self.overview_visible.get_untracked() {
             return;
         }
         match value {
@@ -506,6 +551,11 @@ impl Model {
     }
     fn fit_page(self) {
         if self.blocked() {
+            return;
+        }
+        if self.overview_visible.get_untracked() {
+            self.overview_scale.set(1.);
+            self.overview_zoom(1.);
             return;
         }
         self.close_chrome_popups();
@@ -538,13 +588,61 @@ impl Model {
             return;
         }
         match action {
-            Action::Panel(panel)=>self.select_panel(Some(panel)),
-            Action::InsertBlank=>self.edit(json!({"kind":"insert_blank","index":self.page.get_untracked()+1,"width":595.,"height":842.})),
-            Action::InsertPdf=>self.command("insert_pdf_document",json!({"index":self.page.get_untracked()+1})),
-            Action::Rotate=>self.edit(json!({"kind":"rotate","page":self.page.get_untracked(),"degrees":90})),
-            Action::Extract=>{self.select_panel(Some(Panel::Batch));self.page_range.set((self.page.get_untracked()+1).to_string());},
-            Action::DeleteCurrent=>self.delete_current_page(),
-            Action::Export=>self.command("export_document",json!({})),
+            Action::Panel(panel) => self.select_panel(Some(panel)),
+            Action::InsertBlank => {
+                if let Some(index) = self.page_insertion_index() {
+                    self.command_at_page("edit_document",json!({"edit":{"kind":"insert_blank","index":index,"width":595.,"height":842.}}),Some(index));
+                }
+            }
+            Action::InsertPdf => {
+                if let Some(index) = self.page_insertion_index() {
+                    self.command_at_page(
+                        "insert_pdf_document",
+                        json!({"index":index}),
+                        Some(index),
+                    );
+                }
+            }
+            Action::Rotate => {
+                if self.overview_visible.get_untracked() {
+                    self.overview_batch("rotate_90");
+                } else {
+                    self.edit(
+                        json!({"kind":"rotate","page":self.page.get_untracked(),"degrees":90}),
+                    );
+                }
+            }
+            Action::Extract => {
+                let range = if self.overview_visible.get_untracked() {
+                    self.overview_selection.with_untracked(|s| {
+                        s.pages()
+                            .iter()
+                            .map(|p| (p + 1).to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                } else {
+                    (self.page.get_untracked() + 1).to_string()
+                };
+                self.select_panel(Some(Panel::Batch));
+                self.page_range.set(range);
+            }
+            Action::DeleteCurrent => {
+                if self.overview_visible.get_untracked() {
+                    self.overview_batch("delete");
+                } else {
+                    self.delete_current_page();
+                }
+            }
+            Action::Export => self.command("export_document", json!({})),
+        }
+    }
+    fn page_insertion_index(self) -> Option<usize> {
+        if self.overview_visible.get_untracked() {
+            self.overview_selection
+                .with_untracked(|s| s.pages().last().map(|p| p + 1))
+        } else {
+            Some(self.page.get_untracked() + 1)
         }
     }
     fn switch_to(self, target: Route) {
@@ -988,6 +1086,11 @@ impl Model {
             return;
         }
         self.remember_tab();
+        let overview_insert = self.overview_visible.get_untracked()
+            && (matches!(command, "insert_pdf_document" | "insert_pdfs_document")
+                || (command == "edit_document"
+                    && args["edit"]["kind"].as_str() == Some("insert_blank")));
+        let old_count = self.count();
         self.busy.set(true);
         spawn_local(async move {
             let result: Result<Option<Document>, _> = bridge::call(command, &args).await;
@@ -1012,6 +1115,9 @@ impl Model {
                         }
                     }
                     self.note_draft.set(doc.note_editor.clone());
+                    if doc.note_editor.is_some() || doc.ink_editor.is_some() {
+                        self.overview_visible.set(false);
+                    }
                     if let Some(editor) = &doc.ink_editor {
                         self.page.set(editor.page);
                         status="手绘会话尚未结束；未提交的笔画无法从进程恢复，请取消／同步手绘后继续。".into();
@@ -1025,6 +1131,14 @@ impl Model {
                         )
                     });
                     self.replace_document_view(Some(doc));
+                    if overview_insert && let Some(start) = selected_page {
+                        let end = start.saturating_add(page_count.saturating_sub(old_count));
+                        self.overview_selection
+                            .update(|s| s.restore(&(start..end).collect::<Vec<_>>(), page_count));
+                        leptos::leptos_dom::helpers::request_animation_frame(move || {
+                            self.measure_overview(true)
+                        });
+                    }
                     self.route
                         .update(|route| *route = document_reply_route(*route, command, true));
                     if matches!(
@@ -1184,6 +1298,7 @@ impl Model {
             return;
         }
         self.page.set(page);
+        self.overview_visible.set(false);
         self.page_jump.set((page + 1).to_string());
         self.refresh_with_annotation(target);
     }
@@ -1216,6 +1331,14 @@ impl Model {
         }
     }
     fn batch_range(self, range: String, operation: &'static str) {
+        self.batch_range_with_selection(range, operation, None);
+    }
+    fn batch_range_with_selection(
+        self,
+        range: String,
+        operation: &'static str,
+        overview_selection: Option<pdfmaster_ui::overview::Selection>,
+    ) {
         if self.blocked() {
             return;
         }
@@ -1228,18 +1351,39 @@ impl Model {
                     document,
                     affected_count,
                 }) => {
+                    if operation == "delete"
+                        && let Some(selection) = &overview_selection
+                    {
+                        self.page
+                            .set(selection.pages().first().copied().unwrap_or(0));
+                    }
                     self.page.update(|page| {
                         *page = (*page).min(document.info.page_count.saturating_sub(1))
                     });
                     self.page_jump
                         .set((self.page.get_untracked() + 1).to_string());
                     self.search_result.set(None);
-                    self.message.set(if operation == "delete" {
-                        format!("已删除 {affected_count} 页，可使用撤销恢复。")
-                    } else {
-                        format!("已顺时针旋转 {affected_count} 页。")
-                    });
+                    self.message
+                        .set(document.warning.clone().unwrap_or_else(|| {
+                            if operation == "delete" {
+                                format!("已删除 {affected_count} 页，可使用撤销恢复。")
+                            } else {
+                                format!("已顺时针旋转 {affected_count} 页。")
+                            }
+                        }));
                     self.replace_document_view(Some(*document));
+                    if let Some(selection) = overview_selection {
+                        self.overview_selection.update(|s| {
+                            if operation == "delete" {
+                                s.reset(self.page.get_untracked(), self.count());
+                            } else {
+                                *s = selection;
+                            }
+                        });
+                        leptos::leptos_dom::helpers::request_animation_frame(move || {
+                            self.measure_overview(true)
+                        });
+                    }
                     self.render().await;
                 }
                 Ok(PageBatchReply::Cancelled) => {
@@ -1286,6 +1430,7 @@ impl Model {
             return;
         }
         self.close_chrome_popups();
+        self.overview_visible.set(false);
         self.ink_enabled.set(false);
         self.chrome.update(|chrome| {
             chrome.sidebar = true;
@@ -1475,6 +1620,10 @@ impl Model {
     }
     fn zoom_by(self, factor: f32) {
         if self.busy.get_untracked() {
+            return;
+        }
+        if self.overview_visible.get_untracked() {
+            self.overview_zoom(if factor > 1. { 1.2 } else { 1. / 1.2 });
             return;
         }
         self.zoom.update(|z| *z = step_zoom(*z, factor));
@@ -1779,6 +1928,15 @@ pub fn Workspace() -> impl IntoView {
         tab_presentations: RwSignal::new(std::collections::BTreeMap::new()),
         thumbnail_cache: RwSignal::new(pdfmaster_ui::thumbnails::Cache::default()),
         thumbnail_window: RwSignal::new(pdfmaster_ui::thumbnails::Window::new(0., 600., 0)),
+        overview_visible: RwSignal::new(false),
+        overview_scale: RwSignal::new(1.),
+        overview_selection: RwSignal::new(pdfmaster_ui::overview::Selection::default()),
+        overview_layout: RwSignal::new(pdfmaster_ui::overview::Layout::default()),
+        overview_window: RwSignal::new(pdfmaster_ui::thumbnails::Window::for_pages(0..0, 0)),
+        overview_cache: RwSignal::new(pdfmaster_ui::thumbnails::Cache::default()),
+        overview_preparation: RwSignal::new(pdfmaster_ui::outline::ProjectionCache::default()),
+        overview_drag: RwSignal::new(None),
+        overview_marker: RwSignal::new(None),
         sidebar_mode: RwSignal::new(pdfmaster_ui::outline::Mode::default()),
         sidebar_width: RwSignal::new(thumbnail_view::restored_sidebar_width()),
         sidebar_viewport: RwSignal::new(thumbnail_view::reader_viewport()),
@@ -1853,12 +2011,13 @@ pub fn Workspace() -> impl IntoView {
                 <button class="shell-plus" aria-label="新标签" title="新标签" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
             </nav>
             <div class="home-host" hidden=move||m.route.get()==Route::Document><home::Dashboard model=m/></div>
-        <main class="workspace" id="reader-workspace" style=move||format!("--reader-sidebar-width:{}px",m.sidebar_width.with(|w|w.effective(m.sidebar_viewport.get()))) class:reader-sidebar-hidden=move||!m.chrome.get().sidebar class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
+        <main class="workspace" id="reader-workspace" style=move||format!("--reader-sidebar-width:{}px",m.sidebar_width.with(|w|w.effective(m.sidebar_viewport.get()))) class:reader-sidebar-hidden=move||!m.chrome.get().sidebar||m.overview_visible.get() class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
             <workbench::Toolbar model=m/>
             <workbench::SecondaryTools model=m/>
             <thumbnail_view::Sidebar model=m/>
             <thumbnail_view::SidebarResizer model=m/>
-            <section id="pdf-reader" class="reader" aria-label="PDF 阅读区域" aria-busy=move||m.busy.get().to_string()>
+            <overview_view::Overview model=m/>
+            <section id="pdf-reader" class="reader" aria-label="PDF 阅读区域" aria-busy=move||m.busy.get().to_string() hidden=move||m.overview_visible.get()>
                 <Show when=move||m.loaded() fallback=move||view!{
                     <div class="empty-state"><div class="paper-emblem">"PDF"</div><h1>"让文档回到工作中心。"</h1><p>"打开一份 PDF，或从空白页开始。"</p><button class="primary" disabled=move||m.busy.get() on:click=move|_|m.command("open_document",json!({}))>"选择 PDF 文件"</button><div class="safety-note">"仅在会话副本中编辑，原文件不会自动覆盖。"</div></div>
                 }>
@@ -1888,7 +2047,7 @@ pub fn Workspace() -> impl IntoView {
                 <div class="tool-group" id="tool-pages" hidden=move||m.chrome.get().panel!=Some(Panel::Pages)><h3>"当前页操作"</h3>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"rotate","page":m.page.get_untracked(),"degrees":90}))>"顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"duplicate_page","page":m.page.get_untracked(),"index":m.page.get_untracked()+1}))>"复制当前页"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"insert_blank","index":m.page.get_untracked()+1,"width":595.,"height":842.}))>"在后方插入空白页"</button>
+                    <button disabled=move||m.blocked() on:click=move|_|m.run_strip_action(Action::InsertBlank)>"在后方插入空白页"</button>
                     <button disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.move_page(-1)>"当前页前移"</button>
                     <button disabled={move||m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.move_page(1)>"当前页后移"</button>
                     <button class="danger" disabled={move || m.blocked()||m.count()<=1} on:click=move|_|m.delete_current_page()>"删除当前页"</button>
@@ -1897,8 +2056,8 @@ pub fn Workspace() -> impl IntoView {
                     <input aria-label="批量页码范围" disabled=move||m.busy.get() placeholder="例如 1-3,5" prop:value=move||m.page_range.get() on:input=move|e|m.page_range.set(event_target_value(&e))/>
                     <button disabled=move||m.blocked() on:click=move|_|m.batch_pages("rotate_90")>"批量顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.command("extract_pages_document",json!({"range":m.page_range.get_untracked()}))>"提取页面到新 PDF"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.command("insert_pdf_document",json!({"index":m.page.get_untracked()+1}))>"在当前页后插入 PDF"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.command("insert_pdfs_document",json!({"index":m.page.get_untracked()+1}))>"批量插入 PDF（整批可撤销）"</button>
+                    <button disabled=move||m.blocked() on:click=move|_|m.run_strip_action(Action::InsertPdf)>"在当前页后插入 PDF"</button>
+                    <button disabled=move||m.blocked() on:click=move|_|{if let Some(index)=m.page_insertion_index(){m.command_at_page("insert_pdfs_document",json!({"index":index}),Some(index));}}>"批量插入 PDF（整批可撤销）"</button>
                     <button class="danger" disabled=move||m.blocked()||m.count()<=1 on:click=move|_|m.batch_pages("delete")>"批量删除"</button>
                     <p class="muted">"页码从 1 开始；删除会先显示选中页数并要求确认。"</p>
                 </div>

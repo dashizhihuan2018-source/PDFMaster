@@ -46,12 +46,12 @@ pub(super) fn Toolbar(model: Model) -> impl IntoView {
         <nav class="workbench-toolbar" aria-label="阅读工具栏">
             <div class="workbench-group workbench-left">
                 <button class="chrome-icon-button" aria-label="侧栏" title="侧栏" aria-pressed=move||m.chrome.get().sidebar.to_string() disabled=move||m.blocked() on:click=move|_|m.toggle_sidebar()><Icon name="sidebar"/></button>
-                <button class="chrome-icon-button" aria-label="页面预览" title="缩略图总览尚未迁移" disabled><Icon name="overview"/></button>
+                <button class="chrome-icon-button" aria-label="页面预览" title="整页缩略图总览" aria-pressed=move||m.overview_visible.get().to_string() disabled=move||m.blocked() on:click=move|_|m.set_overview(!m.overview_visible.get_untracked())><Icon name="overview"/></button>
                 <details class="chrome-popup"><summary aria-label="布局选项" title="布局选项"><Icon name="layout"/></summary><div class="chrome-popup-content">
                     <strong>"布局选项"</strong><button disabled=move||m.blocked() on:click=move|_|m.fit_page()>"适合页面"</button><button disabled=move||m.blocked() on:click=move|_|m.fit_width()>"适合宽度"</button>
                     <button disabled aria-pressed="true">"单页（当前）"</button><button disabled title="连续页布局尚未迁移">"连续滚动"</button><button disabled title="双页布局尚未迁移">"双页"</button><button disabled>"封面"</button>
                 </div></details>
-                <select class="chrome-zoom" aria-label="缩放" disabled=move||m.blocked() prop:value=move||{let _=m.zoom.get();"current"} on:change=move|e|m.choose_zoom(&event_target_value(&e))>
+                <select class="chrome-zoom" aria-label="缩放" disabled=move||m.blocked()||m.overview_visible.get() prop:value=move||{let _=m.zoom.get();"current"} on:change=move|e|m.choose_zoom(&event_target_value(&e))>
                     <option value="current">{move||format!("{:.0}%",m.zoom.get()*100.)}</option><option value="page">"适合页面"</option><option value="width">"适合宽度"</option><option value="1">"100%"</option><option value="1.25">"125%"</option><option value="1.5">"150%"</option><option value="2">"200%"</option><option value="3">"300%"</option>
                 </select>
                 <button class="chrome-icon-button" aria-label="缩小" title="缩小" disabled=move||m.blocked() on:click=move|_|m.zoom_by(0.8)><Icon name="minus"/></button>

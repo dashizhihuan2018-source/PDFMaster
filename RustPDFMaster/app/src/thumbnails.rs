@@ -13,6 +13,16 @@ pub struct Window {
     count: usize,
 }
 impl Window {
+    /// Grid viewport: at most 256 previews, each admitted image <=256KiB.
+    pub fn for_pages(pages: Range<usize>, count: usize) -> Self {
+        let start = pages.start.min(count);
+        let end = pages
+            .end
+            .min(count)
+            .min(start.saturating_add(256))
+            .max(start);
+        Self { start, end, count }
+    }
     pub fn new(scroll: f64, height: f64, count: usize) -> Self {
         let height = if height.is_finite() && height > 0. {
             height

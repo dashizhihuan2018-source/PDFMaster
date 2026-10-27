@@ -17,6 +17,7 @@ pub mod annotation_navigation;
 pub mod annotations;
 pub mod ink;
 pub mod outline;
+pub mod overview;
 pub mod search_flow;
 pub mod shell;
 pub mod sidebar_width;
@@ -753,7 +754,7 @@ mod tests {
     fn batch_insertion_ui_preserves_single_entry_and_exposes_one_transaction_status() {
         let source = include_str!("workspace.rs");
         assert!(source.contains(
-            "m.command(\"insert_pdfs_document\",json!({\"index\":m.page.get_untracked()+1}))"
+            "m.command_at_page(\"insert_pdfs_document\",json!({\"index\":index}),Some(index))"
         ));
         assert!(source.contains("批量插入 PDF"));
         assert!(source.contains("| \"insert_pdfs_document\""));
@@ -770,8 +771,12 @@ mod tests {
     #[test]
     fn insertion_ui_uses_current_page_native_picker_and_marks_unsaved() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains(
-            "m.command(\"insert_pdf_document\",json!({\"index\":m.page.get_untracked()+1}))"
+        assert!(source.contains("m.run_strip_action(Action::InsertPdf)"));
+        assert!(source.contains("Some(self.page.get_untracked() + 1)"));
+        assert!(source.contains("s.pages().last().map(|p| p + 1)"));
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains(
+            "self.command_at_page(\"insert_pdf_document\",json!({\"index\":index}),Some(index),)"
         ));
         assert!(source.contains("在当前页后插入 PDF"));
         assert_eq!(
