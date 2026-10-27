@@ -78,7 +78,7 @@ pub(super) fn Dashboard(model: Model) -> impl IntoView {
                     <Show when=move||section()==HomeSection::Recent><EmptyCollection favorite=false/></Show>
                     <Show when=move||section()==HomeSection::Favorites><EmptyCollection favorite=true/></Show>
                     <Show when=move||!matches!(section(),HomeSection::Home|HomeSection::Tools|HomeSection::Recent|HomeSection::Favorites)><p class="home-disclosure">"此页面仍在迁移中。原版数据保持不变，本候选不会显示虚构的账号、设置或画布。"</p></Show>
-                    <p class="home-disclosure">"Rust 迁移候选 · 非正式版 · 当前仅保留一份文档会话，尚未实现多文档标签。"</p>
+                    <p class="home-disclosure">"Rust 迁移候选 · 非正式版 · 多 PDF 标签保留独立修改，画布标签与完整三端 UI 对等仍在迁移。"</p>
                 </div>
             </section>
             <footer class="home-status" role="status" aria-live="polite">{move||model.document.with(|d|pdfmaster_ui::visible_status(d.as_ref().and_then(|d|d.warning.as_deref()),&model.message.get(),model.busy.get()))}</footer>

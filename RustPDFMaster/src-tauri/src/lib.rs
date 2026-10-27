@@ -6,6 +6,7 @@ mod macos_termination;
 mod recovery;
 mod search;
 mod storage;
+mod tabs;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use pdfmaster_core::{DocumentInfo, Edit, PageRange, Session};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,9 @@ use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
 struct Workspace {
+    active_document_id: u32,
+    next_document_id: u32,
+    inactive_documents: Vec<tabs::Parked>,
     session: Option<Session>,
     document_epoch: u64,
     name: String,
@@ -68,6 +72,8 @@ impl InkEditor {
 }
 #[derive(Clone, Serialize)]
 struct DocumentView {
+    id: u32,
+    tabs: Vec<tabs::TabView>,
     name: String,
     info: DocumentInfo,
     restored: bool,
@@ -1685,11 +1691,32 @@ impl Workspace {
         self.view()
     }
     fn replace_document(&mut self, session: Session, name: String) -> Reply<DocumentView> {
-        self.clean()?;
+        self.ensure_editor_idle()?;
+        if self.recovery_fault && self.session.is_none() {
+            return Err("原草稿未能恢复，已保留，请勿覆盖。".into());
+        }
+        if self.inactive_documents.len() + usize::from(self.session.is_some()) >= 16 {
+            return Err("最多同时打开16份PDF，请先保存并关闭部分标签。".into());
+        }
+        let id = self
+            .next_document_id
+            .checked_add(1)
+            .ok_or("文档标签编号已耗尽。")?;
         let epoch = self
             .document_epoch
             .checked_add(1)
             .ok_or("文档会话编号已耗尽，请正常退出后重试。")?;
+        if let Some(old) = self.session.take() {
+            self.inactive_documents.push(tabs::Parked {
+                id: self.active_document_id,
+                session: old,
+                name: std::mem::take(&mut self.name),
+                restored: self.restored,
+            });
+        }
+        self.next_document_id = id;
+        self.active_document_id = id;
+        self.restored = false;
         self.session = Some(session);
         self.name = name;
         self.document_epoch = epoch;
@@ -1697,6 +1724,10 @@ impl Workspace {
     }
     fn has_unsaved_work(&self) -> bool {
         self.dirty()
+            || self
+                .inactive_documents
+                .iter()
+                .any(|d| d.restored || d.session.is_dirty())
             || self.note_editor.is_some()
             || self.ink_editor.is_some()
             || self.export_reservation.is_some()
@@ -1878,6 +1909,8 @@ impl Workspace {
         let mut info = self.session.as_ref().ok_or("请先打开 PDF")?.info();
         info.dirty = self.dirty();
         Ok(DocumentView {
+            id: self.active_document_id,
+            tabs: self.tabs(),
             name: self.name.clone(),
             info,
             restored: self.restored,
@@ -1886,6 +1919,7 @@ impl Workspace {
             ink_editor: self.ink_editor.as_ref().map(InkEditor::view),
         })
     }
+    #[cfg(test)]
     fn clean(&self) -> Reply<()> {
         self.ensure_editor_idle()?;
         if self.dirty() {
@@ -1898,13 +1932,34 @@ impl Workspace {
         self.restored || self.recovery_fault || self.session.as_ref().is_some_and(|s| s.is_dirty())
     }
     fn persist(&mut self) -> Reply<()> {
+        self.persist_excluding(None)
+    }
+    fn persist_excluding(&mut self, excluded: Option<u32>) -> Reply<()> {
         let result = (|| {
-            let session = self.session.as_ref().ok_or("当前没有文档")?;
-            let bytes = session.bytes().map_err(|e| e.to_string())?;
+            let mut drafts = Vec::new();
+            for document in &self.inactive_documents {
+                if excluded != Some(document.id)
+                    && (document.restored || document.session.is_dirty())
+                {
+                    drafts.push(recovery::Draft {
+                        name: document.name.clone(),
+                        bytes: document.session.bytes().map_err(|e| e.to_string())?,
+                    });
+                }
+            }
+            if let Some(session) = &self.session
+                && excluded != Some(self.active_document_id)
+                && (session.is_dirty() || self.restored)
+            {
+                drafts.push(recovery::Draft {
+                    name: self.name.clone(),
+                    bytes: session.bytes().map_err(|e| e.to_string())?,
+                });
+            }
             self.journal
                 .as_ref()
                 .ok_or("草稿存储不可用")?
-                .save(&self.name, &bytes, session.is_dirty() || self.restored)
+                .save_many(&drafts)
                 .map_err(|_| {
                     "本地草稿写入失败。修改仍保留在内存，请立即导出副本，勿关闭应用。".to_string()
                 })
@@ -2321,7 +2376,10 @@ async fn open_document(
     app: tauri::AppHandle,
     state: State<'_, Store>,
 ) -> Reply<Option<DocumentView>> {
-    state.lock().map_err(|_| "文档状态不可用")?.clean()?;
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .ensure_editor_idle()?;
     let Some(file) = app
         .dialog()
         .file()
@@ -2747,12 +2805,8 @@ pub fn run() {
             let journal_lock = recovery::lock_directory(&dir)?;
             let store = app.state::<Store>();
             let mut w = store.lock().map_err(|_| "文档状态不可用")?;
-            match journal.load() {
-                Ok(Some(draft)) => match Session::open(&draft.bytes) {
-                    Ok(session) => { w.session = Some(session); w.name = draft.name; w.restored = true; },
-                    Err(_) => { w.recovery_fault = true; }
-                },
-                Ok(None) => {},
+            match journal.load_many() {
+                Ok(drafts) => { if w.recover_documents(drafts).is_err() { w.recovery_fault=true; } },
                 Err(_) => { w.recovery_fault = true; }
             }
             w.journal = Some(journal);
@@ -2773,7 +2827,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

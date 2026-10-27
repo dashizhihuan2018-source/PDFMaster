@@ -1,5 +1,5 @@
-//! Route state is independent of the single native document session.
-//! Hiding the reader must never reset, replace or save that session.
+//! Route state is independent of the active native document tab.
+//! Hiding the reader must never reset, replace or save any session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HomeSection {
     Home,
@@ -58,7 +58,12 @@ pub fn switch_route(current: Route, target: Route, has_document: bool, blocked: 
 /// Call only after a native reply has been successfully decoded. A cancelled
 /// dialog, failed command, or export reply must not navigate away from home.
 pub fn document_reply_route(current: Route, command: &str, has_document: bool) -> Route {
-    if has_document && matches!(command, "open_document" | "new_document" | "document_info") {
+    if has_document
+        && matches!(
+            command,
+            "open_document" | "new_document" | "activate_document" | "document_info"
+        )
+    {
         Route::Document
     } else {
         current

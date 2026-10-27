@@ -109,6 +109,6 @@ pub(super) fn FileActions(model: Model) -> impl IntoView {
         <button disabled=move||m.blocked() on:click=move|_|m.command("export_document",json!({}))>"导出副本"</button>
         <button disabled=move||m.blocked()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_undo)) on:click=move|_|m.command("undo_document",json!({}))>"撤销"</button>
         <button disabled=move||m.blocked()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_redo)) on:click=move|_|m.command("redo_document",json!({}))>"重做"</button>
-        <p class="muted">"当前仅有一份文档会话；替换前须保存已有修改。完整原生菜单和快捷键仍在迁移。"</p>
+        <p class="muted">"每个 PDF 标签保留独立修改与撤销历史；保存会导出副本。完整原生菜单和快捷键仍在迁移。"</p>
     </div> }
 }

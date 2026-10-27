@@ -1,6 +1,14 @@
 use pdfmaster_ui::shell::{HomeSection, Route, document_reply_route, switch_route};
 
 #[test]
+fn activating_an_existing_tab_from_home_opens_its_reader() {
+    assert_eq!(
+        document_reply_route(Route::Home(HomeSection::Tools), "activate_document", true),
+        Route::Document
+    );
+}
+
+#[test]
 fn home_navigation_keeps_document_available_without_replacing_it() {
     let home = Route::Home(HomeSection::Home);
     assert_eq!(switch_route(Route::Document, home, true, false), home);

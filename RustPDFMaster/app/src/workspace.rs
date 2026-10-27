@@ -103,6 +103,10 @@ struct Info {
 }
 #[derive(Clone, Debug, Deserialize)]
 struct Document {
+    #[serde(default)]
+    id: u32,
+    #[serde(default)]
+    tabs: Vec<DocumentTab>,
     name: String,
     info: Info,
     restored: bool,
@@ -112,6 +116,37 @@ struct Document {
     note_editor: Option<NoteDraft>,
     #[serde(default)]
     ink_editor: Option<InkDraft>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DocumentTab {
+    id: u32,
+    name: String,
+    dirty: bool,
+}
+#[derive(Deserialize)]
+struct CloseReply {
+    closed: bool,
+    document: Option<Document>,
+}
+#[derive(Clone)]
+struct TabPresentation {
+    page: usize,
+    zoom: f32,
+    chrome: Chrome,
+    sidebar_mode: pdfmaster_ui::outline::Mode,
+    annotation_sort: pdfmaster_ui::annotations::Sort,
+    search_query: String,
+    search_case_sensitive: bool,
+    text: String,
+    note_text: String,
+    page_range: String,
+    shape_bounds: String,
+    shape_stroke: String,
+    shape_fill: String,
+    shape_line: String,
+    line_points: String,
+    ink_enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -228,6 +263,7 @@ struct Model {
     route: RwSignal<Route>,
     chrome: RwSignal<Chrome>,
     document: RwSignal<Option<Document>>,
+    tab_presentations: RwSignal<std::collections::BTreeMap<u32, TabPresentation>>,
     thumbnail_cache: RwSignal<pdfmaster_ui::thumbnails::Cache>,
     thumbnail_window: RwSignal<pdfmaster_ui::thumbnails::Window>,
     sidebar_mode: RwSignal<pdfmaster_ui::outline::Mode>,
@@ -277,6 +313,119 @@ struct Model {
 }
 
 impl Model {
+    fn remember_tab(self) {
+        if let Some(id) = self.document.with_untracked(|d| d.as_ref().map(|d| d.id)) {
+            let state = TabPresentation {
+                page: self.page.get_untracked(),
+                zoom: self.zoom.get_untracked(),
+                chrome: self.chrome.get_untracked(),
+                sidebar_mode: self.sidebar_mode.get_untracked(),
+                annotation_sort: self.annotation_sort.get_untracked(),
+                search_query: self.search_query.get_untracked(),
+                search_case_sensitive: self.search_case_sensitive.get_untracked(),
+                text: self.text.get_untracked(),
+                note_text: self.note_text.get_untracked(),
+                page_range: self.page_range.get_untracked(),
+                shape_bounds: self.shape_bounds.get_untracked(),
+                shape_stroke: self.shape_stroke.get_untracked(),
+                shape_fill: self.shape_fill.get_untracked(),
+                shape_line: self.shape_line.get_untracked(),
+                line_points: self.line_points.get_untracked(),
+                ink_enabled: self.ink_enabled.get_untracked(),
+            };
+            self.tab_presentations.update(|tabs| {
+                tabs.insert(id, state);
+            });
+        }
+    }
+    fn restore_tab(self, document: &Document) {
+        if self
+            .document
+            .with_untracked(|old| old.as_ref().is_some_and(|old| old.id == document.id))
+        {
+            return;
+        }
+        self.image.set(String::new());
+        self.image_ready.set(false);
+        self.ink_image.set(None);
+        let saved = self
+            .tab_presentations
+            .with_untracked(|tabs| tabs.get(&document.id).cloned());
+        let state = saved.unwrap_or_else(|| TabPresentation {
+            page: 0,
+            zoom: 1.,
+            chrome: Chrome {
+                sidebar: !web_sys::window()
+                    .and_then(|w| w.inner_width().ok())
+                    .and_then(|v| v.as_f64())
+                    .is_some_and(|width| width <= 720.),
+                ..Chrome::default()
+            },
+            sidebar_mode: Default::default(),
+            annotation_sort: Default::default(),
+            search_query: String::new(),
+            search_case_sensitive: false,
+            text: String::new(),
+            note_text: String::new(),
+            page_range: String::new(),
+            shape_bounds: "36,36,120,80".into(),
+            shape_stroke: "#4F46E5".into(),
+            shape_fill: String::new(),
+            shape_line: "2".into(),
+            line_points: "72,200,300,300".into(),
+            ink_enabled: false,
+        });
+        self.page
+            .set(state.page.min(document.info.page_count.saturating_sub(1)));
+        self.zoom.set(state.zoom);
+        self.chrome.set(state.chrome);
+        self.sidebar_mode.set(state.sidebar_mode);
+        self.annotation_sort.set(state.annotation_sort);
+        self.search_query.set(state.search_query);
+        self.search_case_sensitive.set(state.search_case_sensitive);
+        self.text.set(state.text);
+        self.note_text.set(state.note_text);
+        self.page_range.set(state.page_range);
+        self.shape_bounds.set(state.shape_bounds);
+        self.shape_stroke.set(state.shape_stroke);
+        self.shape_fill.set(state.shape_fill);
+        self.shape_line.set(state.shape_line);
+        self.line_points.set(state.line_points);
+        self.ink_enabled.set(state.ink_enabled);
+    }
+    fn close_tab(self, id: u32) {
+        if self.blocked() {
+            return;
+        }
+        self.remember_tab();
+        self.busy.set(true);
+        spawn_local(async move {
+            match bridge::call::<CloseReply>("close_document", &json!({"id":id})).await {
+                Ok(reply) if reply.closed => {
+                    self.tab_presentations.update(|tabs| {
+                        tabs.remove(&id);
+                    });
+                    if let Some(document) = reply.document {
+                        self.restore_tab(&document);
+                        self.page_jump
+                            .set((self.page.get_untracked() + 1).to_string());
+                        self.replace_document_view(Some(document));
+                        self.message
+                            .set("文档标签已关闭；其余文档保持不变。".into());
+                        self.render().await;
+                    } else {
+                        self.replace_document_view(None);
+                        self.image.set(String::new());
+                        self.route.set(Route::Home(HomeSection::Home));
+                        self.message.set("文档标签已关闭。".into());
+                    }
+                }
+                Ok(_) => self.message.set("已取消关闭，文档保持不变。".into()),
+                Err(error) => self.message.set(error),
+            }
+            self.busy.set(false);
+        });
+    }
     fn replace_document_view(self, document: Option<Document>) {
         self.annotation_navigation.update(|nav| nav.cancel());
         self.annotation_cache.update(|cache| cache.invalidate());
@@ -838,11 +987,16 @@ impl Model {
             self.message.set("请先结束或取消手绘。".into());
             return;
         }
+        self.remember_tab();
         self.busy.set(true);
         spawn_local(async move {
             let result: Result<Option<Document>, _> = bridge::call(command, &args).await;
             match result {
                 Ok(Some(doc)) => {
+                    // Restore tab-local presentation first. Native unfinished
+                    // editors are authoritative and must then reveal their own
+                    // page and Save/Cancel panel after a frontend reload.
+                    self.restore_tab(&doc);
                     self.page.update(|p| {
                         *p = selected_page
                             .unwrap_or(*p)
@@ -1622,6 +1776,7 @@ pub fn Workspace() -> impl IntoView {
             ..Chrome::default()
         }),
         document: RwSignal::new(None),
+        tab_presentations: RwSignal::new(std::collections::BTreeMap::new()),
         thumbnail_cache: RwSignal::new(pdfmaster_ui::thumbnails::Cache::default()),
         thumbnail_window: RwSignal::new(pdfmaster_ui::thumbnails::Window::new(0., 600., 0)),
         sidebar_mode: RwSignal::new(pdfmaster_ui::outline::Mode::default()),
@@ -1681,10 +1836,21 @@ pub fn Workspace() -> impl IntoView {
     m.command("document_info", json!({}));
     view! {
         <div class="application-shell">
-            <nav class="shell-tabs" id="shell-tabs" aria-label="首页和当前文档（多文档标签尚未迁移）">
+            <nav class="shell-tabs" id="shell-tabs" aria-label="首页和文档标签">
                 <button class="shell-home-tab" class:active=move||matches!(m.route.get(),Route::Home(_)) aria-label="主界面标签" title="主界面" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))><img src="32x32.png" alt=""/></button>
-                <Show when=move||m.loaded()><button class="shell-document-tab" class:active=move||m.route.get()==Route::Document disabled=move||m.busy.get() on:click=move|_|m.switch_to(Route::Document)>{move||m.document.with(|d|d.as_ref().map(|d|format!("{}{}",d.name,if d.info.dirty{" •"}else{""})).unwrap_or_default())}</button></Show>
-                <button class="shell-plus" aria-label="新标签：返回主界面" title="返回主界面；多文档标签尚未迁移" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
+                <For each=move||m.document.with(|document|document.as_ref().map(|d|if d.tabs.is_empty(){vec![DocumentTab{id:d.id,name:d.name.clone(),dirty:d.info.dirty}]}else{d.tabs.clone()}).unwrap_or_default()) key=|tab|(tab.id,tab.name.clone(),tab.dirty) children=move|tab|{
+                    let id=tab.id;
+                    let label=format!("{}{}",tab.name,if tab.dirty{" •"}else{""});
+                    let chars:Vec<char>=label.chars().collect();
+                    let split=if chars.len()>48{chars.len()-16}else{chars.len()};
+                    let prefix:String=chars[..split].iter().collect();
+                    let suffix:String=chars[split..].iter().collect();
+                    view!{<div class="shell-document-box" class:active=move||m.route.get()==Route::Document&&m.document.with(|d|d.as_ref().is_some_and(|d|d.id==id))>
+                        <button class="shell-document-tab" aria-label=format!("文档标签 {}",tab.name) aria-pressed=move||(m.route.get()==Route::Document&&m.document.with(|d|d.as_ref().is_some_and(|d|d.id==id))).to_string() title=label disabled=move||m.blocked() on:click=move|_|m.command("activate_document",json!({"id":id}))><span class="tab-title-prefix">{prefix}</span><span class="tab-title-suffix">{suffix}</span></button>
+                        <button class="shell-tab-close" aria-label=format!("关闭 {}",tab.name) title="关闭文档" disabled=move||m.blocked() on:click=move|_|m.close_tab(id)>"×"</button>
+                    </div>}
+                }/>
+                <button class="shell-plus" aria-label="新标签" title="新标签" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
             </nav>
             <div class="home-host" hidden=move||m.route.get()==Route::Document><home::Dashboard model=m/></div>
         <main class="workspace" id="reader-workspace" style=move||format!("--reader-sidebar-width:{}px",m.sidebar_width.with(|w|w.effective(m.sidebar_viewport.get()))) class:reader-sidebar-hidden=move||!m.chrome.get().sidebar class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
