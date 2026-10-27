@@ -3,6 +3,7 @@ mod export_staging;
 mod ios_export;
 #[cfg(target_os = "macos")]
 mod macos_termination;
+mod overview;
 mod recovery;
 mod search;
 mod storage;
@@ -35,6 +36,8 @@ struct Workspace {
     next_editor_id: u32,
     export_reservation: Option<u32>,
     next_export_id: u32,
+    overview_snapshot: Option<overview::Snapshot>,
+    next_overview_id: u32,
 }
 #[derive(Clone, Serialize)]
 struct NoteEditor {
@@ -1973,6 +1976,9 @@ impl Workspace {
         result
     }
     fn checkpoint(&mut self) -> Reply<DocumentView> {
+        // Even undo back to identical PDF bytes invalidates an old drag's
+        // presentation generation. Never allow that snapshot to revive.
+        self.overview_snapshot = None;
         // The error is not discarded: persist records it as a sticky fault and
         // the returned view exposes the warning while preserving current bytes.
         let _ = self.persist();
@@ -2050,6 +2056,7 @@ fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentVie
     if matches!(
         edit,
         Edit::RotatePages { .. }
+            | Edit::MovePages { .. }
             | Edit::AddInk { .. }
             | Edit::DeletePages { .. }
             | Edit::DeletePage { .. }
@@ -2058,7 +2065,8 @@ fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentVie
             | Edit::DeleteAnnotation { .. }
     ) {
         return Err(
-            "批量旋转、手绘和删除必须使用各自的专用入口；页面与批注删除须原生确认。".into(),
+            "批量旋转、多页移动、手绘和删除必须使用各自的专用入口；页面与批注删除须原生确认。"
+                .into(),
         );
     }
     workspace
@@ -2827,7 +2835,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,overview::prepare_page_overview,overview::move_overview_pages,overview::render_overview_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

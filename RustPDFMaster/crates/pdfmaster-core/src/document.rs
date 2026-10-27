@@ -98,6 +98,12 @@ pub enum Edit {
         from: usize,
         to: usize,
     },
+    /// Move the selection, in source order, before a boundary in the original
+    /// page sequence. `insertion == page_count` appends the selection.
+    MovePages {
+        pages: Vec<usize>,
+        insertion: usize,
+    },
     InsertBlank {
         index: usize,
         width: f32,
@@ -363,6 +369,7 @@ impl Session {
         let structural = matches!(
             &edit,
             Edit::MovePage { .. }
+                | Edit::MovePages { .. }
                 | Edit::InsertBlank { .. }
                 | Edit::DuplicatePage { .. }
                 | Edit::DeletePage { .. }

@@ -27,6 +27,10 @@ pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit
             degrees,
         } => rotate_pages(document, pages, &selected, degrees),
         Edit::MovePage { from, to } => move_page(document, pages, from, to),
+        Edit::MovePages {
+            pages: selected,
+            insertion,
+        } => move_pages(document, pages, &selected, insertion),
         Edit::InsertBlank {
             index,
             width,
@@ -162,6 +166,41 @@ fn move_page(document: &mut Document, pages: &[PageInfo], from: usize, to: usize
     let id = ids.remove(from);
     ids.insert(to, id);
     flatten_page_tree(document, &ids)
+}
+
+fn move_pages(
+    document: &mut Document,
+    pages: &[PageInfo],
+    selected: &[usize],
+    insertion: usize,
+) -> Result<()> {
+    validate_page_batch(selected, pages.len())?;
+    if insertion > pages.len() {
+        return Err(PdfMasterError::InvalidPage {
+            index: insertion,
+            page_count: pages.len(),
+        });
+    }
+    let ids = page_object_ids(document)?;
+    let selected: HashSet<_> = selected.iter().copied().collect();
+    let destination = insertion - selected.iter().filter(|&&page| page < insertion).count();
+    let moved: Vec<_> = ids
+        .iter()
+        .enumerate()
+        .filter_map(|(page, &id)| selected.contains(&page).then_some(id))
+        .collect();
+    let mut reordered: Vec<_> = ids
+        .iter()
+        .enumerate()
+        .filter_map(|(page, &id)| (!selected.contains(&page)).then_some(id))
+        .collect();
+    reordered.splice(destination..destination, moved);
+    if reordered == ids {
+        return Err(PdfMasterError::InvalidOperation(
+            "pages are already at destination",
+        ));
+    }
+    flatten_page_tree(document, &reordered)
 }
 
 fn insert_blank(
