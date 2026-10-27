@@ -84,7 +84,11 @@ pub fn prepare_image_imports(
 }
 enum Plan {
     Pdf,
-    Image(ImageFormat, Vec<Option<Box<moxcms::ColorProfile>>>),
+    Image(
+        ImageFormat,
+        Vec<Option<Box<moxcms::ColorProfile>>>,
+        Option<Orientation>,
+    ),
 }
 fn invalid() -> PdfMasterError {
     PdfMasterError::InvalidOperation("image format, color model, animation or data is unsupported")
@@ -108,9 +112,9 @@ fn color_preflight(
     bytes: &[u8],
     format: ImageFormat,
     total: &mut usize,
-) -> Result<Option<Box<moxcms::ColorProfile>>> {
+) -> Result<(Option<Box<moxcms::ColorProfile>>, Option<Orientation>)> {
     if format == ImageFormat::Png {
-        return crate::import_color::png(bytes, total);
+        return crate::import_color::png(bytes, total).map(|p| (p, None));
     }
     if format == ImageFormat::Bmp {
         let header = bytes.get(14..18).ok_or_else(invalid)?;
@@ -119,16 +123,10 @@ fn color_preflight(
         }
     }
     if format == ImageFormat::Jpeg {
-        let mut d = decoder(bytes, format)?;
-        // Exif may declare a non-sRGB color space. Until parsed/normalized,
-        // reject it explicitly, rather than only applying its orientation.
-        if d.icc_profile().map_err(|_| invalid())?.is_some()
-            || d.exif_metadata().map_err(|_| invalid())?.is_some()
-        {
-            return Err(unsupported_color());
-        }
+        let metadata = crate::import_jpeg::preflight(bytes, total)?;
+        return Ok((metadata.profile, Some(metadata.orientation)));
     }
-    Ok(None)
+    Ok((None, None))
 }
 fn pixels(w: u32, h: u32, total: &mut u64) -> Result<()> {
     let n = u64::from(w) * u64::from(h);
@@ -275,7 +273,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                 "tif" | "tiff" => ImageFormat::Tiff,
                 _ => return Err(invalid()),
             };
-            let color = color_preflight(bytes, format, &mut color_bytes)?;
+            let (color, orientation) = color_preflight(bytes, format, &mut color_bytes)?;
             let mut colors = vec![];
             let mut count = 1;
             if format == ImageFormat::Tiff {
@@ -327,7 +325,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                 colors.push(color);
             }
             pages += count;
-            plans.push(Plan::Image(format, colors));
+            plans.push(Plan::Image(format, colors, orientation));
         }
         if pages > MAX_PAGES {
             return Err(PdfMasterError::Budget("import pages"));
@@ -338,7 +336,9 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
     for ((_, bytes), plan) in files.iter().zip(plans) {
         let converted = match plan {
             Plan::Pdf => bytes.to_vec(),
-            Plan::Image(format, colors) => image_pdf(bytes, format, colors, layout)?,
+            Plan::Image(format, colors, orientation) => {
+                image_pdf(bytes, format, colors, orientation, layout)?
+            }
         };
         output_bytes = output_bytes
             .checked_add(converted.len())
@@ -354,6 +354,7 @@ fn image_pdf(
     bytes: &[u8],
     format: ImageFormat,
     colors: Vec<Option<Box<moxcms::ColorProfile>>>,
+    orientation: Option<Orientation>,
     layout: ImageImportLayout,
 ) -> Result<Vec<u8>> {
     let count = colors.len();
@@ -408,7 +409,11 @@ fn image_pdf(
             image
         } else {
             let mut d = decoder(bytes, format)?;
-            let orientation = d.orientation().map_err(|_| invalid())?;
+            let orientation = if let Some(orientation) = orientation {
+                orientation
+            } else {
+                d.orientation().map_err(|_| invalid())?
+            };
             let mut image = DynamicImage::from_decoder(d).map_err(|_| invalid())?;
             image.apply_orientation(orientation);
             image

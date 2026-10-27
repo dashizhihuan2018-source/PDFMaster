@@ -270,6 +270,570 @@ fn add_png_chunk(mut bytes: Vec<u8>, name: &[u8; 4], data: &[u8], late: bool) ->
     bytes
 }
 
+fn jpeg(samples: &[u8], w: u32, h: u32, gray: bool) -> Vec<u8> {
+    let mut out = vec![];
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 100)
+        .encode(
+            samples,
+            w,
+            h,
+            if gray {
+                image::ExtendedColorType::L8
+            } else {
+                image::ExtendedColorType::Rgb8
+            },
+        )
+        .unwrap();
+    out
+}
+fn jpeg_marker(mut jpeg: Vec<u8>, marker: u8, data: &[u8], late: bool) -> Vec<u8> {
+    let mut segment = vec![255, marker];
+    segment.extend(((data.len() + 2) as u16).to_be_bytes());
+    segment.extend(data);
+    let offset = if late { jpeg.len() - 2 } else { 2 };
+    jpeg.splice(offset..offset, segment);
+    jpeg
+}
+fn jpeg_icc(jpeg: Vec<u8>, profile: &[u8]) -> Vec<u8> {
+    let split = profile.len() / 2;
+    // Reverse physical order: sequence numbers, not encounter order, are authoritative.
+    let mut a = b"ICC_PROFILE\0\x01\x02".to_vec();
+    a.extend(&profile[..split]);
+    let mut b = b"ICC_PROFILE\0\x02\x02".to_vec();
+    b.extend(&profile[split..]);
+    jpeg_marker(jpeg_marker(jpeg, 0xe2, &a, false), 0xe2, &b, false)
+}
+fn jpeg_exif(jpeg: Vec<u8>, orientation: u16, space: u16, little: bool) -> Vec<u8> {
+    jpeg_marker(
+        jpeg,
+        0xe1,
+        &exif_payload(orientation, space, little, None),
+        false,
+    )
+}
+fn exif_payload(orientation: u16, space: u16, little: bool, interop: Option<&[u8; 4]>) -> Vec<u8> {
+    let u16b = |n: u16| {
+        if little {
+            n.to_le_bytes()
+        } else {
+            n.to_be_bytes()
+        }
+    };
+    let u32b = |n: u32| {
+        if little {
+            n.to_le_bytes()
+        } else {
+            n.to_be_bytes()
+        }
+    };
+    let mut exif = b"Exif\0\0".to_vec();
+    exif.extend(if little { *b"II" } else { *b"MM" });
+    exif.extend(u16b(42));
+    exif.extend(u32b(8));
+    exif.extend(u16b(2));
+    exif.extend(u16b(0x112));
+    exif.extend(u16b(3));
+    exif.extend(u32b(1));
+    exif.extend(u16b(orientation));
+    exif.extend([0; 2]);
+    exif.extend(u16b(0x8769));
+    exif.extend(u16b(4));
+    exif.extend(u32b(1));
+    exif.extend(u32b(38));
+    exif.extend(u32b(0));
+    exif.extend(u16b(if interop.is_some() { 2 } else { 1 }));
+    exif.extend(u16b(0xa001));
+    exif.extend(u16b(3));
+    exif.extend(u32b(1));
+    exif.extend(u16b(space));
+    exif.extend([0; 2]);
+    if interop.is_some() {
+        exif.extend(u16b(0xa005));
+        exif.extend(u16b(4));
+        exif.extend(u32b(1));
+        exif.extend(u32b(68));
+    }
+    exif.extend(u32b(0));
+    if let Some(interop) = interop {
+        exif.extend(u16b(1));
+        exif.extend(u16b(1));
+        exif.extend(u16b(2));
+        exif.extend(u32b(4));
+        exif.extend(interop);
+        exif.extend(u32b(0));
+    }
+    exif
+}
+
+#[test]
+fn jpeg_rgb_gray_icc_fragments_are_normalized_in_sequence_order_not_file_order() {
+    for gray in [false, true] {
+        let plain = jpeg(if gray { &[128] } else { &[128; 3] }, 1, 1, gray);
+        let profile = if gray {
+            encoded_profile(moxcms::ColorProfile::new_gray_with_gamma(1.))
+        } else {
+            linear_rgb_profile()
+        };
+        let profiled = jpeg_icc(plain, &profile);
+        let converted = prepare_imports(&[("profile.jpg", &profiled)]).unwrap();
+        assert!(
+            embedded_image(&converted[0])
+                .2
+                .iter()
+                .all(|v| (187..=189).contains(v))
+        );
+    }
+}
+
+#[test]
+fn jpeg_exif_both_endiannesses_apply_all_orientations_and_icc_overrides_legacy_space() {
+    use pdfmaster_core::{ImageImportLayout, ImagePaper, prepare_image_imports};
+    let plain = jpeg(&[255, 0, 0, 0, 0, 255], 2, 1, false);
+    let original = image::load_from_memory(&plain)
+        .unwrap()
+        .to_rgb8()
+        .into_raw();
+    for little in [false, true] {
+        for orientation in 1..=8 {
+            let camera = jpeg_exif(plain.clone(), orientation, 1, little);
+            let converted = prepare_image_imports(
+                &[("camera.jpeg", &camera)],
+                ImageImportLayout {
+                    paper: ImagePaper::Pixels,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let (w, h, rgb) = embedded_image(&converted[0]);
+            assert_eq!((w, h), if orientation >= 5 { (1, 2) } else { (2, 1) });
+            let reversed = matches!(orientation, 2 | 3 | 7 | 8);
+            let expected: Vec<u8> = if reversed {
+                original.chunks_exact(3).rev().flatten().copied().collect()
+            } else {
+                original.clone()
+            };
+            assert_eq!(rgb, expected, "orientation={orientation} little={little}");
+        }
+    }
+    let linear = jpeg_icc(
+        jpeg_exif(jpeg(&[128; 3], 1, 1, false), 1, 65535, true),
+        &linear_rgb_profile(),
+    );
+    let converted = prepare_imports(&[("icc-camera.jpg", &linear)]).unwrap();
+    assert!(
+        embedded_image(&converted[0])
+            .2
+            .iter()
+            .all(|v| (187..=189).contains(v))
+    );
+}
+
+#[test]
+fn jpeg_broken_icc_sequence_is_rejected_even_when_decoder_reports_no_profile() {
+    let plain = jpeg(&[128; 3], 1, 1, false);
+    let mut missing = b"ICC_PROFILE\0\x01\x02".to_vec();
+    missing.extend(linear_rgb_profile());
+    let bad = jpeg_marker(plain.clone(), 0xe2, &missing, false);
+    assert!(prepare_imports(&[("plain.jpg", &plain), ("broken.jpg", &bad)]).is_err());
+}
+
+#[test]
+fn jpeg_exif_dcf_r03_uses_declared_transfer_and_primaries() {
+    let plain = jpeg(&[180, 100, 60], 1, 1, false);
+    let decoded = image::load_from_memory(&plain)
+        .unwrap()
+        .to_rgb8()
+        .into_raw();
+    let src: Vec<f64> = decoded
+        .iter()
+        .map(|v| (f64::from(*v) / 255.).powf(2.2))
+        .collect();
+    let expected = [
+        // Independent RGB/XYZ matrices and Bradford DCF-white -> D65.
+        [1.399790752, -0.399661069, -0.000129683],
+        [0.000147995, 0.999848060, 0.000003945],
+        [0.000047167, -0.042890460, 1.042843293],
+    ]
+    .map(|row| {
+        let x = row
+            .into_iter()
+            .zip(&src)
+            .map(|(m, v)| m * v)
+            .sum::<f64>()
+            .clamp(0., 1.);
+        ((if x <= 0.0031308 {
+            x * 12.92
+        } else {
+            1.055 * x.powf(1. / 2.4) - 0.055
+        }) * 255.)
+            .round() as u8
+    });
+    for little in [false, true] {
+        let camera = jpeg_marker(plain.clone(), 0xe1, &dcf_exif(little), false);
+        let converted = prepare_imports(&[("adobe-camera.jpg", &camera)]).unwrap();
+        let actual = embedded_image(&converted[0]).2;
+        assert!(
+            actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1),
+            "{actual:?} != {expected:?}"
+        );
+    }
+}
+
+// Self-owned synthetic DCF optional color declarations, CP-3461B 4.5.4.4.
+fn dcf_exif(little: bool) -> Vec<u8> {
+    let u16b = |n: u16| {
+        if little {
+            n.to_le_bytes()
+        } else {
+            n.to_be_bytes()
+        }
+    };
+    let u32b = |n: u32| {
+        if little {
+            n.to_le_bytes()
+        } else {
+            n.to_be_bytes()
+        }
+    };
+    let mut b = b"Exif\0\0".to_vec();
+    b.extend(if little { *b"II" } else { *b"MM" });
+    b.extend(u16b(42));
+    b.extend(u32b(8));
+    for (entries, next) in [
+        (
+            vec![
+                (0x112, 3, 1, if little { 1 } else { 65536 }),
+                (0x8769, 4, 1, 74),
+                (318, 5, 2, 134),
+                (319, 5, 6, 150),
+                (529, 5, 3, 198),
+            ],
+            0,
+        ),
+        (
+            vec![
+                (0xa001, 3, 1, if little { 65535 } else { 0xffff0000 }),
+                (0xa005, 4, 1, 116),
+                (0xa500, 5, 1, 222),
+            ],
+            0,
+        ),
+        (
+            vec![(
+                1,
+                2,
+                4,
+                if little {
+                    u32::from_le_bytes(*b"R03\0")
+                } else {
+                    u32::from_be_bytes(*b"R03\0")
+                },
+            )],
+            0,
+        ),
+    ] {
+        b.extend(u16b(entries.len() as u16));
+        for (tag, ty, count, value) in entries {
+            b.extend(u16b(tag));
+            b.extend(u16b(ty));
+            b.extend(u32b(count));
+            b.extend(u32b(value));
+        }
+        b.extend(u32b(next));
+    }
+    for (n, d) in [
+        (313, 1000),
+        (329, 1000),
+        (64, 100),
+        (33, 100),
+        (21, 100),
+        (71, 100),
+        (15, 100),
+        (6, 100),
+        (299, 1000),
+        (587, 1000),
+        (114, 1000),
+        (22, 10),
+    ] {
+        b.extend(u32b(n));
+        b.extend(u32b(d));
+    }
+    b
+}
+
+#[test]
+fn jpeg_metadata_corruption_and_late_declarations_never_silently_fall_back() {
+    let plain = jpeg(&[128; 3], 1, 1, false);
+    let mut chunk = b"ICC_PROFILE\0\x01\x01".to_vec();
+    chunk.extend(linear_rgb_profile());
+    let mut zero = chunk.clone();
+    zero[12] = 0;
+    let mut beyond = chunk.clone();
+    beyond[12] = 2;
+    let mut terminator = chunk.clone();
+    terminator[11] = 1;
+    let mut cycle = exif_payload(1, 1, true, None);
+    cycle[6 + 34..6 + 38].copy_from_slice(&8u32.to_le_bytes());
+    let mut outside = exif_payload(1, 1, true, None);
+    outside[6 + 30..6 + 34].copy_from_slice(&u32::MAX.to_le_bytes());
+    let valid_exif = exif_payload(1, 1, true, None);
+    let cases = vec![
+        jpeg_marker(
+            jpeg_marker(plain.clone(), 0xe2, &chunk, false),
+            0xe2,
+            &chunk,
+            false,
+        ),
+        jpeg_marker(plain.clone(), 0xe2, &zero, false),
+        jpeg_marker(plain.clone(), 0xe2, &beyond, false),
+        jpeg_marker(plain.clone(), 0xe2, &terminator, false),
+        jpeg_marker(plain.clone(), 0xe2, &chunk, true),
+        jpeg_marker(plain.clone(), 0xe1, &valid_exif, true),
+        jpeg_marker(
+            jpeg_marker(plain.clone(), 0xe1, &valid_exif, false),
+            0xe1,
+            &valid_exif,
+            false,
+        ),
+        jpeg_exif(plain.clone(), 0, 1, true),
+        jpeg_exif(plain.clone(), 9, 1, false),
+        jpeg_exif(plain.clone(), 1, 65535, true),
+        jpeg_exif(plain.clone(), 1, 2, true),
+        jpeg_marker(plain.clone(), 0xe1, &cycle, false),
+        jpeg_marker(plain.clone(), 0xe1, &outside, false),
+        jpeg_marker(
+            plain.clone(),
+            0xe1,
+            b"http://ns.adobe.com/xap/1.0/\0unsupported-xmp",
+            false,
+        ),
+        jpeg_marker(plain.clone(), 0xe2, b"MPF\0unsupported-multi-image", false),
+        jpeg_icc(
+            plain.clone(),
+            &encoded_profile(moxcms::ColorProfile::new_gray_with_gamma(1.)),
+        ),
+    ];
+    for (i, bad) in cases.iter().enumerate() {
+        assert!(
+            prepare_imports(&[("good.jpg", &plain), ("bad.jpg", bad)]).is_err(),
+            "case {i}"
+        );
+    }
+    let mut trailing = plain.clone();
+    trailing.extend(b"extra");
+    assert!(prepare_imports(&[("trailing.jpg", &trailing)]).is_err());
+    assert!(prepare_imports(&[("truncated.jpg", &plain[..plain.len() - 2])]).is_err());
+}
+
+#[test]
+fn jpeg_progressive_restart_scans_and_255_icc_fragments_are_portable() {
+    // Self-generated RGB16x16: b[i]=(i*47+(i>>4)*17)%256, P6 ->
+    // libjpeg-turbo3.2.0 cjpeg -progressive -restart 1B -quality 90.
+    // Store encoder output, not an external runtime/tool requirement for CI.
+    let hex = concat!(
+        "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302",
+        "020303030304030304050805050404050a070706080c0a0c0c0b0a0b0b0d",
+        "0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ff",
+        "db00430103040405040509050509140d0b0d141414141414141414141414",
+        "141414141414141414141414141414141414141414141414141414141414",
+        "1414141414141414ffc20011080010001003012200021101031101ffc400",
+        "1500010100000000000000000000000000000504ffc40015010101000000",
+        "00000000000000000000000001ffdd00040001ffda000c03010002100310",
+        "0000013159118fffc4001910000301010100000000000000000000000102",
+        "03041205ffda0008010100010502330327ffd0e144bfffd1bf07ceffd2b2",
+        "aaedffc4001d110001020700000000000000000000000001000302041121",
+        "32a1c1ffda0008010301013f01673976e3b0009dd78bffc4001b11000201",
+        "0500000000000000000000000001020300112123b1ffda0008010201013f",
+        "015dd0c64e0b35fa6bffc400231001000102030900000000000000000000",
+        "0102000304113112212233416183b1b3ffda0008010100063f02c22ee08e",
+        "be0857ffd09c73369c40875e6dcaffd12d67c71b2c93b360cbd35fffd2b3",
+        "274652fbd7ffc4001d100101000201050000000000000000000001110031",
+        "21516191b1f0ffda0008010100013f215c8a8a7837e7ffd0b185a3c82ece",
+        "d4f267ffd123aa4dd06beb59ffd25221633ac9ef3fffda000c0301000200",
+        "03000000105bffc4001a1100020203000000000000000000000000011121",
+        "41003151ffda0008010301013f109ee8931693a425f0bcffc4001b110001",
+        "04030000000000000000000000000100213141115161ffda000801020101",
+        "3f10b4d71b688490e1fa36bfffc4001c1001010002020300000000000000",
+        "000000011100213141617181ffda0008010100013f1041b1100162f5237d",
+        "67ffd0515be9070b92235ebcc67fffd1ded9cbc9048d420d394a5fffd2dc",
+        "7058d5c64ed07dde7fffd9"
+    );
+    let plain: Vec<u8> = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
+        .collect();
+    assert!(plain.windows(2).filter(|b| *b == [255, 218]).count() > 1);
+    assert!(plain.windows(2).any(|b| b == [255, 208]));
+    let expected = image::load_from_memory(&plain)
+        .unwrap()
+        .to_rgb8()
+        .into_raw();
+    let result = prepare_imports(&[("progressive.jpg", &plain)]).unwrap();
+    assert_eq!(embedded_image(&result[0]), (16, 16, expected.clone()));
+    let mut srgb = moxcms::ColorProfile::new_srgb();
+    srgb.cicp = None; // This fixture tests matrix/TRC ICC, not unsupported CICP.
+    let profile = encoded_profile(srgb);
+    let mut tagged = plain.clone();
+    let size = profile.len();
+    assert!(size >= 255, "profile only {size} bytes");
+    for i in 0..255 {
+        let mut chunk = b"ICC_PROFILE\0".to_vec();
+        chunk.extend([i as u8 + 1, 255]);
+        chunk.extend(&profile[i * size / 255..(i + 1) * size / 255]);
+        tagged = jpeg_marker(tagged, 0xe2, &chunk, false);
+    }
+    let result = prepare_imports(&[("255-parts.jpg", &tagged)]).unwrap();
+    let actual = embedded_image(&result[0]).2;
+    assert!(actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
+    let mut late = b"ICC_PROFILE\0\x01\x01".to_vec();
+    late.extend(profile);
+    // An APP2 between real scans must not be missed by an SOS-only parser.
+    let scan2 = plain
+        .windows(2)
+        .enumerate()
+        .filter(|(_, b)| *b == [255, 218])
+        .nth(1)
+        .unwrap()
+        .0;
+    let segment = jpeg_marker(vec![255, 216, 255, 217], 0xe2, &late, false);
+    let mut interscan = plain;
+    interscan.splice(scan2..scan2, segment[2..segment.len() - 2].iter().copied());
+    assert!(prepare_imports(&[("late-between-scans.jpg", &interscan)]).is_err());
+}
+
+#[test]
+fn jpeg_dcf_declared_values_and_metadata_budgets_fail_closed() {
+    let plain = jpeg(&[128; 3], 1, 1, false);
+    for little in [false, true] {
+        for offset in [134, 150, 198, 222] {
+            let mut exif = dcf_exif(little);
+            // Change the declared rational, not its valid storage/range.
+            exif[6 + offset + if little { 0 } else { 3 }] ^= 1;
+            let bad = jpeg_marker(plain.clone(), 0xe1, &exif, false);
+            assert!(prepare_imports(&[("invalid-dcf.jpg", &bad)]).is_err());
+            // An explicit valid ICC is authoritative over legacy color tags.
+            let tagged = jpeg_icc(bad, &linear_rgb_profile());
+            let result = prepare_imports(&[("icc.jpg", &tagged)]).unwrap();
+            assert!(
+                embedded_image(&result[0])
+                    .2
+                    .iter()
+                    .all(|v| (187..=189).contains(v))
+            );
+            let mut malformed = dcf_exif(little);
+            malformed[6 + offset + 4..6 + offset + 8].fill(0);
+            let malformed = jpeg_icc(
+                jpeg_marker(plain.clone(), 0xe1, &malformed, false),
+                &linear_rgb_profile(),
+            );
+            assert!(prepare_imports(&[("icc-with-invalid-rational.jpg", &malformed)]).is_err());
+        }
+        let incomplete = jpeg_marker(
+            plain.clone(),
+            0xe1,
+            &exif_payload(1, 65535, little, Some(b"R03\0")),
+            false,
+        );
+        assert!(prepare_imports(&[("incomplete-dcf.jpg", &incomplete)]).is_err());
+    }
+    let mut huge = plain.clone();
+    for i in 1..=17 {
+        let mut chunk = b"ICC_PROFILE\0".to_vec();
+        chunk.extend([i, 17]);
+        chunk.resize(65_533, 0);
+        huge = jpeg_marker(huge, 0xe2, &chunk, false);
+    }
+    assert!(matches!(
+        prepare_imports(&[("huge-profile.jpg", &huge)]),
+        Err(pdfmaster_core::PdfMasterError::Budget(_))
+    ));
+}
+
+#[test]
+fn jpeg_thumbnail_and_gps_tags_do_not_own_primary_orientation_or_color() {
+    let plain = jpeg(&[255, 0, 0, 0, 0, 255], 2, 1, false);
+    let expected = image::load_from_memory(&plain)
+        .unwrap()
+        .to_rgb8()
+        .into_raw();
+    for little in [false, true] {
+        let u16b = |n: u16| {
+            if little {
+                n.to_le_bytes()
+            } else {
+                n.to_be_bytes()
+            }
+        };
+        let u32b = |n: u32| {
+            if little {
+                n.to_le_bytes()
+            } else {
+                n.to_be_bytes()
+            }
+        };
+        let short = |n: u16| {
+            if little {
+                u32::from(n)
+            } else {
+                u32::from(n) << 16
+            }
+        };
+        let mut exif = exif_payload(1, 1, little, None);
+        let root = (exif.len() - 6) as u32;
+        exif[10..14].copy_from_slice(&u32b(root));
+        let gps = root + 42;
+        let thumbnail = gps + 42;
+        for (entries, next) in [
+            (
+                vec![
+                    (0x112, 3, 1, short(1)),
+                    (0x8769, 4, 1, 38),
+                    (0x8825, 4, 1, gps),
+                ],
+                thumbnail,
+            ),
+            (
+                vec![
+                    (0x112, 3, 1, short(8)),
+                    (0xa001, 3, 1, short(65535)),
+                    (
+                        1,
+                        2,
+                        2,
+                        if little {
+                            u32::from_le_bytes(*b"S\0\0\0")
+                        } else {
+                            u32::from_be_bytes(*b"S\0\0\0")
+                        },
+                    ),
+                ],
+                0,
+            ),
+            (
+                vec![
+                    (0x112, 3, 1, short(8)),
+                    (0xa001, 3, 1, short(65535)),
+                    (0xa005, 4, 1, u32::MAX),
+                ],
+                0,
+            ),
+        ] {
+            exif.extend(u16b(3));
+            for (tag, ty, count, value) in entries {
+                exif.extend(u16b(tag));
+                exif.extend(u16b(ty));
+                exif.extend(u32b(count));
+                exif.extend(u32b(value));
+            }
+            exif.extend(u32b(next));
+        }
+        let tagged = jpeg_marker(plain.clone(), 0xe1, &exif, false);
+        let result = prepare_imports(&[("camera-with-thumbnail-gps.jpg", &tagged)]).unwrap();
+        assert_eq!(embedded_image(&result[0]), (2, 1, expected.clone()));
+    }
+}
+
 #[test]
 fn png_gamma_chromaticities_and_icc_priority_have_independent_pixel_oracles() {
     let rgba = [180u8, 100, 60, 255];

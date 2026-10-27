@@ -7,6 +7,7 @@ mod edit;
 mod extract;
 mod import;
 mod import_color;
+mod import_jpeg;
 mod ink;
 mod insert;
 mod lines;
