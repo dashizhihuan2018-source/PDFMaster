@@ -11,6 +11,8 @@ rust_version="1.96.0"
 trunk_version="0.21.14"
 tauri_version="2.12.4"
 cargo_about_version="0.9.2"
+# Must match app/Cargo.lock; avoid Trunk's deferred platform-archive download.
+wasm_bindgen_version="0.2.129"
 tool_root="${RUNNER_TEMP:?RUNNER_TEMP is required}/pdfmaster-rust-tools"
 tool_bin="$tool_root/bin"
 mkdir -p "$tool_bin"
@@ -25,6 +27,8 @@ cargo "+$rust_version" install trunk --version "$trunk_version" --locked --root 
 cargo "+$rust_version" install tauri-cli --version "$tauri_version" --locked --root "$tool_root"
 cargo "+$rust_version" install cargo-about --version "$cargo_about_version" --locked \
   --features cli --root "$tool_root"
+cargo "+$rust_version" install wasm-bindgen-cli --version "$wasm_bindgen_version" --locked \
+  --bin wasm-bindgen --root "$tool_root"
 printf '%s\n' "$tool_bin" >> "${GITHUB_PATH:?GITHUB_PATH is required}"
 export PATH="$tool_bin:$PATH"
 
@@ -43,6 +47,7 @@ rustc "+$rust_version" --version | grep -F "rustc $rust_version "
 [[ "$(trunk --version)" == "trunk ${trunk_version}" ]]
 [[ "$(cargo-tauri --version)" == "tauri-cli ${tauri_version}" ]]
 [[ "$("$CARGO_ABOUT_BIN" --version)" == "cargo-about ${cargo_about_version}" ]]
+[[ "$(wasm-bindgen --version)" == "wasm-bindgen ${wasm_bindgen_version}" ]]
 
 if [[ "$platform" == "macos" ]]; then
   [[ "${RUNNER_OS:-macOS}" == "macOS" ]]

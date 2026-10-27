@@ -674,7 +674,7 @@ pub(super) fn Overview(model: Model) -> impl IntoView {
             on:scroll=move|_|m.measure_overview(false) on:keydown=move|e|m.overview_key(e) on:dblclick=move|e|m.overview_open_at(e)
             on:pointerdown=move|e|m.overview_down(e) on:pointermove=move|e|m.overview_sample(&e) on:pointerup=move|e|m.overview_up(e)
             on:pointercancel=move|e|m.overview_cancel(e.pointer_id()) on:lostpointercapture=move|e|m.overview_cancel(e.pointer_id())
-            on:dragover=move|e|e.prevent_default() on:drop=move|e|{e.prevent_default();m.message.set("外部文件拖入总览尚未迁移；请使用插入 PDF。".into());}>
+            on:dragover=move|e|e.prevent_default() on:drop=move|e|e.prevent_default()>
             <div class="overview-content" style=move||format!("height:{}px",m.overview_layout.with(|l|l.height))>
                 <For each=move||{let window=m.overview_window.get();m.overview_layout.with(|l|l.tiles.get(window.rows()).unwrap_or_default().to_vec())} key=|t|(t.page,t.width.to_bits(),t.height.to_bits(),t.top.to_bits()) children=move|tile|{
                     let page=tile.page;

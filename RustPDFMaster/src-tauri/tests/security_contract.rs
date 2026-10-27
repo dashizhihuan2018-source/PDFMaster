@@ -1,6 +1,33 @@
 use serde_json::Value;
 
 #[test]
+fn native_file_drop_routes_the_main_window_and_denies_path_bearing_event_listeners() {
+    let source = include_str!("../src/lib.rs");
+    assert!(source.contains("tauri::WindowEvent::DragDrop(event)"));
+    assert!(source.contains("file_drop::event(window, event)"));
+    assert!(!source.contains(".on_webview_event(file_drop::event)"));
+    let capability: Value =
+        serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+    assert!(
+        capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p == "core:event:deny-listen")
+    );
+    let drop = include_str!("../src/file_drop.rs");
+    assert!(drop.contains("tauri::ipc::Channel<Notice>"));
+    let args = drop
+        .split("async fn import_file_drop(")
+        .nth(1)
+        .unwrap()
+        .split(") ->")
+        .next()
+        .unwrap();
+    assert!(!args.contains("Path") && !args.contains("paths") && !args.contains("bytes"));
+}
+
+#[test]
 fn unified_annotation_deletion_uses_the_native_confirmation_and_snapshot_path() {
     let source = include_str!("../src/lib.rs");
     assert!(source.contains("async fn delete_annotation_document("));

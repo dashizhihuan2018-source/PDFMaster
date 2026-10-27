@@ -1,0 +1,396 @@
+use super::*;
+use std::path::PathBuf;
+use std::time::Instant;
+static READ_SLOT: Mutex<()> = Mutex::new(());
+fn read_drop_files(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
+    // Cancellation revokes mutation authority, not an OS read already in
+    // progress. Bound those reads independently of the document reservation.
+    let _slot = READ_SLOT
+        .try_lock()
+        .map_err(|_| "上一批文件读取尚在结束，请稍后重试；本次未修改文档。")?;
+    read_insertion_files(paths)
+}
+
+fn logical_point(x: f64, y: f64, scale: f64, apple_points: bool) -> Option<(f64, f64)> {
+    if !x.is_finite() || !y.is_finite() || !scale.is_finite() || scale <= 0. {
+        return None;
+    }
+    // Locked Wry 0.57.1 WKWebView drag_drop.rs already supplies AppKit points.
+    // Its Windows backend supplies physical client pixels. Reaudit on upgrade.
+    let divisor = if apple_points { 1. } else { scale };
+    Some((x / divisor, y / divisor))
+}
+
+#[derive(Default)]
+pub(super) struct Broker {
+    next: u32,
+    pub(super) pending: Option<Pending>,
+    pub(super) running: Option<(u32, u32)>,
+    next_listener: u32,
+    channel: Option<(u32, tauri::ipc::Channel<Notice>)>,
+}
+pub(super) struct Pending {
+    id: u32,
+    document: u32,
+    epoch: u64,
+    snapshot: Vec<u8>,
+    created: Instant,
+    paths: Vec<PathBuf>,
+}
+impl Workspace {
+    fn offer_file_drop(&mut self, paths: Vec<PathBuf>) -> Reply<u32> {
+        self.file_drop.pending = None;
+        self.ensure_editor_idle()?;
+        if paths.is_empty()
+            || paths.len() > pdfmaster_core::MAX_INSERT_FILES
+            || paths
+                .iter()
+                .any(|p| !p.is_absolute() || p.as_os_str().len() > 8192)
+        {
+            return Err("请拖入1–32份本地文件；当前仅支持PDF，整批未修改文档。".into());
+        }
+        let snapshot = self
+            .session
+            .as_ref()
+            .ok_or("请先打开 PDF，再拖入文件。")?
+            .bytes()
+            .map_err(|e| e.to_string())?;
+        let id = self
+            .file_drop
+            .next
+            .checked_add(1)
+            .ok_or("拖放编号已耗尽，请安全保存后重启。")?;
+        self.file_drop.next = id;
+        self.file_drop.pending = Some(Pending {
+            id,
+            document: self.active_document_id,
+            epoch: self.document_epoch,
+            snapshot,
+            created: Instant::now(),
+            paths,
+        });
+        Ok(id)
+    }
+    fn begin_file_drop(
+        &mut self,
+        drop: u32,
+        document: u32,
+        index: usize,
+    ) -> Reply<(u32, Vec<PathBuf>)> {
+        self.ensure_editor_idle()?;
+        let pending = self
+            .file_drop
+            .pending
+            .as_ref()
+            .filter(|p| p.id == drop)
+            .ok_or("拖入文件已失效，请重新拖入；文档未修改。")?;
+        if pending.document != document
+            || document != self.active_document_id
+            || pending.epoch != self.document_epoch
+            || pending.created.elapsed().as_secs() >= 30
+            || self
+                .session
+                .as_ref()
+                .ok_or("请先打开 PDF")?
+                .bytes()
+                .map_err(|e| e.to_string())?
+                != pending.snapshot
+        {
+            self.file_drop.pending = None;
+            return Err("拖放期间文档已改变或等待超时，请重新拖入；文档未修改。".into());
+        }
+        let reservation = self.begin_insertion(index)?;
+        let pending = self.file_drop.pending.take().ok_or("拖放已失效。")?;
+        self.file_drop.running = Some((drop, reservation));
+        Ok((reservation, pending.paths))
+    }
+    fn finish_file_drop(
+        &mut self,
+        drop: u32,
+        reservation: u32,
+        index: usize,
+        files: &[&[u8]],
+    ) -> Reply<DocumentView> {
+        if self.file_drop.running != Some((drop, reservation))
+            || self.export_reservation != Some(reservation)
+        {
+            return Err("导入已取消或会话已改变，未插入页面。".into());
+        }
+        self.file_drop.running = None;
+        self.finish_insertions(reservation, index, files)
+    }
+    fn cancel_file_drop(&mut self, drop: u32) -> bool {
+        if self
+            .file_drop
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.id == drop)
+        {
+            self.file_drop.pending = None;
+            return true;
+        }
+        if let Some((_, reservation)) = self.file_drop.running.filter(|(id, _)| *id == drop) {
+            self.file_drop.running = None;
+            self.release_export(reservation);
+            return true;
+        }
+        false
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub(super) struct Notice {
+    kind: &'static str,
+    id: Option<u32>,
+    x: f64,
+    y: f64,
+    error: Option<String>,
+}
+
+pub(super) fn event(window: &tauri::Window, event: &tauri::DragDropEvent) {
+    use tauri::DragDropEvent;
+    if window.label() != "main" {
+        return;
+    }
+    let scale = window.scale_factor().unwrap_or(1.);
+    let position = match event {
+        DragDropEvent::Enter { position, .. }
+        | DragDropEvent::Over { position }
+        | DragDropEvent::Drop { position, .. } => logical_point(
+            position.x,
+            position.y,
+            scale,
+            cfg!(any(target_os = "macos", target_os = "ios")),
+        ),
+        _ => Some((0., 0.)),
+    };
+    let Some((x, y)) = position else {
+        return;
+    };
+    let state = window.state::<Store>();
+    let Ok(mut w) = state.lock() else {
+        return;
+    };
+    let mut notice = Notice {
+        kind: "leave",
+        id: None,
+        x,
+        y,
+        error: None,
+    };
+    match event {
+        DragDropEvent::Enter { .. } => {
+            w.file_drop.pending = None;
+            notice.kind = "over";
+        }
+        DragDropEvent::Over { .. } => notice.kind = "over",
+        DragDropEvent::Drop { paths, .. } => {
+            notice.kind = "drop";
+            match w.offer_file_drop(paths.clone()) {
+                Ok(id) => notice.id = Some(id),
+                Err(error) => notice.error = Some(error),
+            }
+        }
+        // Wry may send Leave immediately after Drop; do not revoke the notice.
+        _ => {}
+    }
+    if let Some((_, channel)) = &w.file_drop.channel {
+        let _ = channel.send(notice);
+    }
+}
+
+#[tauri::command]
+pub(super) async fn register_file_drop_channel(
+    state: State<'_, Store>,
+    channel: tauri::ipc::Channel<Notice>,
+) -> Reply<u32> {
+    let mut w = state.lock().map_err(|_| "文档状态不可用")?;
+    let id = w
+        .file_drop
+        .next_listener
+        .checked_add(1)
+        .ok_or("拖放监听编号已耗尽。")?;
+    w.file_drop.next_listener = id;
+    w.file_drop.channel = Some((id, channel));
+    w.file_drop.pending = None;
+    Ok(id)
+}
+#[tauri::command]
+pub(super) async fn unregister_file_drop_channel(state: State<'_, Store>, id: u32) -> Reply<()> {
+    let mut w = state.lock().map_err(|_| "文档状态不可用")?;
+    if w.file_drop
+        .channel
+        .as_ref()
+        .is_some_and(|(current, _)| *current == id)
+    {
+        w.file_drop.channel = None;
+        w.file_drop.pending = None;
+    }
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub(super) async fn import_file_drop(
+    state: State<'_, Store>,
+    id: u32,
+    document: u32,
+    index: usize,
+) -> Reply<Option<DocumentView>> {
+    let (reservation, paths) = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .begin_file_drop(id, document, index)?;
+    let guard = ExportReservation {
+        store: state.inner(),
+        id: reservation,
+    };
+    let files = tauri::async_runtime::spawn_blocking(move || read_drop_files(&paths))
+        .await
+        .map_err(|_| "无法读取拖入文件；整批未修改文档。")??;
+    let refs: Vec<_> = files.iter().map(Vec::as_slice).collect();
+    let result = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .finish_file_drop(id, reservation, index, &refs)
+        .map(Some);
+    drop(guard);
+    result
+}
+
+#[tauri::command]
+pub(super) async fn cancel_file_drop(state: State<'_, Store>, id: u32) -> Reply<bool> {
+    Ok(state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .cancel_file_drop(id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cancelled_slow_read_cannot_accumulate_unbounded_parallel_readers() {
+        let _guard = READ_SLOT.lock().unwrap();
+        let (_dir, paths) = paths();
+        assert!(read_drop_files(&paths).is_err());
+    }
+    #[test]
+    fn locked_wry_apple_points_are_not_scaled_twice_but_windows_physical_pixels_are() {
+        assert_eq!(logical_point(620., 420., 2., true), Some((620., 420.)));
+        assert_eq!(logical_point(620., 420., 2., false), Some((310., 210.)));
+        assert_eq!(logical_point(f64::NAN, 420., 2., true), None);
+        assert_eq!(logical_point(620., 420., 0., false), None);
+    }
+    fn workspace() -> Workspace {
+        let mut w = Workspace::default();
+        w.replace_document(
+            Session::blank(300., 400., 3).unwrap(),
+            "synthetic.pdf".into(),
+        )
+        .unwrap();
+        w
+    }
+    fn paths() -> (tempfile::TempDir, Vec<PathBuf>) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = vec![dir.path().join("first.pdf"), dir.path().join("second.pdf")];
+        std::fs::write(
+            &paths[0],
+            Session::blank(111., 222., 2).unwrap().bytes().unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &paths[1],
+            Session::blank(333., 444., 1).unwrap().bytes().unwrap(),
+        )
+        .unwrap();
+        (dir, paths)
+    }
+    #[test]
+    fn native_drop_is_one_shot_ordered_and_inserts_as_one_exact_undo() {
+        let mut w = workspace();
+        let (_dir, paths) = paths();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let id = w.offer_file_drop(paths.clone()).unwrap();
+        let (reservation, selected) = w.begin_file_drop(id, w.active_document_id, 1).unwrap();
+        assert_eq!(selected, paths);
+        assert!(w.begin_file_drop(id, w.active_document_id, 1).is_err());
+        let files = read_insertion_files(&selected).unwrap();
+        let refs: Vec<_> = files.iter().map(Vec::as_slice).collect();
+        let view = w.finish_file_drop(id, reservation, 1, &refs).unwrap();
+        assert_eq!(view.info.page_count, 6);
+        assert_eq!(
+            view.info.pages.iter().map(|p| p.width).collect::<Vec<_>>(),
+            [300., 111., 111., 333., 300., 300.]
+        );
+        assert!(w.file_drop.running.is_none());
+        assert!(w.export_reservation.is_none());
+        let after = w.session.as_ref().unwrap().bytes().unwrap();
+        let s = w.session.as_mut().unwrap();
+        s.undo().unwrap();
+        assert_eq!(s.bytes().unwrap(), before);
+        s.redo().unwrap();
+        assert_eq!(s.bytes().unwrap(), after);
+    }
+    #[test]
+    fn stale_expired_foreign_and_bad_destination_drops_do_not_reserve_or_edit() {
+        let mut w = workspace();
+        let (_dir, paths) = paths();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        for kind in 0..4 {
+            let id = w.offer_file_drop(paths.clone()).unwrap();
+            if kind == 0 {
+                w.document_epoch += 1;
+            }
+            if kind == 1 {
+                w.file_drop.pending.as_mut().unwrap().created =
+                    Instant::now() - std::time::Duration::from_secs(31);
+            }
+            let doc = w.active_document_id + u32::from(kind == 2);
+            assert!(
+                w.begin_file_drop(id, doc, if kind == 3 { 4 } else { 1 })
+                    .is_err()
+            );
+            assert!(w.export_reservation.is_none());
+            assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        }
+    }
+    #[test]
+    fn invalid_batch_is_atomic_and_cancelled_import_cannot_apply_late_bytes() {
+        let mut w = workspace();
+        let (_dir, paths) = paths();
+        let before = w.session.as_ref().unwrap().bytes().unwrap();
+        let files = read_insertion_files(&paths).unwrap();
+        let id = w.offer_file_drop(paths.clone()).unwrap();
+        let (r, _) = w.begin_file_drop(id, w.active_document_id, 0).unwrap();
+        assert!(
+            w.finish_file_drop(id, r, 0, &[&files[0], b"invalid PDF"])
+                .is_err()
+        );
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+        let id = w.offer_file_drop(paths).unwrap();
+        let (r, _) = w.begin_file_drop(id, w.active_document_id, 0).unwrap();
+        assert!(!w.cancel_file_drop(id + 1));
+        assert!(w.export_reservation.is_some());
+        assert!(w.cancel_file_drop(id));
+        assert!(!w.cancel_file_drop(id));
+        assert!(w.export_reservation.is_none());
+        assert!(w.finish_file_drop(id, r, 0, &[&files[0]]).is_err());
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), before);
+    }
+    #[test]
+    fn new_offer_invalidates_old_and_paths_never_arrive_from_an_ipc_argument() {
+        let mut w = workspace();
+        let (_dir, paths) = paths();
+        let id = w.offer_file_drop(paths.clone()).unwrap();
+        assert!(
+            w.offer_file_drop(vec![PathBuf::from("relative.pdf")])
+                .is_err()
+        );
+        assert!(w.begin_file_drop(id, w.active_document_id, 0).is_err());
+        assert!(w.offer_file_drop(vec![]).is_err());
+        assert!(w.offer_file_drop(vec![paths[0].clone(); 33]).is_err());
+        let id = w.offer_file_drop(paths).unwrap();
+        assert!(w.cancel_file_drop(id));
+        assert!(w.begin_file_drop(id, w.active_document_id, 0).is_err());
+    }
+}

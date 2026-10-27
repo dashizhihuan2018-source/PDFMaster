@@ -3,5 +3,5 @@
   "identifier": "main-window",
   "description": "Local Rust UI only; no shell, remote domains or unrestricted file APIs",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:event:deny-listen"]
 }

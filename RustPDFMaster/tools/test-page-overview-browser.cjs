@@ -18,8 +18,10 @@ const server=http.createServer((req,res)=>{
       await page.addInitScript(({image})=>{
         window.requests=[];let next=0,current=0;
         const d={id:1,name:'synthetic-overview.pdf',tabs:[{id:1,name:'synthetic-overview.pdf',dirty:false}],restored:false,info:{page_count:40,pages:Array.from({length:40},(_,i)=>({width:595,height:i%3===0?595:842,rotation:i%4===0?90:0})),dirty:false,can_undo:false,can_redo:false}};
-        window.__TAURI__={core:{invoke:async(command,args)=>{
+        window.__TAURI__={core:{Channel:class{constructor(callback){this.onmessage=callback;}},invoke:async(command,args)=>{
           args=args instanceof Map?Object.fromEntries(args):args;window.requests.push({command,args});
+          if(command==='register_file_drop_channel'){window.nativeDrop=p=>args.channel.onmessage(p);return 1;}
+          if(command==='unregister_file_drop_channel'){delete window.nativeDrop;return null;}
           if(command==='document_info')return structuredClone(d);
           if(command==='render_page'){if(window.failRender){window.failRender=false;throw new Error('synthetic preview failure');}return image;}
           if(command==='copy_pages_document'){
@@ -34,6 +36,13 @@ const server=http.createServer((req,res)=>{
             d.info.pages.splice(args.index,0,...structuredClone(window.pageClipboard));d.info.page_count=d.info.pages.length;current=0;return structuredClone(d);
           }
           if(command==='insert_pdf_document'||command==='insert_pdfs_document')return null;
+          if(command==='cancel_file_drop')return true;
+          if(command==='import_file_drop'){
+            if(window.holdDrop){window.holdDrop=false;return new Promise((_,reject)=>{window.releaseDrop=()=>reject(new Error('synthetic cancelled import'));});}
+            if(window.failDrop){window.failDrop=false;throw new Error('synthetic invalid batch');}
+            d.info.pages.splice(args.index,0,{width:111,height:222,rotation:0},{width:333,height:444,rotation:0});
+            d.info.page_count=d.info.pages.length;d.info.dirty=true;d.warning=null;current=0;return structuredClone(d);
+          }
           if(command==='notes_document')return {notes:[],unsupported_count:0};
           if(command==='shapes_document')return {shapes:[],unsupported_count:0};
           if(command==='prepare_page_overview'){current=++next;return current;}
@@ -146,6 +155,32 @@ const server=http.createServer((req,res)=>{
       const cutStatus=await page.locator('.statusbar [role="status"]').innerText();
       assert.ok(cutStatus.includes('synthetic preview failure'),'committed cut must not conceal the failed preview');
       assert.ok(cutStatus.includes('已剪切')&&cutStatus.includes('可撤销'),'preview failure must not imply that the completed cut was rolled back');
+      assert.equal(await page.evaluate(()=>typeof window.nativeDrop),'function','native file-drop listener must be registered');
+      await grid.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});await tile(0).waitFor({state:'visible'});
+      const dropBox=await tile(0).boundingBox(),dropPoint={x:dropBox.x+dropBox.width-4,y:dropBox.y+20};
+      await page.evaluate(p=>window.nativeDrop({kind:'over',id:null,...p,error:null}),dropPoint);
+      assert.equal(await page.locator('.overview-insertion').count(),1,'native hover exposes the original insertion edge');
+      await page.evaluate(p=>{window.failDrop=true;window.nativeDrop({kind:'drop',id:101,...p,error:null});},dropPoint);
+      await page.waitForFunction(()=>window.requests.some(r=>r.command==='import_file_drop'));
+      assert.equal(await page.evaluate(()=>window.requests.find(r=>r.command==='import_file_drop').args.index),1,'right half inserts after the hit page');
+      await page.waitForFunction(()=>document.querySelector('#pdf-overview').getAttribute('aria-busy')==='false');
+      assert.ok((await page.locator('.statusbar [role="status"]').innerText()).includes('synthetic invalid batch'));
+      await page.evaluate(p=>{window.holdDrop=true;window.nativeDrop({kind:'drop',id:102,...p,error:null});},dropPoint);
+      const cancelImport=page.getByRole('button',{name:'取消文件导入',exact:true});await cancelImport.waitFor({state:'visible'});await cancelImport.click();
+      await page.waitForFunction(()=>document.querySelector('#pdf-overview').getAttribute('aria-busy')==='false');
+      assert.ok(await page.evaluate(()=>window.requests.some(r=>r.command==='cancel_file_drop'&&r.args.id===102)));
+      await page.evaluate(p=>window.nativeDrop({kind:'drop',id:103,...p,error:null}),dropPoint);
+      await page.waitForFunction(()=>document.querySelector('.overview-tile[data-page="1"][aria-selected="true"]'));
+      assert.deepEqual(await selected(),[1,2],'accepted drop selects its inserted range');
+      await page.waitForFunction(()=>document.querySelector('#pdf-overview').getAttribute('aria-busy')==='false');
+      const acceptedStatus=await page.locator('.statusbar [role="status"]').innerText();
+      await page.evaluate(()=>{window.releaseDrop();delete window.releaseDrop;});await page.waitForTimeout(30);
+      assert.equal(await page.locator('.statusbar [role="status"]').innerText(),acceptedStatus,'cancelled old read cannot replace the newer accepted import');
+      await toggle.click();await page.locator('#pdf-reader').waitFor({state:'visible'});
+      const reader=await page.locator('#pdf-reader').boundingBox();
+      await page.evaluate(p=>window.nativeDrop({kind:'drop',id:104,...p,error:null}),{x:reader.x+20,y:reader.y+20});
+      await page.waitForFunction(()=>window.requests.some(r=>r.command==='import_file_drop'&&r.args.id===104));
+      assert.equal(await page.evaluate(()=>window.requests.find(r=>r.command==='import_file_drop'&&r.args.id===104).args.index),2,'reader drop follows its current page');
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'no body horizontal overflow');
       console.log(JSON.stringify({case:'overview',width,selection:true,snapshotMove:true,deleteCancel:true,openPage:true,virtualScroll:true,result:'pass'}));
       await page.close();

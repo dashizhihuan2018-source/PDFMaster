@@ -388,5 +388,25 @@ class CandidateCiContract(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
 
 
+    def test_ci_installs_matching_wasm_bindgen_before_trunk_build(self):
+        # Trunk otherwise downloads a platform archive during its build pipeline.
+        import tomllib
+
+        lock = tomllib.loads(self.read_required(PROJECT / "app/Cargo.lock"))
+        versions = {p["version"] for p in lock["package"] if p["name"] == "wasm-bindgen"}
+        self.assertEqual(versions, {"0.2.129"})
+        setup = self.read_required(TOOLS / "ci-setup.sh")
+        self.assertIn('wasm_bindgen_version="0.2.129"', setup)
+        self.assertIn(
+            'install wasm-bindgen-cli --version "$wasm_bindgen_version" --locked', setup
+        )
+        self.assertIn('--bin wasm-bindgen --root "$tool_root"', setup)
+        self.assertIn(
+            '[[ "$(wasm-bindgen --version)" == "wasm-bindgen ${wasm_bindgen_version}" ]]',
+            setup,
+        )
+        self.assertLess(setup.index("install wasm-bindgen-cli"), setup.index('export PATH='))
+
+
 if __name__ == "__main__":
     unittest.main()
