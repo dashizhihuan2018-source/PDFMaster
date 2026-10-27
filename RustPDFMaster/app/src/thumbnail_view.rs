@@ -346,7 +346,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
                 <div class="outline-scroll">
                     <For each=move||m.outline_cache.with(|cache|cache.result().and_then(|result|result.as_ref().ok()).cloned().unwrap_or_default().into_iter().enumerate().collect::<Vec<_>>()) key=|(index,row)|(*index,row.path.clone(),row.title.clone(),row.page_index) children=move|(index,row)|{
                         let title=format!("{}{}{}", "  ".repeat(row.depth.min(12)), row.title, row.page_index.map(|page|format!("   · {}", page+1)).unwrap_or_default());
-                        let tooltip=title.clone();
+                        let tooltip=row.title.clone();
                         view!{<button class="outline-row" class:selected=move||m.outline_selection.get()==Some(index) aria-current=move||if m.outline_selection.get()==Some(index){"true"}else{"false"}
                             disabled=move||m.outline_cache.with(|cache|cache.page(index,m.count(),m.blocked()).is_none()) on:click=move|_|m.select_outline_row(index) title=tooltip>
                             <span class="outline-title">{title}</span>

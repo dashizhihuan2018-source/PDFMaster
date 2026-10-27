@@ -1,6 +1,16 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 89402852 (2026-10-27)
+## Current snapshot: development 3ea3a9f7 (2026-10-27)
+
+Exactly **157 tracked Rust/workflow files** from development `3ea3a9f77a035b2bee1f6a72dd0b7879d84163c6`, plus this record. Only reviewed candidate source is shared, without private history, memory, evidence notes, user documents/screenshots, credentials or generated/build output. The installed Apple-native app remains the local daily-use version; Rust is for public sharing and three-platform development, not installation replacement or a new store-submission requirement. The preceding native V0.1.24/build46 publication is preserved.
+
+The outline now follows the current build46 source contract: **28px rows, 12px single-line tail ellipsis**, at most twelve levels of two-space indentation and the original page suffix. The full normalized title alone is the tooltip. Read-only projection collapses Unicode whitespace and falls back to `未命名` for blank titles; raw decoded text is still charged to the existing per-title/cumulative budgets before normalization. Original PDF bytes/session state remain unchanged. Search keeps its54px/two-line rows and annotation rows remain44/60px. Outline destination coordinates/zoom, exact native controls and actual target-platform visual acceptance remain pending.
+
+Two updated UI contract tests and a new core normalization test were observed failing before implementation. An independent read-only review found no Critical/Important issue, then suggested stronger cumulative-budget coverage and a comment correction; both are resolved and follow-up found no remaining findings. The new boundary test accepts128 rows sharing an8192-byte ASCII-whitespace title, rejects129 with the specific budget error and verifies unchanged bytes/session. Final local checks passed: **211 core, 131 UI, 80 native +5 security and30 tools**, three-workspace formatting/host-Clippy, additional WASM all-target Clippy, five exact notices and locked release WASM. The70-feature inventory validator also checked the local original checkout; public copies can validate only paths available there. These are source/test results, not real three-platform GUI acceptance. The previous unsaved isolated QA remains untouched; no Rust installation replaced the Apple-native app.
+
+Hosted run [40445952761](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40445952761) completed successfully on Mac and Windows at preceding public `d94e8ac691f4420268810c2d66321e148c340288`, **not this compact-outline source**. Current-source CI/artifact results require a separate exact-head receipt. Inventory remains **24 partial /46 unsupported /0 complete**, with **801 frozen legacy contracts pending**. Full original functionality/UI, broader PDF compatibility, actual Windows/iOS runtime and final Rustall/public skill delivery remain unfinished.
+
+## Historical snapshot: development 89402852 (superseded)
 
 Exactly **157 tracked Rust/workflow files** from development `894028529f5f0485f36e64aab6c7575b6402dea6`, plus this record. Only reviewed source is shared; no private history, evidence notes, memory, user PDFs/screenshots, credentials, fixtures or build outputs are published. The installed Apple-native app remains the local daily-use version. Rust is for public source sharing and three-platform development, not installation replacement or an additional store-submission requirement. Native source/release/tag/website files are preserved.
 

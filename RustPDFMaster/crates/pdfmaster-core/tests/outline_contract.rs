@@ -73,6 +73,77 @@ fn projects_unicode_nested_groups_and_local_goto_without_executing_external_acti
 }
 
 #[test]
+fn build46_collapses_unicode_whitespace_and_names_blank_titles_without_editing_pdf() {
+    let samples = [
+        ("  第一章\t\r\n 第二节\u{3000}尾\u{a0} ", "第一章 第二节 尾"),
+        ("\t \n\r\u{3000}\u{a0}", "未命名"),
+        ("", "未命名"),
+        ("A\u{200b}B", "A\u{200b}B"),
+    ];
+    for (raw, expected) in samples {
+        let bytes = fixture(|doc, root, pages| {
+            let node =
+                doc.add_object(dictionary! {"Title"=>text_string(raw),"Dest"=>fit(pages[1])});
+            first(doc, root, node);
+        });
+        let session = Session::open(&bytes).unwrap();
+        let before = session.info();
+        let rows = session.outline().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, expected, "raw title: {raw:?}");
+        assert_eq!(rows[0].page_index, Some(1));
+        assert_eq!(session.bytes().unwrap(), bytes);
+        assert_eq!(session.info(), before);
+    }
+    let oversized_blank = fixture(|doc, root, _| {
+        let node = doc.add_object(dictionary! {"Title"=>text_string(&" ".repeat(8193))});
+        first(doc, root, node);
+    });
+    let session = Session::open(&oversized_blank).unwrap();
+    assert!(
+        session.outline().is_err(),
+        "normalization must not bypass raw text budgets"
+    );
+    assert_eq!(session.bytes().unwrap(), oversized_blank);
+}
+
+#[test]
+fn blank_titles_charge_raw_decoded_bytes_to_the_cumulative_budget() {
+    for count in [128, 129] {
+        let bytes = fixture(|doc, root, _| {
+            let title = doc.add_object(Object::string_literal(vec![b' '; 8192]));
+            let mut next = None;
+            for _ in 0..count {
+                let mut row = dictionary! {"Title"=>title};
+                if let Some(next) = next {
+                    row.set("Next", Object::Reference(next));
+                }
+                next = Some(doc.add_object(row));
+            }
+            first(doc, root, next.unwrap());
+        });
+        let session = Session::open(&bytes).unwrap();
+        let before = session.info();
+        match session.outline() {
+            Ok(rows) => {
+                assert_eq!(
+                    count, 128,
+                    "over-budget whitespace must fail before normalization"
+                );
+                assert_eq!(rows.len(), count);
+                assert!(rows.iter().all(|row| row.title == "未命名"));
+            }
+            Err(pdfmaster_core::PdfMasterError::Budget("outline title bytes")) => {
+                assert_eq!(count, 129)
+            }
+            Err(error) => panic!("unexpected outline failure: {error}"),
+        }
+        assert_eq!(session.bytes().unwrap(), bytes);
+        assert_eq!(session.info(), before);
+    }
+}
+
+#[test]
 fn missing_titles_and_nonlocal_or_ambiguous_targets_remain_nonnavigable_rows() {
     let bytes = fixture(|doc, root, pages| {
         let remote = doc.add_object(dictionary!{"Title"=>text_string("远程"),"A"=>dictionary!{"S"=>"GoToR","D"=>fit(pages[0])}});

@@ -94,7 +94,7 @@ fn outline_sidebar_has_guarded_local_navigation_and_document_invalidation() {
     );
     assert!(sidebar.contains("此文档没有大纲"));
     assert!(sidebar.contains("外部目标不会打开"));
-    assert!(css.contains(".outline-row{min-height:54px"));
+    assert!(css.contains(".outline-row{min-height:28px"));
 }
 
 #[test]
@@ -103,13 +103,50 @@ fn outline_projection_cache_is_a_testable_rust_state_machine() {
 }
 
 #[test]
-fn outline_labels_keep_the_original_two_line_twelve_point_title_and_page_suffix() {
+fn outline_labels_follow_build46_compact_single_line_contract() {
     let source = include_str!("../src/thumbnail_view.rs");
     let css = include_str!("../workbench.css");
     assert!(source.contains("row.depth.min(12)"));
     assert!(!source.contains("无本文件内目标"));
-    assert!(css.contains("-webkit-line-clamp:2"));
-    assert!(css.contains("white-space:pre-wrap;font-size:12px"));
+    let declarations = |selector: &str| {
+        css.split('}')
+            .find_map(|rule| {
+                let (name, declarations) = rule.split_once('{')?;
+                (name.trim() == selector).then_some(declarations)
+            })
+            .expect("outline CSS rule")
+    };
+    let row = declarations(".outline-row");
+    for required in [
+        "min-height:28px",
+        "height:28px",
+        "box-sizing:border-box",
+        "padding:0 6px",
+    ] {
+        assert!(
+            row.split(';').any(|value| value == required),
+            "missing {required}"
+        );
+    }
+    let title = declarations(".outline-title");
+    for required in [
+        "display:block",
+        "min-width:0",
+        "white-space:pre",
+        "overflow:hidden",
+        "text-overflow:ellipsis",
+        "font-size:12px",
+    ] {
+        assert!(
+            title.split(';').any(|value| value == required),
+            "missing {required}"
+        );
+    }
+    assert!(!title.contains("line-clamp"));
+    // Original tooltip is the full normalized title, without indentation or page suffix.
+    assert!(source.contains("let tooltip=row.title.clone();"));
+    assert!(source.contains("title=tooltip"));
+    assert!(source.contains("page+1"));
 }
 
 #[test]

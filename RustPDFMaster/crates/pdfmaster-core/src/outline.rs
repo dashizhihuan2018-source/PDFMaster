@@ -283,6 +283,14 @@ impl Session {
             if title.len() > MAX_TEXT || total_text > MAX_TOTAL_TEXT {
                 return Err(PdfMasterError::Budget("outline title bytes"));
             }
+            // Match the original reader's display-only whitespace normalization.
+            // Charge raw decoded text above so blank input cannot evade budgets.
+            let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+            let title = if title.is_empty() {
+                "未命名".into()
+            } else {
+                title
+            };
             let target = if node.has(b"Dest") && node.has(b"A") {
                 None
             } else if let Ok(value) = node.get(b"Dest") {
