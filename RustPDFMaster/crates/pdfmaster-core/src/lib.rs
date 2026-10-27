@@ -8,6 +8,7 @@ mod extract;
 mod image_export;
 mod import;
 mod import_color;
+mod import_exif;
 mod import_jpeg;
 mod ink;
 mod insert;

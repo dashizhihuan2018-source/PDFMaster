@@ -2,6 +2,7 @@
 //! and then silently treated as sRGB. These limits are admission limits, not a
 //! claim that the complete decoder or CMS has a fixed total heap footprint.
 use crate::{PdfMasterError, Result};
+use image::metadata::Orientation;
 use moxcms::{
     ColorProfile, DataColorSpace, Layout, ParsingOptions, ProfileClass, TransformOptions,
 };
@@ -16,12 +17,18 @@ pub(super) fn unsupported() -> PdfMasterError {
 fn budget() -> PdfMasterError {
     PdfMasterError::Budget("image color metadata")
 }
-fn charge(size: usize, total: &mut usize) -> Result<()> {
+pub(super) fn charge(size: usize, total: &mut usize) -> Result<()> {
     *total = total.checked_add(size).ok_or_else(budget)?;
     if size > PROFILE_BYTES || *total > BATCH_PROFILE_BYTES {
         return Err(budget());
     }
     Ok(())
+}
+
+pub(super) struct PngMetadata {
+    pub profile: Option<Box<ColorProfile>>,
+    pub orientation: Option<Orientation>,
+    pub dpi: Option<f64>,
 }
 fn be32(bytes: &[u8]) -> Result<usize> {
     Ok(u32::from_be_bytes(bytes.try_into().map_err(|_| unsupported())?) as usize)
@@ -154,7 +161,7 @@ pub(super) fn icc(bytes: &[u8], gray: bool, total: &mut usize) -> Result<Box<Col
 
 /// Scans every chunk, including after IDAT, rather than trusting the decoder's
 /// optional metadata API (which deliberately ignores malformed iCCP payloads).
-pub(super) fn png(bytes: &[u8], total: &mut usize) -> Result<Option<Box<ColorProfile>>> {
+pub(super) fn png(bytes: &[u8], total: &mut usize) -> Result<PngMetadata> {
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err(unsupported());
     }
@@ -164,6 +171,11 @@ pub(super) fn png(bytes: &[u8], total: &mut usize) -> Result<Option<Box<ColorPro
     let mut chroma = None;
     let mut profile = None;
     let mut srgb = false;
+    let mut exif = false;
+    let mut orientation = None;
+    let mut exif_dpi = None;
+    let mut phys = false;
+    let mut phys_dpi = None;
     let mut before_palette = true;
     let mut before_data = true;
     for n in 0..65_536 {
@@ -246,88 +258,79 @@ pub(super) fn png(bytes: &[u8], total: &mut usize) -> Result<Option<Box<ColorPro
                 }
                 profile = Some(icc(&decoded, matches!(color, Some(0 | 4)), total)?);
             }
-            b"cICP" | b"mDCV" | b"cLLI" | b"eXIf" => return Err(unsupported()),
+            b"eXIf" => {
+                if !before_data || exif {
+                    return Err(unsupported());
+                }
+                exif = true;
+                charge(data.len(), total)?;
+                let metadata = crate::import_exif::parse(data)?;
+                if metadata.dcf(false)? {
+                    return Err(unsupported());
+                }
+                orientation = Some(metadata.orientation);
+                exif_dpi = metadata.dpi;
+            }
+            b"pHYs" => {
+                if !before_data || phys || data.len() != 9 || data[8] > 1 {
+                    return Err(unsupported());
+                }
+                phys = true;
+                let (x, y) = (be32(&data[..4])?, be32(&data[4..8])?);
+                if data[8] == 1 && x != 0 && y != 0 {
+                    phys_dpi = Some((x as f64 * 0.0254).round());
+                }
+            }
+            b"cICP" | b"mDCV" | b"cLLI" => return Err(unsupported()),
             b"IEND" => {
                 if end != bytes.len() || size != 0 || before_data {
                     return Err(unsupported());
                 }
-                if profile.is_some() {
-                    return Ok(profile);
-                }
-                if srgb || (gamma.is_none() && chroma.is_none()) {
-                    return Ok(None);
-                }
-                let mut p = ColorProfile::new_srgb();
-                p.cicp = None;
-                // Chromaticities without a transfer function do not define a
-                // complete source space. Keep this case explicitly unsupported.
-                let g = gamma.ok_or_else(unsupported)?;
-                p.red_trc = Some(moxcms::curve_from_gamma(1. / g));
-                p.green_trc = p.red_trc.clone();
-                p.blue_trc = p.red_trc.clone();
-                if let Some(xy) = chroma {
-                    // PNG grayscale ignores the RGB primaries; adapting its
-                    // white point needs a separate gray-space implementation.
-                    if matches!(color, Some(0 | 4)) {
-                        return Err(unsupported());
+                let profile = if profile.is_some() || srgb || (gamma.is_none() && chroma.is_none())
+                {
+                    profile
+                } else {
+                    let mut p = ColorProfile::new_srgb();
+                    p.cicp = None;
+                    // Chromaticities without a transfer function do not define a
+                    // complete source space. Keep this case explicitly unsupported.
+                    let g = gamma.ok_or_else(unsupported)?;
+                    p.red_trc = Some(moxcms::curve_from_gamma(1. / g));
+                    p.green_trc = p.red_trc.clone();
+                    p.blue_trc = p.red_trc.clone();
+                    if let Some(xy) = chroma {
+                        // PNG grayscale ignores the RGB primaries; adapting its
+                        // white point needs a separate gray-space implementation.
+                        if matches!(color, Some(0 | 4)) {
+                            return Err(unsupported());
+                        }
+                        let white = moxcms::XyY::new(f64::from(xy[0]), f64::from(xy[1]), 1.);
+                        let primaries = moxcms::ColorPrimaries {
+                            red: moxcms::Chromaticity { x: xy[2], y: xy[3] },
+                            green: moxcms::Chromaticity { x: xy[4], y: xy[5] },
+                            blue: moxcms::Chromaticity { x: xy[6], y: xy[7] },
+                        };
+                        let matrix = ColorProfile::colorants_matrix(white, primaries);
+                        let m = matrix.v;
+                        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+                        if !det.is_finite()
+                            || det.abs() < 1e-8
+                            || m.iter().flatten().any(|v| !v.is_finite() || v.abs() > 16.)
+                        {
+                            return Err(unsupported());
+                        }
+                        p.update_rgb_colorimetry(white, primaries);
                     }
-                    let white = moxcms::XyY::new(f64::from(xy[0]), f64::from(xy[1]), 1.);
-                    let primaries = moxcms::ColorPrimaries {
-                        red: moxcms::Chromaticity { x: xy[2], y: xy[3] },
-                        green: moxcms::Chromaticity { x: xy[4], y: xy[5] },
-                        blue: moxcms::Chromaticity { x: xy[6], y: xy[7] },
-                    };
-                    let matrix = ColorProfile::colorants_matrix(white, primaries);
-                    let m = matrix.v;
-                    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-                        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-                        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-                    if !det.is_finite()
-                        || det.abs() < 1e-8
-                        || m.iter().flatten().any(|v| !v.is_finite() || v.abs() > 16.)
-                    {
-                        return Err(unsupported());
-                    }
-                    p.update_rgb_colorimetry(white, primaries);
-                }
-                return Ok(Some(Box::new(p)));
+                    Some(Box::new(p))
+                };
+                return Ok(PngMetadata {
+                    profile,
+                    orientation,
+                    dpi: exif_dpi.or(phys_dpi),
+                });
             }
-            _ => {}
-        }
-        offset = end;
-    }
-    Err(budget())
-}
-
-/// Called only after the full CRC/container/color preflight above succeeds.
-pub(super) fn png_dpi(bytes: &[u8]) -> Result<Option<f64>> {
-    let mut offset = 8usize;
-    let mut seen = false;
-    let mut dpi = None;
-    let mut before_data = true;
-    for _ in 0..65_536 {
-        let header = bytes
-            .get(offset..offset.saturating_add(8))
-            .ok_or_else(unsupported)?;
-        let size = be32(&header[..4])?;
-        let end = offset
-            .checked_add(size)
-            .and_then(|v| v.checked_add(12))
-            .ok_or_else(unsupported)?;
-        let data = bytes.get(offset + 8..end - 4).ok_or_else(unsupported)?;
-        match &header[4..] {
-            b"pHYs" => {
-                if seen || !before_data || data.len() != 9 || data[8] > 1 {
-                    return Err(unsupported());
-                }
-                seen = true;
-                let (x, y) = (be32(&data[..4])?, be32(&data[4..8])?);
-                if data[8] == 1 && x != 0 && y != 0 {
-                    dpi = Some((x as f64 * 0.0254).round());
-                }
-            }
-            b"IDAT" => before_data = false,
-            b"IEND" => return Ok(dpi),
             _ => {}
         }
         offset = end;

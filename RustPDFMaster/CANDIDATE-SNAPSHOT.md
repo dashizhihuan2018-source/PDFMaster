@@ -1,6 +1,18 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development b24ba5a2 (2026-10-28)
+## Current snapshot: development 12723a2b (2026-10-28)
+
+Exactly **195 tracked Rust/workflow files** from development `12723a2bdd78bfaa98d8ea19e95d901a18ac7c19`, plus this public-only record. The reviewed PNG eXIf implementation is `62d55c8f`; private evidence, memory, original binaries/resources, screenshots, owned fixtures and generated packages are excluded. The installed Apple-native app and native Release/tag/site remain untouched.
+
+The rejected image configuration card stays removed. PNG now admits one valid pre-IDAT eXIf through the bounded parser shared with JPEG, preserving actual II/MM orientation1–8 and density. Exif density overrides pHYs when either axis exists; orientation-only/unit-only/empty IFD retains pHYs. Explicit centimeter zero density uses72 before conversion to183DPI across PNG/JPEG/TIFF. Malformed/duplicate/late/CRC-invalid metadata, zero denominators, unknown PNG Exif colors/DCF and unsupported HDR remain explicit whole-batch errors. PNG eXIf is limited to1MiB/block and shares the8MiB batch metadata budget; shared parser limits remain8IFDs/512entries. Existing Source/explicit-paper/mixed-import contracts and narrower admission budgets remain separate.
+
+Actual RED→GREEN, independent spec/quality review and fresh main-controlled checks passed **298 core,145 UI,132 native +8 security**, three-workspace fmt/host-Clippy, five exact target notices,12 notice tests,19 candidate/feature-tool tests,70-feature inventory and locked release WASM. The reviewer had no remaining findings. An isolated current-source Mac390px debug candidate passed actual native picker→direct three-page creation→save→native reopen, including the formerly rejected owned PNG unchanged. Independent saved-PDF checks confirmed128×80,160×256 and15.1181×24.189pt pages and all368,640 embedded RGB bytes against independent orientation/filter oracles. A malformed-Exif batch created no partial tab, retained existing documents and allowed retry/cancel. The QA app exited normally; no formal installation changed.
+
+Hosted [40578468671](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40578468671) is pinned to preceding public `e121e492529542d53367ac34af00b34be1f8a574`. Its Mac and Windows artifacts were appearing during this publication; final three-package verification is separate and it **does not certify this new PNG source**. No new Release/tag, notarization, store submission or platform runtime acceptance is claimed here.
+
+Inventory remains **28 partial /42 unsupported /0 complete**, with801 legacy contracts pending. The existing footer is not the recovered reference progress presentation. Licensed reference runtime, broader formats/color, full functionality/UI, actual Windows/iOS GUI and final Rustall/public skill remain unfinished.
+
+## Historical snapshot: development b24ba5a2 (superseded)
 
 Exactly **193 tracked Rust/workflow files** from development `b24ba5a202cd4a706888227363fa3625e4775de0`, plus this public-only record. Only reviewed candidate source is shared. Private Git history, reference binaries/REA evidence, memory, user media/screenshots and generated output are excluded. The installed Apple-native app and native release/tag/website remain unchanged.
 

@@ -136,9 +136,10 @@ struct ImageMetadata {
 }
 fn color_preflight(bytes: &[u8], format: ImageFormat, total: &mut usize) -> Result<ImageMetadata> {
     if format == ImageFormat::Png {
-        return crate::import_color::png(bytes, total).map(|profile| ImageMetadata {
-            profile,
-            ..ImageMetadata::default()
+        return crate::import_color::png(bytes, total).map(|metadata| ImageMetadata {
+            profile: metadata.profile,
+            orientation: metadata.orientation,
+            dpi: metadata.dpi,
         });
     }
     if format == ImageFormat::Bmp {
@@ -292,12 +293,12 @@ fn tiff_dpi(d: &mut tiff::decoder::Decoder<Cursor<&[u8]>>) -> Result<Option<f64>
             _ => return Err(invalid()),
         }
     }
-    Ok(if x == Some(0.) || y == Some(0.) {
+    let base = if x == Some(0.) || y == Some(0.) {
         Some(72.)
     } else {
         x.or(y)
-            .map(|x| if unit == 3 { (x * 2.54).round() } else { x })
-    })
+    };
+    Ok(base.map(|x| if unit == 3 { (x * 2.54).round() } else { x }))
 }
 /// Preflights the whole batch before any pixel decoding or output publication.
 /// Limits supplement decoder-specific limits, not a promise of total heap use.
@@ -337,11 +338,8 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
             let ImageMetadata {
                 profile: color,
                 orientation,
-                mut dpi,
+                dpi,
             } = color_preflight(bytes, format, &mut color_bytes)?;
-            if layout.paper == ImagePaper::Source && format == ImageFormat::Png {
-                dpi = crate::import_color::png_dpi(bytes)?;
-            }
             let mut colors = vec![];
             let mut densities = vec![];
             let mut count = 1;

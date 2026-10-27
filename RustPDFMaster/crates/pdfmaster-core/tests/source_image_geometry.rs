@@ -305,6 +305,42 @@ fn source_exif_zero_density_and_centimeter_rounding_follow_imageio() {
 }
 
 #[test]
+fn source_centimeter_zero_density_falls_back_before_unit_conversion() {
+    let mut jpeg = jpeg(None, Some((0, 288)));
+    let jpeg_tiff = 12;
+    jpeg[jpeg_tiff + 42..jpeg_tiff + 44].copy_from_slice(&3u16.to_le_bytes());
+    let (_, w, h) = size("zero-cm.jpg", &jpeg);
+    assert!((w - 8. * 72. / 183.).abs() < 0.00001);
+    assert!((h - 4. * 72. / 183.).abs() < 0.00001);
+
+    use tiff::{
+        encoder::{Rational, TiffEncoder, colortype::RGB8},
+        tags::Tag,
+    };
+    let mut bytes = Cursor::new(vec![]);
+    {
+        let mut encoder = TiffEncoder::new(&mut bytes).unwrap();
+        let mut image = encoder.new_image::<RGB8>(8, 4).unwrap();
+        image
+            .encoder()
+            .write_tag(Tag::ResolutionUnit, 3u16)
+            .unwrap();
+        image
+            .encoder()
+            .write_tag(Tag::XResolution, Rational { n: 0, d: 1 })
+            .unwrap();
+        image
+            .encoder()
+            .write_tag(Tag::YResolution, Rational { n: 288, d: 1 })
+            .unwrap();
+        image.write_data(&[128; 96]).unwrap();
+    }
+    let (_, w, h) = size("zero-cm.tiff", bytes.get_ref());
+    assert!((w - 8. * 72. / 183.).abs() < 0.00001);
+    assert!((h - 4. * 72. / 183.).abs() < 0.00001);
+}
+
+#[test]
 fn source_tiff_relative_single_axis_and_centimeter_metadata_follow_imageio() {
     use tiff::{
         encoder::{Rational, TiffEncoder, colortype::RGB8},
