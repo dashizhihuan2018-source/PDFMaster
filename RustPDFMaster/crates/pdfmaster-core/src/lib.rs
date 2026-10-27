@@ -5,6 +5,7 @@ mod clipboard;
 mod document;
 mod edit;
 mod extract;
+mod image_export;
 mod import;
 mod import_color;
 mod import_jpeg;
@@ -23,6 +24,9 @@ pub use clipboard::PageClipboard;
 pub use document::{
     Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session, ShapeKind,
     TextReader,
+};
+pub use image_export::{
+    ExportedImage, ImageExportFormat, ImageExportLimits, ImageExportRequest, ImageExportSummary,
 };
 pub use import::{ImageImportLayout, ImagePaper, prepare_image_imports, prepare_imports};
 pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};

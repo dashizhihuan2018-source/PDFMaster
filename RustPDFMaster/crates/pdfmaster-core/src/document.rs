@@ -40,6 +40,8 @@ pub enum PdfMasterError {
     Serialization(String),
     #[error("PDF rendering failed: {0}")]
     Render(String),
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, PdfMasterError>;

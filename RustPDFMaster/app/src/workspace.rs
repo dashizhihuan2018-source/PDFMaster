@@ -285,7 +285,7 @@ struct Model {
     overview_marker: RwSignal<Option<usize>>,
     file_drop_request: RwSignal<Option<u32>>,
     home_drop_active: RwSignal<bool>,
-    image_import: RwSignal<Option<pdfmaster_ui::image_import::Configuration>>,
+    image_import: RwSignal<Option<pdfmaster_ui::image_import::Job>>,
     sidebar_mode: RwSignal<pdfmaster_ui::outline::Mode>,
     sidebar_width: RwSignal<pdfmaster_ui::sidebar_width::Width>,
     sidebar_viewport: RwSignal<f64>,
@@ -2021,7 +2021,6 @@ pub fn Workspace() -> impl IntoView {
     m.command("document_info", json!({}));
     view! {
         <div class="application-shell">
-            <image_import_view::Dialog model=m/>
             <nav class="shell-tabs" id="shell-tabs" aria-label="首页和文档标签">
                 <button class="shell-home-tab" class:active=move||matches!(m.route.get(),Route::Home(_)) aria-label="主界面标签" title="主界面" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))><img src="32x32.png" alt=""/></button>
                 <For each=move||m.document.with(|document|document.as_ref().map(|d|if d.tabs.is_empty(){vec![DocumentTab{id:d.id,name:d.name.clone(),dirty:d.info.dirty}]}else{d.tabs.clone()}).unwrap_or_default()) key=|tab|(tab.id,tab.name.clone(),tab.dirty) children=move|tab|{
@@ -2161,7 +2160,12 @@ pub fn Workspace() -> impl IntoView {
                 </div>
                 <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
             </aside>
-            <footer class="statusbar"><span role="status" aria-live="polite">{move||m.document.with(|d|visible_status(d.as_ref().and_then(|d|d.warning.as_deref()), &m.message.get(), m.busy.get()))}</span><span class="flex"></span><Show when=move||m.file_drop_request.get().is_some()><button aria-label="取消文件导入" on:click=move|_|m.cancel_file_import()>"取消文件导入"</button></Show><Show when=move||m.loaded()><button aria-label="上一页" disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),-1,m.count()))>"‹"</button><span>{move||format!("{} / {}",m.page.get()+1,m.count())}</span><button aria-label="下一页" disabled={move || m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),1,m.count()))>"›"</button><label class="page-jump-label"><span>"页码"</span><input aria-label="跳转页码" inputmode="numeric" prop:value=move||m.page_jump.get() on:input=move|e|m.page_jump.set(event_target_value(&e))/></label><button class="page-jump-button" disabled=move||m.blocked() on:click=move|_|m.jump_to_page()>"转到"</button><span class="page-dimensions">{move||m.document.with(|d|d.as_ref().and_then(|d|d.info.pages.get(m.page.get())).map(|p|format!("{:.0} × {:.0} pt · {}°",p.width,p.height,p.rotation)).unwrap_or_default())}</span></Show></footer>
+            <footer class="statusbar">
+                <span role="status" aria-live="polite">{move||m.document.with(|d|visible_status(d.as_ref().and_then(|d|d.warning.as_deref()), &m.message.get(), m.busy.get()))}</span>
+                <span class="flex"></span>
+                <Show when=move||m.file_drop_request.get().is_some()><button aria-label="取消文件导入" on:click=move|_|m.cancel_file_import()>"取消文件导入"</button></Show>
+                <Show when=move||m.loaded()><button aria-label="上一页" disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),-1,m.count()))>"‹"</button><span>{move||format!("{} / {}",m.page.get()+1,m.count())}</span><button aria-label="下一页" disabled={move || m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),1,m.count()))>"›"</button><label class="page-jump-label"><span>"页码"</span><input aria-label="跳转页码" inputmode="numeric" prop:value=move||m.page_jump.get() on:input=move|e|m.page_jump.set(event_target_value(&e))/></label><button class="page-jump-button" disabled=move||m.blocked() on:click=move|_|m.jump_to_page()>"转到"</button><span class="page-dimensions">{move||m.document.with(|d|d.as_ref().and_then(|d|d.info.pages.get(m.page.get())).map(|p|format!("{:.0} × {:.0} pt · {}°",p.width,p.height,p.rotation)).unwrap_or_default())}</span></Show>
+            </footer>
         </main>
         </div>
     }

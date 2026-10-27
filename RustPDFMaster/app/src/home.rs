@@ -9,7 +9,7 @@ fn ToolCard(model: Model, tool: Tool) -> impl IntoView {
     let available = independent || tool.workbench_target.is_some();
     view! {
         <button class="home-tool-card" aria-label=tool.title id=if tool.id=="image-to-pdf"{Some("image-tool-entry")}else{None}
-            title=move||if !available { "此功能尚未迁移" } else if tool.id=="blank" { "新建空白 PDF" } else if tool.id=="image-to-pdf" { "选择 PNG/JPEG/TIFF，配置后创建独立 PDF" } else if !model.loaded() { "请先打开 PDF" } else { "进入当前文档的已迁移工具；原版模式工具栏仍待迁移" }
+            title=move||if !available { "此功能尚未迁移" } else if tool.id=="blank" { "新建空白 PDF" } else if tool.id=="image-to-pdf" { "选择 PNG/JPEG/TIFF 后直接创建独立 PDF" } else if !model.loaded() { "请先打开 PDF" } else { "进入当前文档的已迁移工具；原版模式工具栏仍待迁移" }
             disabled=move||!available||model.busy.get()||model.image_import.with(|c|c.is_some())||(!independent&&!model.loaded())
             on:click=move|_|model.show_tool(tool.id)>
             <svg viewBox="0 0 32 32" class="home-tool-icon" style:color=tool.color aria-hidden="true">
@@ -83,7 +83,15 @@ pub(super) fn Dashboard(model: Model) -> impl IntoView {
                     <p class="home-disclosure">"Rust 迁移候选 · 非正式版 · 多 PDF 标签保留独立修改，画布标签与完整三端 UI 对等仍在迁移。"</p>
                 </div>
             </section>
-            <footer class="home-status"><span role="status" aria-live="polite">{move||model.document.with(|d|pdfmaster_ui::visible_status(d.as_ref().and_then(|d|d.warning.as_deref()),&model.message.get(),model.busy.get()))}</span><Show when=move||model.file_drop_request.get().is_some()&&!matches!(model.route.get(),Route::Home(HomeSection::Home))><button aria-label="取消文件导入" on:click=move|_|model.cancel_file_import()>"取消文件导入"</button></Show></footer>
+            <footer class="home-status">
+                <span role="status" aria-live="polite">{move||model.document.with(|d|{
+                    let image_status=model.image_import_status();
+                    let message=model.message.get();
+                    pdfmaster_ui::visible_status(d.as_ref().and_then(|d|d.warning.as_deref()),image_status.as_deref().unwrap_or(&message),image_status.is_none()&&model.busy.get())
+                })}</span>
+                <Show when=move||model.file_drop_request.get().is_some()&&!matches!(model.route.get(),Route::Home(HomeSection::Home))><button aria-label="取消文件导入" on:click=move|_|model.cancel_file_import()>"取消文件导入"</button></Show>
+                <Show when=move||model.image_import.with(|c|c.is_some())><button aria-label="取消图片转换" disabled=move||model.image_import.with(|c|c.as_ref().is_some_and(|c|c.cancelling())) on:click=move|_|model.cancel_images()>"取消图片转换"</button></Show>
+            </footer>
         </div>
     }
 }

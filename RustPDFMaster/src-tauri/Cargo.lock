@@ -2698,6 +2698,7 @@ dependencies = [
  "lopdf",
  "moxcms",
  "pdfmaster-drawing",
+ "png",
  "serde",
  "thiserror 2.0.21",
  "tiff",

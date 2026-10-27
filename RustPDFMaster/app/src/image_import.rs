@@ -29,6 +29,41 @@ pub struct Configuration {
     pub cancelling: bool,
     pub error: String,
 }
+#[derive(Clone)]
+pub enum Job {
+    Configuration(Configuration),
+    Recovery {
+        id: u32,
+        cancelling: bool,
+        error: String,
+    },
+}
+impl Job {
+    pub fn id(&self) -> u32 {
+        match self {
+            Self::Configuration(configuration) => configuration.selection.id,
+            Self::Recovery { id, .. } => *id,
+        }
+    }
+    pub fn cancelling(&self) -> bool {
+        match self {
+            Self::Configuration(configuration) => configuration.cancelling,
+            Self::Recovery { cancelling, .. } => *cancelling,
+        }
+    }
+    pub fn set_cancelling(&mut self, value: bool) {
+        match self {
+            Self::Configuration(configuration) => configuration.cancelling = value,
+            Self::Recovery { cancelling, .. } => *cancelling = value,
+        }
+    }
+    pub fn set_error(&mut self, value: String) {
+        match self {
+            Self::Configuration(configuration) => configuration.error = value,
+            Self::Recovery { error, .. } => *error = value,
+        }
+    }
+}
 impl Configuration {
     pub fn new(selection: Selection) -> Result<Self, String> {
         if selection.id == 0
@@ -131,7 +166,7 @@ mod tests {
         c.remove();
         assert_eq!(c.order, [0, 2]);
     }
-    fn selection_is_bounded_and_layout_matches_original_margin_and_pixel_contract() {
+    fn selection_is_bounded_and_layout_matches_candidate_default_and_pixel_contract() {
         assert!(
             Configuration::new(Selection {
                 id: 0,
@@ -160,6 +195,6 @@ mod tests {
     }
     #[test]
     fn layout_validation_has_no_hidden_dpi_or_orientation_guess() {
-        selection_is_bounded_and_layout_matches_original_margin_and_pixel_contract();
+        selection_is_bounded_and_layout_matches_candidate_default_and_pixel_contract();
     }
 }

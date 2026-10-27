@@ -2,6 +2,8 @@ mod clipboard;
 mod export_staging;
 mod file_drop;
 mod file_import;
+#[allow(dead_code)]
+mod image_export_storage;
 mod image_import;
 #[cfg(target_os = "ios")]
 mod ios_export;

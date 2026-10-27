@@ -1,6 +1,20 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 4337aafc (2026-10-27)
+## Current snapshot: development 60388afb (2026-10-28)
+
+Exactly **192 tracked Rust/workflow files** from development `60388afb46fa0618e3a353128b3aa4e47f23845c`, plus this public-only record. This shares reviewed source, not private Git history, memory/evidence, user files/screenshots, credentials or generated output. The installed Apple-native app, native release/tag and website remain untouched; Rust is public-sharing/cross-platform work, not an installation replacement.
+
+The user rejected the image-import configuration card. Its620×500 layout came from a custom Apple candidate, **not the reference product**; earlier historical descriptions below calling that sheet “original-derived” are withdrawn. The card/backdrop, paper/orientation/margin controls, ordering/removal and extra Create action have been removed from the visible Home workflow. Native image selection now proceeds directly to conversion and a new unsaved tab. Home owns bounded status/cancel recovery; an invalid selection cannot be converted, failed cancellation remains visible and stale replies cannot replace newer work or discard another dirty document. Existing A4/portrait/24pt conversion defaults are implementation choices, not verified reference-product behavior. Public documentation and the feature inventory now distinguish custom-candidate, static reference observations and still-unverified licensed reference runtime behavior.
+
+Core PDF-page-to-PNG/JPEG export and private native directory staging are also included as independently reviewed foundations. They do **not** expose a PDF-to-images IPC/UI workflow. Unix staging publishes a complete new directory; cancellation and cleanup are bounded. Windows publication deliberately returns Unsupported before rename because durable directory publication has not been established there. iOS provider/security-scoped storage and ancestor-path race limitations remain open. No new custom export configuration sheet is claimed or shipped as reference UI.
+
+Actual RED→GREEN regressions and independent read-only re-review cover these increments. Complete local checks on this exact development source passed: **279 core,144 UI,131 native +8 security**, three-workspace fmt/host-Clippy, five target-specific notices,12 notice-validator tests and locked release WASM. The public copy separately passed **27 candidate/notice-tool tests +4 feature-validator tests** and its70-feature inventory validator. Compiled1280/390 frontend replay covers direct conversion, visible recovery/cancel and late replies with synthetic native responses; it does not exercise OS pickers or establish target-platform GUI parity. The local Windows storage module check is compile-only, not full native execution.
+
+Prior hosted [40532354889](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40532354889) completed successfully at old public `9bb82847920498eb05cd6d0b222c90813071323a`. All three complete downloads matched their SHA-256 manifests; Mac/iOS ZIP paths/CRC and five notices regenerated from that exact old source matched. Windows packaging extracted and checked notices and application PE-x64 on its runner; local downloaded NSIS checks covered only the installer container. No package was installed/run. That old run does not certify this correction; exact-current-source hosted checks are pending at publication.
+
+Inventory remains **28 partial /42 unsupported /0 complete**, with801 frozen legacy contracts pending. Full functionality/UI, original licensed runtime comparison and actual Windows/iOS GUI acceptance are unfinished. Source review, synthetic replay, compilation and publication remain separate gates. The full goal and final Rustall/public skill are not complete.
+
+## Historical snapshot: development 4337aafc (superseded)
 
 Exactly **186 tracked Rust/workflow files** from development `4337aafc8c589e159bf5f0a45ac47392cf8affb4`, plus this public-only record. This shares reviewed source, not private Git history, memory/evidence, user files/screenshots, credentials or generated output. The installed Apple-native app, native release/tag and website remain untouched; Rust is public-sharing/cross-platform work, not an installation replacement.
 

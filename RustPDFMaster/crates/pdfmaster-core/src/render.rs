@@ -6,9 +6,12 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use flate2::read::ZlibDecoder;
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_interpret::InterpreterWarning;
+use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_syntax::Pdf;
+use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
-use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
+use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
+use hayro::{PixmapSettings, RenderCache, RenderSettings, render, render_into};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
@@ -35,8 +38,72 @@ impl Session {
         page: usize,
         scale: f32,
     ) -> Result<hayro::vello_cpu::Pixmap> {
+        self.render_pixmap_scaled(page, scale, scale, None)
+    }
+
+    pub(crate) fn preflight_render_page(&self, page: usize) -> Result<()> {
         validate_page_index(page, self.pages.len())?;
-        if !scale.is_finite() || scale <= 0.0 || scale > 16.0 {
+        let page_ids = page_object_ids(&self.document)?;
+        let page_id = *page_ids.get(page).ok_or_else(|| {
+            PdfMasterError::Render("core did not expose the requested page".into())
+        })?;
+        preflight_render(&self.document, page_id)
+    }
+
+    pub(crate) fn export_render_dimensions(&self, page: usize, dpi: f64) -> Result<(u32, u32)> {
+        validate_page_index(page, self.pages.len())?;
+        let info = &self.pages[page];
+        let (point_width, point_height) = if matches!(info.rotation, 90 | 270) {
+            (f64::from(info.height), f64::from(info.width))
+        } else {
+            (f64::from(info.width), f64::from(info.height))
+        };
+        let width = (point_width * dpi / 72.0).ceil();
+        let height = (point_height * dpi / 72.0).ceil();
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return Err(PdfMasterError::InvalidGeometry(
+                "image export dimensions must be finite and positive",
+            ));
+        }
+        if width > f64::from(u16::MAX) || height > f64::from(u16::MAX) {
+            return Err(PdfMasterError::Budget("render side exceeds u16"));
+        }
+        Ok((width as u32, height as u32))
+    }
+
+    pub(crate) fn render_pixmap_exact(
+        &self,
+        page: usize,
+        width: u32,
+        height: u32,
+        dpi: f64,
+    ) -> Result<hayro::vello_cpu::Pixmap> {
+        validate_page_index(page, self.pages.len())?;
+        let scale = (dpi / 72.0) as f32;
+        let pixmap = self.render_pixmap_scaled(page, scale, scale, Some((width, height)))?;
+        if u32::from(pixmap.width()) != width || u32::from(pixmap.height()) != height {
+            return Err(PdfMasterError::Render(
+                "renderer output dimensions did not match export preflight".into(),
+            ));
+        }
+        Ok(pixmap)
+    }
+
+    fn render_pixmap_scaled(
+        &self,
+        page: usize,
+        x_scale: f32,
+        y_scale: f32,
+        target_dimensions: Option<(u32, u32)>,
+    ) -> Result<hayro::vello_cpu::Pixmap> {
+        validate_page_index(page, self.pages.len())?;
+        if !x_scale.is_finite()
+            || !y_scale.is_finite()
+            || x_scale <= 0.0
+            || y_scale <= 0.0
+            || x_scale > 16.0
+            || y_scale > 16.0
+        {
             return Err(PdfMasterError::InvalidGeometry(
                 "render scale must be finite, positive, and at most 16",
             ));
@@ -64,8 +131,10 @@ impl Session {
                 "renderer reported invalid page dimensions".into(),
             ));
         }
-        let pixel_width = (width * scale) as u64;
-        let pixel_height = (height * scale) as u64;
+        let (pixel_width, pixel_height) = target_dimensions.map_or_else(
+            || ((width * x_scale) as u64, (height * y_scale) as u64),
+            |(width, height)| (u64::from(width), u64::from(height)),
+        );
         if pixel_width == 0 || pixel_height == 0 {
             return Err(PdfMasterError::Budget("render side is zero"));
         }
@@ -85,17 +154,48 @@ impl Session {
             }),
             ..Default::default()
         };
-        let rendered = render(
-            rendered_page,
-            &RenderCache::new(),
-            &interpreter_settings,
-            &RenderSettings::default(),
-            &PixmapSettings {
-                x_scale: scale,
-                y_scale: scale,
-                bg_color: WHITE,
-            },
-        );
+        let cache = RenderCache::new();
+        let render_settings = RenderSettings::default();
+        let rendered = if let Some((target_width, target_height)) = target_dimensions {
+            let target_width = u16::try_from(target_width)
+                .map_err(|_| PdfMasterError::Budget("render side exceeds u16"))?;
+            let target_height = u16::try_from(target_height)
+                .map_err(|_| PdfMasterError::Budget("render side exceeds u16"))?;
+            let mut context = RenderContext::new(target_width, target_height);
+            let transform = Affine::scale_non_uniform(x_scale as f64, y_scale as f64)
+                * rendered_page.initial_transform(true).to_kurbo();
+            render_into(
+                rendered_page,
+                &cache,
+                &interpreter_settings,
+                &render_settings,
+                &mut context,
+                transform,
+            );
+            context.flush();
+            let mut pixmap = Pixmap::new(target_width, target_height);
+            context.render_with(
+                &mut pixmap,
+                &mut Resources::default(),
+                RasterizerSettings {
+                    target_init: TargetInit::Clear(WHITE),
+                    ..Default::default()
+                },
+            );
+            pixmap
+        } else {
+            render(
+                rendered_page,
+                &cache,
+                &interpreter_settings,
+                &render_settings,
+                &PixmapSettings {
+                    x_scale,
+                    y_scale,
+                    bg_color: WHITE,
+                },
+            )
+        };
         let warnings = warning_bits.load(Ordering::Relaxed);
         if warnings != 0 {
             return Err(PdfMasterError::Render(format!(
