@@ -25,6 +25,16 @@ const MAX_RESOURCE_DEPTH: usize = 64;
 
 impl Session {
     pub fn render_png(&self, page: usize, scale: f32) -> Result<Vec<u8>> {
+        self.render_pixmap(page, scale)?
+            .into_png()
+            .map_err(|error| PdfMasterError::Render(error.to_string()))
+    }
+
+    pub(crate) fn render_pixmap(
+        &self,
+        page: usize,
+        scale: f32,
+    ) -> Result<hayro::vello_cpu::Pixmap> {
         validate_page_index(page, self.pages.len())?;
         if !scale.is_finite() || scale <= 0.0 || scale > 16.0 {
             return Err(PdfMasterError::InvalidGeometry(
@@ -108,9 +118,7 @@ impl Session {
                 if warnings & 8 != 0 { " unknown" } else { "" },
             )));
         }
-        rendered
-            .into_png()
-            .map_err(|error| PdfMasterError::Render(error.to_string()))
+        Ok(rendered)
     }
 }
 

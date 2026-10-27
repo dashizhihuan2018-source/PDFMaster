@@ -39,6 +39,104 @@ fn focus() {
 }
 
 impl Model {
+    pub(super) fn copy_selected_pages(self, cut: bool) {
+        if self.blocked() {
+            return;
+        }
+        let overview = self.overview_visible.get_untracked();
+        let pages = if overview {
+            self.overview_selection.with_untracked(|s| s.pages())
+        } else {
+            vec![self.page.get_untracked()]
+        };
+        if pages.is_empty() || (cut && pages.len() == self.count()) {
+            self.message.set("请选择页面；剪切不能移除所有页。".into());
+            return;
+        }
+        let token = overview.then(|| self.overview_token()).flatten();
+        if overview && token.is_none() {
+            self.message.set("页面总览尚在准备，请稍后复制。".into());
+            return;
+        }
+        let Some(document) = self.document.with_untracked(|d| d.as_ref().map(|d| d.id)) else {
+            return;
+        };
+        #[derive(serde::Deserialize)]
+        struct CopyReply {
+            pages: usize,
+            document: Option<super::Document>,
+        }
+        self.busy.set(true);
+        spawn_local(async move {
+            match bridge::call::<CopyReply>(
+                "copy_pages_document",
+                &json!({"document":document,"pages":pages,"token":token,"cut":cut}),
+            )
+            .await
+            {
+                Ok(reply) => {
+                    let mut preview_error = None;
+                    if let Some(document) = reply.document {
+                        let page = pages[0].min(document.info.page_count.saturating_sub(1));
+                        self.page.set(page);
+                        self.page_jump.set((page + 1).to_string());
+                        self.search_result.set(None);
+                        self.replace_document_view(Some(document));
+                        self.overview_selection
+                            .update(|s| s.reset(page, self.count()));
+                        if !self.render().await {
+                            preview_error = Some(self.message.get_untracked());
+                        }
+                        leptos::leptos_dom::helpers::request_animation_frame(move || {
+                            self.measure_overview(true)
+                        });
+                    }
+                    let status = if cut {
+                        format!("已剪切 {} 页，可撤销；请导出完整副本保存。", reply.pages)
+                    } else {
+                        format!(
+                            "已复制 {} 页：外部应用可粘贴为图片，PDF 标签间保留原页面。",
+                            reply.pages
+                        )
+                    };
+                    self.message.set(if let Some(error) = preview_error {
+                        format!("{status} 页面预览失败：{error}")
+                    } else {
+                        status
+                    });
+                }
+                Err(error) => self.message.set(error),
+            }
+            self.busy.set(false);
+        });
+    }
+    pub(super) fn paste_selected_pages(self) {
+        if self.blocked() {
+            return;
+        }
+        let overview = self.overview_visible.get_untracked();
+        let token = overview.then(|| self.overview_token()).flatten();
+        if overview && token.is_none() {
+            self.message.set("页面总览尚在准备，请稍后粘贴。".into());
+            return;
+        }
+        let Some(document) = self.document.with_untracked(|d| d.as_ref().map(|d| d.id)) else {
+            return;
+        };
+        let index = if overview {
+            self.overview_selection
+                .with_untracked(|s| s.pages().last().copied())
+                .unwrap_or(self.page.get_untracked())
+                + 1
+        } else {
+            self.page.get_untracked() + 1
+        };
+        self.command_at_page(
+            "paste_pages_document",
+            json!({"document":document,"index":index,"token":token}),
+            Some(index),
+        );
+    }
     fn overview_open_at(self, event: web_sys::MouseEvent) {
         if self.blocked() {
             return;
@@ -449,6 +547,25 @@ impl Model {
             return;
         }
         let modifier = event.ctrl_key() || event.meta_key();
+        if modifier && !event.alt_key() && !event.shift_key() {
+            match event.key().to_ascii_lowercase().as_str() {
+                "c" | "x" => {
+                    event.prevent_default();
+                    if !event.repeat() {
+                        self.copy_selected_pages(event.key().eq_ignore_ascii_case("x"));
+                    }
+                    return;
+                }
+                "v" => {
+                    event.prevent_default();
+                    if !event.repeat() {
+                        self.paste_selected_pages();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         if modifier && event.key().eq_ignore_ascii_case("a") && !event.alt_key() {
             event.prevent_default();
             self.overview_selection

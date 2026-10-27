@@ -103,9 +103,7 @@ fn missing_tools_are_disabled_and_copy_is_not_mislabelled_duplicate() {
         for tool in tools(mode) {
             if matches!(
                 tool.id,
-                "copy-page"
-                    | "paste-page"
-                    | "signature"
+                "signature"
                     | "selection"
                     | "password"
                     | "export-text"
@@ -134,6 +132,12 @@ fn missing_tools_are_disabled_and_copy_is_not_mislabelled_duplicate() {
     );
     assert_eq!(tools(Mode::Export)[0].action, Some(Action::Export));
     assert_eq!(tools(Mode::Pages)[2].action, Some(Action::Rotate));
+    assert_eq!(tools(Mode::Pages)[3].action, Some(Action::CopyPages));
+    assert_eq!(tools(Mode::Pages)[4].action, Some(Action::PastePages));
+    let overview = include_str!("../src/overview_view.rs");
+    assert!(overview.contains("\"copy_pages_document\""));
+    assert!(overview.contains("\"paste_pages_document\""));
+    assert!(!overview.contains("\"duplicate_page\""));
 }
 
 #[test]

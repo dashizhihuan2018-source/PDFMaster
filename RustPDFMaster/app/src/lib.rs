@@ -321,6 +321,8 @@ pub fn command_status_message(command: &str, restored: bool, warning: Option<&st
         "所选 PDF 已按文件面板返回顺序插入，可整批一次撤销；请导出完整副本保存修改。".into()
     } else if command == "insert_pdf_document" {
         "PDF 页面已插入，可一次撤销；请导出完整副本保存修改。".into()
+    } else if command == "paste_pages_document" {
+        "页面已从系统剪贴板粘贴，可一次撤销；请导出完整副本保存修改。".into()
     } else if restored {
         "已恢复上次未保存的本地草稿，请导出副本。".into()
     } else if command == "export_document" {

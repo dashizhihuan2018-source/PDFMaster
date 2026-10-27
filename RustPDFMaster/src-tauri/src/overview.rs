@@ -27,7 +27,7 @@ impl Workspace {
         self.next_overview_id = token;
         Ok(token)
     }
-    fn validate_overview(&self, token: u32) -> Reply<()> {
+    pub(super) fn validate_overview(&self, token: u32) -> Reply<()> {
         self.ensure_editor_idle()?;
         let snapshot = self
             .overview_snapshot

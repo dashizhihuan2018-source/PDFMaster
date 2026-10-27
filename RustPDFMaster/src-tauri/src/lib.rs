@@ -1,3 +1,4 @@
+mod clipboard;
 mod export_staging;
 #[cfg(target_os = "ios")]
 mod ios_export;
@@ -2835,7 +2836,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,overview::prepare_page_overview,overview::move_overview_pages,overview::render_overview_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,overview::prepare_page_overview,overview::move_overview_pages,overview::render_overview_page,clipboard::copy_pages_document,clipboard::paste_pages_document,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

@@ -25,15 +25,16 @@ tokio = { version = "1", features = ["sync"] }
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "=0.6.2"
 objc2 = "=0.6.5"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSObject", "NSString", "NSArray", "NSURL", "NSError", "NSFileCoordinator"] }
-objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UIResponder", "UIViewController", "UIDocumentPickerViewController"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSObject", "NSString", "NSArray", "NSURL", "NSError", "NSFileCoordinator", "NSData", "NSDictionary", "NSValue"] }
+objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UIResponder", "UIViewController", "UIDocumentPickerViewController", "UIPasteboard"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSPasteboard", "NSPasteboardItem", "NSBitmapImageRep", "NSImageRep"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSArray", "NSData"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Foundation"] }
 
 [workspace]
 

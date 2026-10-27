@@ -589,6 +589,8 @@ impl Model {
         }
         match action {
             Action::Panel(panel) => self.select_panel(Some(panel)),
+            Action::CopyPages => self.copy_selected_pages(false),
+            Action::PastePages => self.paste_selected_pages(),
             Action::InsertBlank => {
                 if let Some(index) = self.page_insertion_index() {
                     self.command_at_page("edit_document",json!({"edit":{"kind":"insert_blank","index":index,"width":595.,"height":842.}}),Some(index));
@@ -1087,9 +1089,11 @@ impl Model {
         }
         self.remember_tab();
         let overview_insert = self.overview_visible.get_untracked()
-            && (matches!(command, "insert_pdf_document" | "insert_pdfs_document")
-                || (command == "edit_document"
-                    && args["edit"]["kind"].as_str() == Some("insert_blank")));
+            && (matches!(
+                command,
+                "insert_pdf_document" | "insert_pdfs_document" | "paste_pages_document"
+            ) || (command == "edit_document"
+                && args["edit"]["kind"].as_str() == Some("insert_blank")));
         let old_count = self.count();
         self.busy.set(true);
         spawn_local(async move {
@@ -1151,6 +1155,7 @@ impl Model {
                             | "delete_annotation_document"
                             | "insert_pdf_document"
                             | "insert_pdfs_document"
+                            | "paste_pages_document"
                             | "undo_document"
                             | "redo_document"
                     ) {

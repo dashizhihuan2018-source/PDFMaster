@@ -21,7 +21,18 @@ const server=http.createServer((req,res)=>{
         window.__TAURI__={core:{invoke:async(command,args)=>{
           args=args instanceof Map?Object.fromEntries(args):args;window.requests.push({command,args});
           if(command==='document_info')return structuredClone(d);
-          if(command==='render_page')return image;
+          if(command==='render_page'){if(window.failRender){window.failRender=false;throw new Error('synthetic preview failure');}return image;}
+          if(command==='copy_pages_document'){
+            assertToken(args.token);if(args.document!==d.id)throw new Error('foreign document');
+            window.pageClipboard=args.pages.slice().sort((a,b)=>a-b).map(i=>structuredClone(d.info.pages[i]));
+            if(!args.cut)return {pages:args.pages.length,document:null};
+            d.info.pages=d.info.pages.filter((_,i)=>!args.pages.includes(i));d.info.page_count=d.info.pages.length;d.warning=null;current=0;
+            return {pages:args.pages.length,document:structuredClone(d)};
+          }
+          if(command==='paste_pages_document'){
+            assertToken(args.token);if(!window.pageClipboard)throw new Error('synthetic external replacement');
+            d.info.pages.splice(args.index,0,...structuredClone(window.pageClipboard));d.info.page_count=d.info.pages.length;current=0;return structuredClone(d);
+          }
           if(command==='insert_pdf_document'||command==='insert_pdfs_document')return null;
           if(command==='notes_document')return {notes:[],unsupported_count:0};
           if(command==='shapes_document')return {shapes:[],unsupported_count:0};
@@ -76,6 +87,18 @@ const server=http.createServer((req,res)=>{
       await page.waitForTimeout(100);
       assert.deepEqual(await selected(),[1,3],'rotation retains the original selection');
       assert.ok(await page.getByText('synthetic checkpoint warning',{exact:true}).count(),'checkpoint warning is not replaced by generic success');
+      const copyButton=page.getByRole('button',{name:'工具 · 复制',exact:true}),pasteButton=page.getByRole('button',{name:'工具 · 粘贴',exact:true});
+      assert.equal(await copyButton.isEnabled(),true,'page copy must invoke the system clipboard, not stay disabled');
+      await copyButton.click();await page.waitForFunction(()=>window.requests.some(r=>r.command==='copy_pages_document'));
+      assert.deepEqual(await page.evaluate(()=>window.requests.find(r=>r.command==='copy_pages_document').args.pages),[1,3]);
+      await page.evaluate(()=>{window.pageClipboard=null;});await pasteButton.click();
+      await page.waitForFunction(()=>window.requests.some(r=>r.command==='paste_pages_document'));
+      assert.deepEqual(await selected(),[1,3],'external clipboard replacement cannot paste a stale private cache');
+      await copyButton.click();await pasteButton.click();
+      await page.waitForFunction(()=>document.querySelector('.overview-tile[data-page="4"][aria-selected="true"]'));
+      assert.deepEqual(await selected(),[4,5]);
+      assert.equal(await page.evaluate(()=>window.requests.filter(r=>r.command==='paste_pages_document').at(-1).args.index),4);
+      await tile(1).click();await tile(3).click({modifiers:['Control']});
       const moveCount=await page.evaluate(()=>window.requests.filter(r=>r.command==='move_overview_pages').length);
       await grid.evaluate(el=>el.addEventListener('pointerdown',event=>{window.cancelPointer=event.pointerId;},{once:true}));
       const cancelTile=await tile(1).boundingBox();
@@ -117,6 +140,12 @@ const server=http.createServer((req,res)=>{
       await page.waitForFunction(()=>window.requests.some(r=>r.command==='insert_pdf_document'));
       assert.equal(await page.evaluate(()=>window.requests.find(r=>r.command==='insert_pdf_document').args.index),4,'panel insertion uses the last overview selection, not the hidden reader');
       assert.deepEqual(await selected(),[1,3],'cancelled insertion retains selection');
+      await page.evaluate(()=>{window.failRender=true;});await grid.focus();await page.keyboard.press('Control+x');
+      await page.waitForFunction(()=>window.requests.some(r=>r.command==='copy_pages_document'&&r.args.cut));
+      await page.waitForFunction(()=>document.querySelector('#pdf-overview').getAttribute('aria-busy')==='false');
+      const cutStatus=await page.locator('.statusbar [role="status"]').innerText();
+      assert.ok(cutStatus.includes('synthetic preview failure'),'committed cut must not conceal the failed preview');
+      assert.ok(cutStatus.includes('已剪切')&&cutStatus.includes('可撤销'),'preview failure must not imply that the completed cut was rolled back');
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'no body horizontal overflow');
       console.log(JSON.stringify({case:'overview',width,selection:true,snapshotMove:true,deleteCancel:true,openPage:true,virtualScroll:true,result:'pass'}));
       await page.close();
