@@ -1,5 +1,6 @@
 //! Safe, transactional PDF primitives shared by every PDF Master shell.
 
+mod annotations;
 mod document;
 mod edit;
 mod extract;
@@ -12,6 +13,7 @@ mod ranges;
 mod render;
 mod shapes;
 
+pub use annotations::AnnotationRow;
 pub use document::{
     Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session, ShapeKind,
     TextReader,

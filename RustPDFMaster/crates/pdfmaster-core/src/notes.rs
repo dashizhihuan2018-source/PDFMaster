@@ -96,6 +96,7 @@ pub(crate) fn update_note(
         .map_err(|_| PdfMasterError::Malformed("annotation entry must be a dictionary".into()))?
         .clone();
     annotation.set("Contents", text_string(contents));
+    annotation.set("M", crate::annotations::modified_now()?);
     if annotation.has(b"P") {
         annotation.set("P", page_id);
     }
@@ -555,7 +556,7 @@ pub(crate) fn parse_color(
     }))
 }
 
-fn decode_contents(document: &Document, object: &Object) -> Result<String> {
+pub(crate) fn decode_contents(document: &Document, object: &Object) -> Result<String> {
     let object = resolve(document, object)?;
     let bytes = object.as_str().map_err(|_| {
         PdfMasterError::Malformed("Text annotation Contents must be a PDF string".into())

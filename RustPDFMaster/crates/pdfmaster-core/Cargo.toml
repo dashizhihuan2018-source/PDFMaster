@@ -12,6 +12,7 @@ hayro = "=0.8.0"
 lopdf = { version = "=0.46.0", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
+time = { version = "=0.3.55", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 png = "0.18"

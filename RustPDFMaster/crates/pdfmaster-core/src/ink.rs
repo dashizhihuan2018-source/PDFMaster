@@ -98,7 +98,8 @@ pub(crate) fn add_ink(
             .iter()
             .flat_map(|p| [Object::Real(p.x), Object::Real(p.y)])
             .collect::<Vec<_>>();
-        let a = dictionary! {"Type"=>"Annot","Subtype"=>"Ink","Rect"=>vec![bounds.x.into(),bounds.y.into(),(bounds.x+bounds.width).into(),(bounds.y+bounds.height).into()],"P"=>page_id,"F"=>4,"C"=>vec![color.r.into(),color.g.into(),color.b.into()],"BS"=>dictionary!{"W"=>width,"S"=>"S"},"Border"=>vec![0.into(),0.into(),width.into()],"InkList"=>vec![Object::Array(ink)],"AP"=>dictionary!{"N"=>ap}};
+        let mut a = dictionary! {"Type"=>"Annot","Subtype"=>"Ink","Rect"=>vec![bounds.x.into(),bounds.y.into(),(bounds.x+bounds.width).into(),(bounds.y+bounds.height).into()],"P"=>page_id,"F"=>4,"C"=>vec![color.r.into(),color.g.into(),color.b.into()],"BS"=>dictionary!{"W"=>width,"S"=>"S"},"Border"=>vec![0.into(),0.into(),width.into()],"InkList"=>vec![Object::Array(ink)],"AP"=>dictionary!{"N"=>ap}};
+        a.set("M", crate::annotations::modified_now()?);
         annots.push(document.add_object(a).into());
     }
     document

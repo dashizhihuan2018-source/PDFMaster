@@ -1,3 +1,5 @@
+#[path = "annotation_view.rs"]
+mod annotation_view;
 #[path = "bridge.rs"]
 mod bridge;
 #[path = "home.rs"]
@@ -216,6 +218,11 @@ struct Model {
     sidebar_viewport: RwSignal<f64>,
     outline_cache: RwSignal<pdfmaster_ui::outline::Cache>,
     outline_selection: RwSignal<Option<usize>>,
+    annotation_cache:
+        RwSignal<pdfmaster_ui::outline::ProjectionCache<pdfmaster_ui::annotations::Row>>,
+    annotation_selection: RwSignal<Option<pdfmaster_ui::annotations::Identity>>,
+    annotation_sort: RwSignal<pdfmaster_ui::annotations::Sort>,
+    annotation_copying: RwSignal<bool>,
     page: RwSignal<usize>,
     zoom: RwSignal<f32>,
     image: RwSignal<String>,
@@ -252,6 +259,8 @@ struct Model {
 
 impl Model {
     fn replace_document_view(self, document: Option<Document>) {
+        self.annotation_cache.update(|cache| cache.invalidate());
+        self.annotation_selection.set(None);
         self.outline_cache.update(|cache| cache.invalidate());
         self.outline_selection.set(None);
         self.stop_search_timer();
@@ -1540,6 +1549,10 @@ pub fn Workspace() -> impl IntoView {
         sidebar_viewport: RwSignal::new(thumbnail_view::reader_viewport()),
         outline_cache: RwSignal::new(pdfmaster_ui::outline::Cache::default()),
         outline_selection: RwSignal::new(None),
+        annotation_cache: RwSignal::new(pdfmaster_ui::outline::ProjectionCache::default()),
+        annotation_selection: RwSignal::new(None),
+        annotation_sort: RwSignal::new(pdfmaster_ui::annotations::Sort::default()),
+        annotation_copying: RwSignal::new(false),
         page: RwSignal::new(0),
         zoom: RwSignal::new(1.),
         image: RwSignal::new(String::new()),

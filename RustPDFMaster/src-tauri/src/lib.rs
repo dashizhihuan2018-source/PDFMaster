@@ -133,6 +133,15 @@ fn workspace_shapes(workspace: &Workspace, page: usize) -> Reply<pdfmaster_core:
         .map_err(|error| error.to_string())
 }
 
+fn workspace_annotations(workspace: &Workspace) -> Reply<Vec<pdfmaster_core::AnnotationRow>> {
+    workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .annotations()
+        .map_err(|error| error.to_string())
+}
+
 fn read_insertion_files(paths: &[std::path::PathBuf]) -> Reply<Vec<Vec<u8>>> {
     if paths.is_empty() || paths.len() > pdfmaster_core::MAX_INSERT_FILES {
         return Err("请选择 1–32 份 PDF；整批未修改当前文档。".into());
@@ -1217,6 +1226,41 @@ mod workspace_tests {
         }
     }
     #[test]
+    fn annotations_project_the_current_workspace_without_claiming_an_editor_or_mutating() {
+        assert!(workspace_annotations(&Workspace::default()).is_err());
+        let (w, _directory) = note_workspace();
+        let bytes = w.session.as_ref().unwrap().bytes().unwrap();
+        let info = w.session.as_ref().unwrap().info();
+        let rows = workspace_annotations(&w).unwrap();
+        assert!(!rows.is_empty());
+        assert_eq!(rows[0].subtype, "Text");
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), bytes);
+        assert_eq!(w.session.as_ref().unwrap().info(), info);
+        assert!(w.note_editor.is_none());
+        assert!(w.ink_editor.is_none());
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let command = source
+            .split_once("#[tauri::command]\nasync fn annotations_document(")
+            .expect("annotation RPC")
+            .1
+            .split_once("#[tauri::command")
+            .unwrap()
+            .0;
+        assert!(command.contains("workspace_annotations(&workspace)"));
+        assert!(!command.contains("checkpoint("));
+        assert!(!command.contains("apply("));
+        assert!(
+            source
+                .rsplit_once(".invoke_handler(tauri::generate_handler![")
+                .unwrap()
+                .1
+                .split_once("])")
+                .unwrap()
+                .0
+                .contains("annotations_document")
+        );
+    }
+    #[test]
     fn page_batch_command_wire_contract_is_explicitly_snake_case() {
         let source = include_str!("lib.rs").replace("\r\n", "\n");
         assert!(
@@ -2205,6 +2249,14 @@ async fn outline_document(state: State<'_, Store>) -> Reply<Vec<pdfmaster_core::
 }
 
 #[tauri::command]
+async fn annotations_document(
+    state: State<'_, Store>,
+) -> Reply<Vec<pdfmaster_core::AnnotationRow>> {
+    let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    workspace_annotations(&workspace)
+}
+
+#[tauri::command]
 async fn edit_document(edit: Edit, state: State<'_, Store>) -> Reply<Option<DocumentView>> {
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
     apply_single_edit(&mut w, edit).map(Some)
@@ -2488,7 +2540,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,outline_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

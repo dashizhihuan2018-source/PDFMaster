@@ -1,3 +1,4 @@
+use super::annotation_view::AnnotationSidebar;
 use super::{Model, bridge};
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::sidebar_width::{STORAGE_KEY, Width};
@@ -294,7 +295,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
                 <button aria-label="缩略图" title="缩略图" class:active=move||m.sidebar_mode.get()==Mode::Thumbnails aria-pressed=move||(m.sidebar_mode.get()==Mode::Thumbnails).to_string() disabled=move||m.blocked() on:click=move|_|m.select_sidebar_mode(Mode::Thumbnails)><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h5v5H3z M12 3h5v5h-5z M3 12h5v5H3z M12 12h5v5h-5z"/></svg></button>
                 <button aria-label="大纲" title="大纲" class:active=move||m.sidebar_mode.get()==Mode::Outline aria-pressed=move||(m.sidebar_mode.get()==Mode::Outline).to_string() disabled=move||m.blocked() on:click=move|_|m.select_sidebar_mode(Mode::Outline)><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h2 M8 5h9 M3 10h2 M8 10h9 M3 15h2 M8 15h9"/></svg></button>
                 <button aria-label="侧栏搜索" title="搜索" class:active=move||m.sidebar_mode.get()==Mode::Search aria-pressed=move||(m.sidebar_mode.get()==Mode::Search).to_string() disabled=move||m.search_input_blocked() on:click=move|_|m.show_search_sidebar()><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 5 5"/></svg></button>
-                <button aria-label="侧栏批注" title="文档批注汇总尚未迁移" disabled>"A"</button>
+                <button aria-label="侧栏批注" title="批注" class:active=move||m.sidebar_mode.get()==Mode::Annotations aria-pressed=move||(m.sidebar_mode.get()==Mode::Annotations).to_string() disabled=move||m.blocked() on:click=move|_|m.select_sidebar_mode(Mode::Annotations)>"A"</button>
             </div>
             <div class="section-label" hidden=move||m.sidebar_mode.get()!=Mode::Thumbnails>"页面"<span>{move||m.count()}</span></div>
             <Show when=move||m.sidebar_mode.get()==Mode::Thumbnails&&m.thumbnail_cache.with(|cache|cache.suspended())><p class="thumbnail-paused" role="status">"缩略图加载已暂停；请先保存文档，再正常重启候选。"</p></Show>
@@ -354,6 +355,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
                 </div>
             </section>
             <SearchSidebar model=m/>
+            <AnnotationSidebar model=m/>
         </aside>
     }
 }

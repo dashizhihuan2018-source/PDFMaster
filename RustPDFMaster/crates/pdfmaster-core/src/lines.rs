@@ -338,6 +338,7 @@ pub(crate) fn add_line(
     let ap=document.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Form","FormType"=>1,"BBox"=>vec![0.into(),0.into(),bounds.width.into(),bounds.height.into()],"Resources"=>Dictionary::new()},appearance(&line,bounds,stroke,fill,width)?));
     let mut a = dictionary! {"Type"=>"Annot","Subtype"=>"Line","Rect"=>vec![x.into(),y.into(),(x+bounds.width).into(),(y+bounds.height).into()],"P"=>page_id,"F"=>4,"C"=>vec![stroke.r.into(),stroke.g.into(),stroke.b.into()],"Border"=>vec![0.into(),0.into(),width.into()],"AP"=>dictionary!{"N"=>ap}};
     write_geometry(&mut a, &line, width);
+    a.set("M", crate::annotations::modified_now()?);
     if let Some(c) = fill {
         a.set("IC", vec![c.r.into(), c.g.into(), c.b.into()]);
     }

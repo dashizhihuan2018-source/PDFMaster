@@ -415,6 +415,7 @@ fn add_note(
             (bounds.y + bounds.height).into(),
         ],
         "Contents" => pdf_text_string(contents),
+        "M" => crate::annotations::modified_now()?,
         "C" => vec![color.r.into(), color.g.into(), color.b.into()],
         "F" => 4_i64,
         "Name" => "Comment",

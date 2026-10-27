@@ -261,6 +261,7 @@ pub(crate) fn update_shape(
         ],
     );
     annotation.set("C", vec![stroke.r.into(), stroke.g.into(), stroke.b.into()]);
+    annotation.set("M", crate::annotations::modified_now()?);
     annotation.set(
         "BS",
         dictionary! {"Type"=>"Border","W"=>line_width,"S"=>"S"},
@@ -387,6 +388,7 @@ pub(crate) fn add_shape(
         "Type"=>"Annot", "Subtype"=>match shape {ShapeKind::Rectangle=>"Square", ShapeKind::Ellipse=>"Circle", ShapeKind::Line=>return Err(PdfMasterError::InvalidOperation("use add_line with explicit endpoints"))},
         "Rect"=>vec![bounds.x.into(),bounds.y.into(),(bounds.x+bounds.width).into(),(bounds.y+bounds.height).into()],
         "P"=>page_id, "F"=>4_i64,
+        "M"=>crate::annotations::modified_now()?,
         "C"=>vec![stroke.r.into(),stroke.g.into(),stroke.b.into()],
         "BS"=>dictionary! {"Type"=>"Border", "W"=>line_width, "S"=>"S"},
         "Border"=>vec![0.into(),0.into(),line_width.into()],

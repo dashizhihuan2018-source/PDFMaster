@@ -14,21 +14,39 @@ pub enum Mode {
     Thumbnails,
     Outline,
     Search,
+    Annotations,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ticket(u64, u64);
 
-#[derive(Clone, Debug, Default)]
-pub struct Cache {
+pub type Cache = ProjectionCache<Row>;
+
+#[derive(Clone, Debug)]
+pub struct ProjectionCache<T> {
     generation: u64,
     serial: u64,
     active: Option<Ticket>,
-    result: Option<Result<Vec<Row>, String>>,
+    result: Option<Result<Vec<T>, String>>,
     suspended: bool,
 }
 
-impl Cache {
+impl<T> Default for ProjectionCache<T> {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            serial: 0,
+            active: None,
+            result: None,
+            suspended: false,
+        }
+    }
+}
+
+impl<T> ProjectionCache<T> {
+    pub fn generation(&self) -> Option<u64> {
+        (!self.suspended).then_some(self.generation)
+    }
     pub fn invalidate(&mut self) {
         self.result = None;
         if let Some(generation) = self.generation.checked_add(1) {
@@ -54,7 +72,7 @@ impl Cache {
     pub fn can_begin(&self) -> bool {
         !self.suspended && self.active.is_none() && self.result.is_none()
     }
-    pub fn finish(&mut self, ticket: Ticket, result: Result<Vec<Row>, String>) -> bool {
+    pub fn finish(&mut self, ticket: Ticket, result: Result<Vec<T>, String>) -> bool {
         if self.suspended || self.active != Some(ticket) {
             return false;
         }
@@ -70,12 +88,15 @@ impl Cache {
             self.suspended = true;
         }
     }
-    pub fn result(&self) -> Option<&Result<Vec<Row>, String>> {
+    pub fn result(&self) -> Option<&Result<Vec<T>, String>> {
         self.result.as_ref()
     }
     pub fn suspended(&self) -> bool {
         self.suspended
     }
+}
+
+impl ProjectionCache<Row> {
     pub fn page(&self, index: usize, page_count: usize, blocked: bool) -> Option<usize> {
         if blocked || self.suspended {
             return None;
