@@ -13,6 +13,7 @@ pub enum Mode {
     #[default]
     Thumbnails,
     Outline,
+    Search,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

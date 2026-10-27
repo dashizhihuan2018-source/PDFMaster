@@ -46,7 +46,11 @@ fn empty_and_single_hit_lists_are_safe_at_integer_edges() {
 
 #[test]
 fn search_controls_use_one_guarded_hit_selection_path() {
-    let workspace = include_str!("../src/workspace.rs");
+    let workspace = [
+        include_str!("../src/workspace.rs"),
+        include_str!("../src/thumbnail_view.rs"),
+    ]
+    .join("\n");
     let toolbar = include_str!("../src/workbench_view.rs");
     assert!(workspace.contains("fn select_search_hit(self, index: usize)"));
     assert!(workspace.contains("fn step_search_hit(self, backward: bool)"));
@@ -65,7 +69,11 @@ fn search_hit_ordering_has_an_independent_testable_contract() {
 
 #[test]
 fn selected_result_is_visible_in_its_own_scroll_region() {
-    let workspace = include_str!("../src/workspace.rs");
+    let workspace = [
+        include_str!("../src/workspace.rs"),
+        include_str!("../src/thumbnail_view.rs"),
+    ]
+    .join("\n");
     assert!(workspace.contains("id=\"search-results\""));
     assert!(workspace.contains("id=format!(\"search-hit-{index}\")"));
     assert!(workspace.contains("fn reveal_search_hit(index: usize)"));

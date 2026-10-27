@@ -6,7 +6,9 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
 }
 pub mod ink;
 pub mod outline;
+pub mod search_flow;
 pub mod shell;
+pub mod sidebar_width;
 pub mod thumbnails;
 pub mod workbench;
 
@@ -1076,17 +1078,23 @@ mod tests {
     }
     #[test]
     fn workspace_exposes_search_results_and_direct_page_jump_controls() {
-        let source = include_str!("workspace.rs");
+        let source = [
+            include_str!("workspace.rs"),
+            include_str!("thumbnail_view.rs"),
+        ]
+        .join("\n");
         assert!(source.contains("search_document"));
         assert!(source.contains("搜索当前文档"));
         assert!(source.contains("m.select_search_hit(index)"));
         assert!(source.contains("self.navigate(page)"));
         assert!(source.contains("跳转页码"));
         assert!(source.contains("page_jump_index"));
-        assert!(source.contains("<input aria-label=\"搜索文档文字\" disabled=move||m.busy.get()"));
-        assert!(source.contains("<input type=\"checkbox\" disabled=move||m.busy.get()"));
+        assert!(source.contains("aria-label=\"搜索文档文字\" placeholder=\"搜索文档文字\" disabled=move||m.search_input_blocked()"));
+        assert!(
+            source.contains("<input type=\"checkbox\" disabled=move||m.search_input_blocked()")
+        );
         assert!(source.contains(
-            "m.search_case_sensitive.set(event_target_checked(&e));m.invalidate_search()"
+            "m.search_case_sensitive.set(event_target_checked(&e));m.queue_live_search()"
         ));
         assert!(source.contains("\"case_sensitive\":case_sensitive"));
     }

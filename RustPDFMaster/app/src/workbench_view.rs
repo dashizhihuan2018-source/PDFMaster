@@ -73,8 +73,8 @@ pub(super) fn Toolbar(model: Model) -> impl IntoView {
                 <button class="chrome-icon-button" aria-label="PDF Copilot" title="PDF Copilot 尚未迁移" disabled><Icon name="copilot"/></button>
                 <button class="chrome-icon-button" aria-label="翻译" title="翻译尚未迁移" disabled><Icon name="translate"/></button>
                 <button class="chrome-icon-button" aria-label="分享" title="分享尚未迁移" disabled><Icon name="share"/></button>
-                <input class="chrome-search" aria-label="搜索文档文字" placeholder="搜索" disabled=move||m.blocked() prop:value=move||m.search_query.get()
-                    on:focus=move|_|m.select_panel(Some(Panel::Search)) on:input=move|e|{m.search_query.set(event_target_value(&e));m.invalidate_search();}
+                <input class="chrome-search" aria-label="搜索文档文字" placeholder="搜索" disabled=move||m.search_input_blocked() prop:value=move||m.search_query.get()
+                    on:focus=move|_|m.show_search_sidebar() on:input=move|e|{m.search_query.set(event_target_value(&e));m.queue_live_search();}
                     on:keydown=move|e|{if e.key()=="Enter"{m.search();}}/>
                 <button class="chrome-icon-button" aria-label="上个结果" title="上一处" disabled=move||m.blocked()||!m.search_result.with(|r|r.as_ref().is_some_and(|r|!r.hits.is_empty())) on:click=move|_|m.step_search_hit(true)><Icon name="previous"/></button>
                 <button class="chrome-icon-button" aria-label="下个结果" title="下一处" disabled=move||m.blocked()||!m.search_result.with(|r|r.as_ref().is_some_and(|r|!r.hits.is_empty())) on:click=move|_|m.step_search_hit(false)><Icon name="next"/></button>

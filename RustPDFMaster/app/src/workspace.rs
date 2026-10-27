@@ -212,6 +212,8 @@ struct Model {
     thumbnail_cache: RwSignal<pdfmaster_ui::thumbnails::Cache>,
     thumbnail_window: RwSignal<pdfmaster_ui::thumbnails::Window>,
     sidebar_mode: RwSignal<pdfmaster_ui::outline::Mode>,
+    sidebar_width: RwSignal<pdfmaster_ui::sidebar_width::Width>,
+    sidebar_viewport: RwSignal<f64>,
     outline_cache: RwSignal<pdfmaster_ui::outline::Cache>,
     outline_selection: RwSignal<Option<usize>>,
     page: RwSignal<usize>,
@@ -228,6 +230,9 @@ struct Model {
     search_case_sensitive: RwSignal<bool>,
     search_result: RwSignal<Option<SearchResponse>>,
     search_selection: RwSignal<Option<usize>>,
+    search_flow: RwSignal<pdfmaster_ui::search_flow::Flow>,
+    search_timer: RwSignal<Option<leptos::leptos_dom::helpers::TimeoutHandle>>,
+    search_status: RwSignal<String>,
     page_jump: RwSignal<String>,
     page_range: RwSignal<String>,
     shape_bounds: RwSignal<String>,
@@ -249,6 +254,11 @@ impl Model {
     fn replace_document_view(self, document: Option<Document>) {
         self.outline_cache.update(|cache| cache.invalidate());
         self.outline_selection.set(None);
+        self.stop_search_timer();
+        self.search_flow.update(|flow| {
+            flow.changed();
+        });
+        self.search_status.set("输入关键词搜索".into());
         self.search_selection.set(None);
         self.search_result.set(None);
         self.thumbnail_cache.update(|cache| {
@@ -282,6 +292,10 @@ impl Model {
             .set("选择二级工具后才会修改文档；灰色工具尚未迁移。".into());
     }
     fn select_panel(self, panel: Option<Panel>) {
+        if panel == Some(Panel::Search) {
+            self.show_search_sidebar();
+            return;
+        }
         let blocked = self.blocked();
         if blocked {
             return;
@@ -1000,6 +1014,11 @@ impl Model {
         });
     }
     fn invalidate_search(self) {
+        self.stop_search_timer();
+        self.search_flow.update(|flow| {
+            flow.changed();
+        });
+        self.search_status.set("输入关键词搜索".into());
         self.search_selection.set(None);
         let summary = self.search_result.with_untracked(|result| {
             result.as_ref().map(|result| {
@@ -1009,6 +1028,72 @@ impl Model {
         self.message
             .update(|message| *message = search_conditions_message(message, summary.as_deref()));
         self.search_result.set(None);
+    }
+    fn stop_search_timer(self) {
+        if let Some(timer) = self.search_timer.get_untracked() {
+            timer.clear();
+            self.search_timer.set(None);
+        }
+    }
+    fn search_input_blocked(self) -> bool {
+        self.search_flow.with(|flow| {
+            flow.input_blocked(
+                self.loaded(),
+                self.busy.get(),
+                self.has_note_draft() || self.has_ink(),
+            )
+        })
+    }
+    fn show_search_sidebar(self) {
+        if self.search_input_blocked() {
+            return;
+        }
+        self.close_chrome_popups();
+        self.ink_enabled.set(false);
+        self.chrome.update(|chrome| {
+            chrome.sidebar = true;
+            chrome.panel = None;
+        });
+        self.sidebar_mode.set(pdfmaster_ui::outline::Mode::Search);
+    }
+    fn queue_live_search(self) {
+        if self.search_input_blocked() {
+            return;
+        }
+        self.invalidate_search();
+        let revision = self.search_flow.with_untracked(|flow| flow.revision());
+        let Some(revision) = revision else {
+            return;
+        };
+        if self.search_query.get_untracked().trim().is_empty() {
+            return;
+        }
+        self.search_status.set("正在搜索…".into());
+        let timer = leptos::leptos_dom::helpers::set_timeout_with_handle(
+            move || {
+                if self.search_flow.with_untracked(|flow| flow.revision()) != Some(revision) {
+                    return;
+                }
+                self.search_timer.set(None);
+                self.search_flow.update(|flow| {
+                    flow.queue(revision);
+                });
+            },
+            std::time::Duration::from_millis(180),
+        );
+        match timer {
+            Ok(timer) => self.search_timer.set(Some(timer)),
+            Err(_) => self
+                .search_status
+                .set("无法安排搜索，请按回车重试。".into()),
+        }
+    }
+    fn cancel_search(self) {
+        if self.search_input_blocked() {
+            return;
+        }
+        self.invalidate_search();
+        self.search_status.set("搜索已取消".into());
     }
     fn select_search_hit(self, index: usize) {
         if self.blocked() {
@@ -1044,21 +1129,53 @@ impl Model {
         if self.blocked() {
             return;
         }
+        self.stop_search_timer();
         let query = self.search_query.get_untracked();
         if query.trim().is_empty() {
-            self.search_selection.set(None);
-            self.search_result.set(None);
+            self.invalidate_search();
             self.message.set("请输入搜索关键词。".into());
             return;
         }
+        let mut ticket = None;
+        self.search_flow.update(|flow| {
+            flow.request();
+            ticket = flow.begin();
+        });
+        let Some(ticket) = ticket else {
+            return;
+        };
         let case_sensitive = self.search_case_sensitive.get_untracked();
         let requested_query = query.trim().to_owned();
         self.search_selection.set(None);
         self.search_result.set(None);
         self.busy.set(true);
+        self.search_status.set("正在搜索…".into());
         spawn_local(async move {
             let args = json!({"query":query,"case_sensitive":case_sensitive});
-            match bridge::call::<SearchResponse>("search_document", &args).await {
+            let response = bridge::call_bounded::<SearchResponse>("search_document", &args).await;
+            if response
+                .as_ref()
+                .is_err_and(|error| error.starts_with("原生响应超时；"))
+            {
+                self.search_flow.update(|flow| {
+                    flow.suspend(ticket);
+                });
+                self.search_status
+                    .set("搜索已暂停；请先保存文档，再正常重启候选。".into());
+                self.busy.set(false);
+                return;
+            }
+            let mut current = None;
+            self.search_flow
+                .update(|flow| current = flow.finish(ticket));
+            let Some(current) = current else {
+                return;
+            };
+            if !current {
+                self.busy.set(false);
+                return;
+            }
+            match response {
                 Ok(result)
                     if search_response_is_current(
                         &requested_query,
@@ -1067,6 +1184,19 @@ impl Model {
                         result.case_sensitive,
                     ) =>
                 {
+                    self.search_status.set(if result.hits.is_empty() {
+                        format!("未找到“{}”", result.query)
+                    } else {
+                        format!(
+                            "1 / {}{}",
+                            result.hits.len(),
+                            if result.truncated {
+                                " · 已达上限，请细化关键词"
+                            } else {
+                                ""
+                            }
+                        )
+                    });
                     self.message.set(search_status_message(
                         &result.query,
                         result.hits.len(),
@@ -1076,10 +1206,13 @@ impl Model {
                 }
                 Ok(_) => {
                     self.search_result.set(None);
+                    self.search_status
+                        .set("搜索条件已改变，请重新搜索。".into());
                     self.message.set("搜索条件已改变，请重新搜索。".into());
                 }
                 Err(error) => {
                     self.search_result.set(None);
+                    self.search_status.set(format!("搜索不可用：{error}"));
                     self.message.set(error);
                 }
             }
@@ -1403,6 +1536,8 @@ pub fn Workspace() -> impl IntoView {
         thumbnail_cache: RwSignal::new(pdfmaster_ui::thumbnails::Cache::default()),
         thumbnail_window: RwSignal::new(pdfmaster_ui::thumbnails::Window::new(0., 600., 0)),
         sidebar_mode: RwSignal::new(pdfmaster_ui::outline::Mode::default()),
+        sidebar_width: RwSignal::new(thumbnail_view::restored_sidebar_width()),
+        sidebar_viewport: RwSignal::new(thumbnail_view::reader_viewport()),
         outline_cache: RwSignal::new(pdfmaster_ui::outline::Cache::default()),
         outline_selection: RwSignal::new(None),
         page: RwSignal::new(0),
@@ -1419,6 +1554,9 @@ pub fn Workspace() -> impl IntoView {
         search_case_sensitive: RwSignal::new(false),
         search_result: RwSignal::new(None),
         search_selection: RwSignal::new(None),
+        search_flow: RwSignal::new(pdfmaster_ui::search_flow::Flow::default()),
+        search_timer: RwSignal::new(None),
+        search_status: RwSignal::new("输入关键词搜索".into()),
         page_jump: RwSignal::new(String::new()),
         page_range: RwSignal::new(String::new()),
         shape_bounds: RwSignal::new("36,36,120,80".into()),
@@ -1435,6 +1573,13 @@ pub fn Workspace() -> impl IntoView {
         ink_image_revision: RwSignal::new(0),
         image_ready: RwSignal::new(false),
     };
+    on_cleanup(move || m.stop_search_timer());
+    Effect::new(move |_| {
+        let ready = m.search_flow.with(|flow| flow.can_begin());
+        if ready && !m.blocked() && m.route.get() == Route::Document {
+            m.search();
+        }
+    });
     let surface = NodeRef::<leptos::html::Div>::new();
     m.command("document_info", json!({}));
     view! {
@@ -1445,10 +1590,11 @@ pub fn Workspace() -> impl IntoView {
                 <button class="shell-plus" aria-label="新标签：返回主界面" title="返回主界面；多文档标签尚未迁移" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
             </nav>
             <div class="home-host" hidden=move||m.route.get()==Route::Document><home::Dashboard model=m/></div>
-        <main class="workspace" class:reader-sidebar-hidden=move||!m.chrome.get().sidebar class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
+        <main class="workspace" id="reader-workspace" style=move||format!("--reader-sidebar-width:{}px",m.sidebar_width.with(|w|w.effective(m.sidebar_viewport.get()))) class:reader-sidebar-hidden=move||!m.chrome.get().sidebar class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
             <workbench::Toolbar model=m/>
             <workbench::SecondaryTools model=m/>
             <thumbnail_view::Sidebar model=m/>
+            <thumbnail_view::SidebarResizer model=m/>
             <section id="pdf-reader" class="reader" aria-label="PDF 阅读区域" aria-busy=move||m.busy.get().to_string()>
                 <Show when=move||m.loaded() fallback=move||view!{
                     <div class="empty-state"><div class="paper-emblem">"PDF"</div><h1>"让文档回到工作中心。"</h1><p>"打开一份 PDF，或从空白页开始。"</p><button class="primary" disabled=move||m.busy.get() on:click=move|_|m.command("open_document",json!({}))>"选择 PDF 文件"</button><div class="safety-note">"仅在会话副本中编辑，原文件不会自动覆盖。"</div></div>
@@ -1473,20 +1619,6 @@ pub fn Workspace() -> impl IntoView {
             <aside class="inspector" aria-label="当前工具参数" hidden=move||m.chrome.get().panel.is_none()>
                 <div class="inspector-heading"><h2>"工具参数"</h2><button aria-label="关闭工具参数" disabled=move||m.blocked() on:click=move|_|m.select_panel(None)>"×"</button></div>
                 <workbench::FileActions model=m/>
-                <div class="tool-group search-panel" hidden=move||m.chrome.get().panel!=Some(Panel::Search)><h3>"文档搜索"</h3>
-                    <input aria-label="搜索文档文字" disabled=move||m.busy.get() placeholder="输入关键词" prop:value=move||m.search_query.get() on:input=move|e|{m.search_query.set(event_target_value(&e));m.invalidate_search();}/>
-                    <label class="search-case"><input type="checkbox" disabled=move||m.busy.get() prop:checked=move||m.search_case_sensitive.get() on:change=move|e|{m.search_case_sensitive.set(event_target_checked(&e));m.invalidate_search();}/><span>"区分大小写"</span></label>
-                    <button disabled=move||m.blocked() on:click=move|_|m.search()>"搜索当前文档"</button>
-                    <Show when=move||m.search_result.with(|r|r.is_some())>
-                        <div class="search-meta">{move||m.search_result.with(|r|r.as_ref().map(|r|format!("已扫描 {} 页 · {} 页含文字{}",r.pages_scanned,r.searchable_pages,if r.case_sensitive{" · 区分大小写"}else{""})).unwrap_or_default())}<span role="status" aria-label="当前搜索结果">{move||m.search_selection.get().map(|index|m.search_result.with(|r|r.as_ref().map(|r|format!(" · 当前 {}/{}",index+1,r.hits.len())).unwrap_or_default())).unwrap_or_default()}</span></div>
-                        <div class="search-results" id="search-results">
-                            <For each=move||m.search_result.with(|r|r.as_ref().map(|r|r.hits.clone().into_iter().enumerate().collect::<Vec<_>>()).unwrap_or_default()) key=|(index,hit)|(*index,hit.page_index,hit.match_start) children=move|(index,hit)|{
-                                view!{<button class="search-hit" id=format!("search-hit-{index}") class:selected=move||m.search_selection.get()==Some(index) aria-current=move||if m.search_selection.get()==Some(index){"true"}else{"false"} disabled=move||m.blocked() on:click=move|_|m.select_search_hit(index)><strong>{format!("第 {} 页 · 命中 {}",hit.page_index+1,index+1)}</strong><span>{hit.snippet}</span><small>{format!("字符 {}–{} · 片段内 {}–{}",hit.match_start,hit.match_end,hit.snippet_match_start,hit.snippet_match_end)}</small></button>}
-                            }/>
-                        </div>
-                        <p class="muted search-limit">{move||m.search_result.with(|r|r.as_ref().map(|r|r.limitation.clone()).unwrap_or_default())}</p>
-                    </Show>
-                </div>
                 <div class="tool-group" id="tool-pages" hidden=move||m.chrome.get().panel!=Some(Panel::Pages)><h3>"当前页操作"</h3>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"rotate","page":m.page.get_untracked(),"degrees":90}))>"顺时针旋转 90°"</button>
                     <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"duplicate_page","page":m.page.get_untracked(),"index":m.page.get_untracked()+1}))>"复制当前页"</button>
