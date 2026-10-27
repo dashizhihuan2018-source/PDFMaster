@@ -1,6 +1,20 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 5df3685a (2026-10-27)
+## Current snapshot: development 91b7d55f (2026-10-27)
+
+Exactly **145 tracked Rust/workflow files** from development `91b7d55fb336d132ff33f7dc16c8c7949f2346b6`, plus this record. Reviewed source only; no private development history, user PDFs/screenshots, memory, credentials or build outputs. Formal Swift releases, website and installation remain unchanged.
+
+The original-derived 176pt sidebar now has working thumbnail and read-only outline modes, keeping search/annotation modes explicitly disabled until migrated. Outline rows preserve the original 54pt height, 12pt two-line titles, bounded indentation and page suffix. Unicode hierarchy, local GoTo and separate legacy-name/modern-string destinations resolve against current page identities; external and remote actions never open. Cycles, depth/items, title/name bytes and cumulative lookup work are bounded. Replacement invalidates selection and cache before document state changes; one in-flight ticket rejects stale replies, with timeouts pausing rather than queuing more requests. Destination coordinates/zoom, exact native icons/segmented skin and full keyboard/tree behavior remain incomplete.
+
+Failure-first regressions cover malformed/cyclic/budget inputs, local navigation, stale replies, timeout and selected-hover cascade. Read-only review identified cumulative lookup work, Windows CRLF source checks and global hover specificity; fixes and bounded re-review closed those Important findings. Final-source full local checks passed **191 core, 94 UI (9 outline contracts), 75 native +4 security**, three-workspace formatting/host-Clippy and locked release WASM. Source contracts and review are not browser or visual parity certification. Hosted outcomes must be checked independently, not inferred from local success.
+
+At development f0c25b2a, an isolated 430px Mac QA executable `0897379a3bec5bca42c851a7c4322159a73f3c97fd71b0055317f2d188be88de` actually opened a synthetic 24-page PDF: Chinese parent/child and both named-destination types navigated correctly; the external row stayed disabled, long titles wrapped to two lines and the list scrolled to page24. Switching thumbnails/outline preserved the page; replacing with a blank document removed old rows; normal Quit was verified. That runtime exposed the selected-hover color conflict. The final corrected QA executable `3a67e9183c0ada26ae35da887b42c80b86f859f3f15c14ba9f06bdbb7e164d6e` is arm64/ad-hoc strict/deep verified with five exact notices, but the Mac is now locked: **final hover GUI is NOT_RUN**, not certified by the preceding binary.
+
+The same final-source unsigned iOS simulator archive built with executable SHA-256 `8d000c27c5432d22e5237f1f0ed47c8eb7f84bcbe3efdd4cbad985f6f755a5ca`; arm64/IOSSIMULATOR/min16/SDK27 and all five exact notices verified. It was not installed or run. Physical device/signing/store and new iOS outline behavior remain unverified.
+
+Preceding hosted run [40373191305](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40373191305) succeeded on Mac and Windows at public `fcfa526ce9d7243c8d6043fc8f94edb9ac212256`, **not this outline source**. Its three complete downloads matched their manifests; both ZIP safety/CRC/notices and NSIS container checks passed. This is not Windows installation/runtime or a formal release. Inventory remains **24 partial /46 unsupported /0 complete**, with **801 frozen legacy contracts pending**. Full functionality/UI parity, exact icons, true multi-document tabs, complete sidebar modes, continuous/dual layouts, inline editing, actual Windows runtime, physical iOS and final Rustall/public skill delivery remain unfinished.
+
+## Historical snapshot: development 5df3685a (superseded)
 
 Exactly **141 tracked Rust/workflow files** from development `5df3685a6098e567f5696ffa2dfa4a58cd33a15d`, plus this record. Only reviewed candidate source is synchronized; private history, user documents/screenshots, memory, credentials and generated/build files are excluded. Formal Swift releases, website and installation remain unchanged.
 

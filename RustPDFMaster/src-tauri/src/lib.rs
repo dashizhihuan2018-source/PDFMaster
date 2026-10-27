@@ -1190,6 +1190,33 @@ mod workspace_tests {
         );
     }
     #[test]
+    fn outline_command_reads_the_current_session_without_editing_or_opening_targets() {
+        let original = include_str!("lib.rs").replace("\r\n", "\n");
+        for source in [original.clone(), original.replace('\n', "\r\n")] {
+            let source = source.replace("\r\n", "\n");
+            let command = source
+                .split_once("#[tauri::command]\nasync fn outline_document(")
+                .expect("outline RPC must exist")
+                .1
+                .split_once("#[tauri::command")
+                .unwrap()
+                .0;
+            assert!(command.contains("session.outline()"));
+            assert!(command.contains("workspace.session.as_ref()"));
+            assert!(!command.contains("apply("));
+            assert!(!command.contains("checkpoint("));
+            assert!(!command.contains("opener"));
+            let handlers = source
+                .rsplit_once(".invoke_handler(tauri::generate_handler![")
+                .unwrap()
+                .1
+                .split_once("])")
+                .unwrap()
+                .0;
+            assert!(handlers.contains("outline_document"));
+        }
+    }
+    #[test]
     fn page_batch_command_wire_contract_is_explicitly_snake_case() {
         let source = include_str!("lib.rs").replace("\r\n", "\n");
         assert!(
@@ -2171,6 +2198,13 @@ async fn search_document(
 }
 
 #[tauri::command]
+async fn outline_document(state: State<'_, Store>) -> Reply<Vec<pdfmaster_core::OutlineItem>> {
+    let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    let session = workspace.session.as_ref().ok_or("请先打开 PDF")?;
+    session.outline().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn edit_document(edit: Edit, state: State<'_, Store>) -> Reply<Option<DocumentView>> {
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
     apply_single_edit(&mut w, edit).map(Some)
@@ -2454,7 +2488,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,outline_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

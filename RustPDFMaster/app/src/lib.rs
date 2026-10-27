@@ -5,6 +5,7 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
     current.saturating_add_signed(delta as isize).min(count - 1)
 }
 pub mod ink;
+pub mod outline;
 pub mod shell;
 pub mod thumbnails;
 pub mod workbench;

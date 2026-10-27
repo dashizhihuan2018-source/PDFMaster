@@ -1,6 +1,7 @@
 use super::{Model, bridge};
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::{
+    outline::{Mode, Row},
     shell::Route,
     thumbnails::{Image, ROW_HEIGHT, Window, thumbnail_scale},
 };
@@ -8,6 +9,40 @@ use serde_json::json;
 use wasm_bindgen::JsCast;
 
 impl Model {
+    fn select_sidebar_mode(self, mode: Mode) {
+        if !self.blocked() {
+            self.sidebar_mode.set(mode);
+        }
+    }
+    fn select_outline_row(self, index: usize) {
+        let page = self
+            .outline_cache
+            .with_untracked(|cache| cache.page(index, self.count(), self.blocked()));
+        if let Some(page) = page {
+            self.outline_selection.set(Some(index));
+            self.navigate(page);
+        }
+    }
+    fn load_outline(self) {
+        let mut ticket = None;
+        self.outline_cache.update(|cache| ticket = cache.begin());
+        let Some(ticket) = ticket else {
+            return;
+        };
+        spawn_local(async move {
+            let result = bridge::call_bounded::<Vec<Row>>("outline_document", &json!({})).await;
+            self.outline_cache.update(|cache| {
+                if result
+                    .as_ref()
+                    .is_err_and(|e| e.starts_with("原生响应超时；"))
+                {
+                    cache.suspend(ticket);
+                } else {
+                    cache.finish(ticket, result);
+                }
+            });
+        });
+    }
     fn thumbnail_viewport(self, reveal: bool) {
         let Some(element) = web_sys::window()
             .and_then(|w| w.document())
@@ -88,7 +123,10 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
     Effect::new(move |_| {
         let _ = m.page.get();
         let _ = m.document.get();
-        if m.chrome.get().sidebar && m.route.get() == Route::Document {
+        if m.chrome.get().sidebar
+            && m.sidebar_mode.get() == Mode::Thumbnails
+            && m.route.get() == Route::Document
+        {
             leptos::leptos_dom::helpers::request_animation_frame(move || {
                 m.thumbnail_viewport(true)
             });
@@ -99,17 +137,36 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
         if !m.busy.get()
             && m.loaded()
             && m.chrome.get().sidebar
+            && m.sidebar_mode.get() == Mode::Thumbnails
             && m.route.get() == Route::Document
             && let Some(page) = m.thumbnail_cache.with(|cache| cache.next(window))
         {
             m.load_thumbnail(page, window);
         }
     });
+    Effect::new(move |_| {
+        let ready = m.outline_cache.with(|cache| cache.can_begin());
+        if ready
+            && !m.busy.get()
+            && m.loaded()
+            && m.chrome.get().sidebar
+            && m.sidebar_mode.get() == Mode::Outline
+            && m.route.get() == Route::Document
+        {
+            m.load_outline();
+        }
+    });
     view! {
-        <aside class="pages thumbnail-sidebar" aria-label="页面缩略图" hidden=move||!m.chrome.get().sidebar>
-            <div class="section-label">"页面"<span>{move||m.count()}</span></div>
-            <Show when=move||m.thumbnail_cache.with(|cache|cache.suspended())><p class="thumbnail-paused" role="status">"缩略图加载已暂停；请先保存文档，再正常重启候选。"</p></Show>
-            <div id="pdf-thumbnails" class="thumbnail-scroll" on:scroll=move|e|{
+        <aside class="pages thumbnail-sidebar" aria-label="阅读器侧栏" hidden=move||!m.chrome.get().sidebar>
+            <div class="sidebar-modes" role="group" aria-label="阅读器侧栏模式">
+                <button aria-label="缩略图" title="缩略图" class:active=move||m.sidebar_mode.get()==Mode::Thumbnails aria-pressed=move||(m.sidebar_mode.get()==Mode::Thumbnails).to_string() disabled=move||m.blocked() on:click=move|_|m.select_sidebar_mode(Mode::Thumbnails)><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h5v5H3z M12 3h5v5h-5z M3 12h5v5H3z M12 12h5v5h-5z"/></svg></button>
+                <button aria-label="大纲" title="大纲" class:active=move||m.sidebar_mode.get()==Mode::Outline aria-pressed=move||(m.sidebar_mode.get()==Mode::Outline).to_string() disabled=move||m.blocked() on:click=move|_|m.select_sidebar_mode(Mode::Outline)><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h2 M8 5h9 M3 10h2 M8 10h9 M3 15h2 M8 15h9"/></svg></button>
+                <button aria-label="侧栏搜索" title="搜索结果迁入原版侧栏尚未完成；请使用工具栏搜索" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 5 5"/></svg></button>
+                <button aria-label="侧栏批注" title="文档批注汇总尚未迁移" disabled>"A"</button>
+            </div>
+            <div class="section-label" hidden=move||m.sidebar_mode.get()!=Mode::Thumbnails>"页面"<span>{move||m.count()}</span></div>
+            <Show when=move||m.sidebar_mode.get()==Mode::Thumbnails&&m.thumbnail_cache.with(|cache|cache.suspended())><p class="thumbnail-paused" role="status">"缩略图加载已暂停；请先保存文档，再正常重启候选。"</p></Show>
+            <div id="pdf-thumbnails" class="thumbnail-scroll" hidden=move||m.sidebar_mode.get()!=Mode::Thumbnails on:scroll=move|e|{
                 if e.target().and_then(|t|t.dyn_into::<web_sys::HtmlElement>().ok()).is_some(){m.thumbnail_viewport(false);}
             }>
                 {move||{
@@ -143,6 +200,27 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
                     }
                 }}
             </div>
+            <section class="outline-panel" aria-label="文档大纲" hidden=move||m.sidebar_mode.get()!=Mode::Outline>
+                <p class="outline-status" role="status">{move||m.outline_cache.with(|cache| {
+                    if cache.suspended() { return "大纲读取已暂停；请先保存文档，再正常重启候选。".into(); }
+                    match cache.result() {
+                        None => "正在读取大纲…".into(),
+                        Some(Err(error)) => format!("无法读取大纲：{error}"),
+                        Some(Ok(rows)) if rows.is_empty() => "此文档没有大纲".into(),
+                        Some(Ok(rows)) => format!("{} 项 · 外部目标不会打开", rows.len()),
+                    }
+                })}</p>
+                <div class="outline-scroll">
+                    <For each=move||m.outline_cache.with(|cache|cache.result().and_then(|result|result.as_ref().ok()).cloned().unwrap_or_default().into_iter().enumerate().collect::<Vec<_>>()) key=|(index,row)|(*index,row.path.clone(),row.title.clone(),row.page_index) children=move|(index,row)|{
+                        let title=format!("{}{}{}", "  ".repeat(row.depth.min(12)), row.title, row.page_index.map(|page|format!("   · {}", page+1)).unwrap_or_default());
+                        let tooltip=title.clone();
+                        view!{<button class="outline-row" class:selected=move||m.outline_selection.get()==Some(index) aria-current=move||if m.outline_selection.get()==Some(index){"true"}else{"false"}
+                            disabled=move||m.outline_cache.with(|cache|cache.page(index,m.count(),m.blocked()).is_none()) on:click=move|_|m.select_outline_row(index) title=tooltip>
+                            <span class="outline-title">{title}</span>
+                        </button>}
+                    }/>
+                </div>
+            </section>
         </aside>
     }
 }

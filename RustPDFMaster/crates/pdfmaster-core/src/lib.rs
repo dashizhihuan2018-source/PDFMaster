@@ -7,6 +7,7 @@ mod ink;
 mod insert;
 mod lines;
 mod notes;
+mod outline;
 mod ranges;
 mod render;
 mod shapes;
@@ -18,5 +19,6 @@ pub use document::{
 pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};
 pub use lines::{LineEnding, LineGeometry, Point};
 pub use notes::{NoteList, TextNote};
+pub use outline::OutlineItem;
 pub use ranges::{PageRange, PageRangeError};
 pub use shapes::{ShapeAnnotation, ShapeList};

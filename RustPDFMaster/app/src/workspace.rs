@@ -211,6 +211,9 @@ struct Model {
     document: RwSignal<Option<Document>>,
     thumbnail_cache: RwSignal<pdfmaster_ui::thumbnails::Cache>,
     thumbnail_window: RwSignal<pdfmaster_ui::thumbnails::Window>,
+    sidebar_mode: RwSignal<pdfmaster_ui::outline::Mode>,
+    outline_cache: RwSignal<pdfmaster_ui::outline::Cache>,
+    outline_selection: RwSignal<Option<usize>>,
     page: RwSignal<usize>,
     zoom: RwSignal<f32>,
     image: RwSignal<String>,
@@ -244,6 +247,8 @@ struct Model {
 
 impl Model {
     fn replace_document_view(self, document: Option<Document>) {
+        self.outline_cache.update(|cache| cache.invalidate());
+        self.outline_selection.set(None);
         self.search_selection.set(None);
         self.search_result.set(None);
         self.thumbnail_cache.update(|cache| {
@@ -1397,6 +1402,9 @@ pub fn Workspace() -> impl IntoView {
         document: RwSignal::new(None),
         thumbnail_cache: RwSignal::new(pdfmaster_ui::thumbnails::Cache::default()),
         thumbnail_window: RwSignal::new(pdfmaster_ui::thumbnails::Window::new(0., 600., 0)),
+        sidebar_mode: RwSignal::new(pdfmaster_ui::outline::Mode::default()),
+        outline_cache: RwSignal::new(pdfmaster_ui::outline::Cache::default()),
+        outline_selection: RwSignal::new(None),
         page: RwSignal::new(0),
         zoom: RwSignal::new(1.),
         image: RwSignal::new(String::new()),
