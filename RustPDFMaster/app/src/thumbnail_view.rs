@@ -33,6 +33,12 @@ pub(super) fn restored_sidebar_width() -> Width {
 }
 
 impl Model {
+    fn refresh_sidebar_viewport(self) -> f64 {
+        let viewport = reader_viewport();
+        self.sidebar_viewport.set(viewport);
+        viewport
+    }
+
     fn save_sidebar_width(self) {
         let saved = self.sidebar_width.with_untracked(|width| width.saved());
         let stored = web_sys::window()
@@ -51,7 +57,9 @@ pub(super) fn SidebarResizer(model: Model) -> impl IntoView {
     let handle = NodeRef::<leptos::html::Div>::new();
     let resize =
         leptos::leptos_dom::helpers::window_event_listener(leptos::ev::resize, move |_| {
-            m.sidebar_viewport.set(reader_viewport());
+            leptos::leptos_dom::helpers::request_animation_frame(move || {
+                m.refresh_sidebar_viewport();
+            });
         });
     let blur = leptos::leptos_dom::helpers::window_event_listener(leptos::ev::blur, move |_| {
         m.sidebar_width.update(|w| w.cancel_active());
@@ -66,7 +74,7 @@ pub(super) fn SidebarResizer(model: Model) -> impl IntoView {
         }
         if m.route.get() == Route::Document {
             leptos::leptos_dom::helpers::request_animation_frame(move || {
-                m.sidebar_viewport.set(reader_viewport())
+                m.refresh_sidebar_viewport();
             });
         }
     });
@@ -82,7 +90,8 @@ pub(super) fn SidebarResizer(model: Model) -> impl IntoView {
                 if m.blocked() || !e.is_primary() || e.button()!=0 { return; }
                 let Some(node) = handle.get() else { return; };
                 let mut began=false;
-                m.sidebar_width.update(|w|began=w.begin(e.pointer_id(),f64::from(e.client_x()),m.sidebar_viewport.get_untracked()));
+                let viewport=m.refresh_sidebar_viewport();
+                m.sidebar_width.update(|w|began=w.begin(e.pointer_id(),f64::from(e.client_x()),viewport));
                 if !began { return; }
                 if node.set_pointer_capture(e.pointer_id()).is_err() {
                     m.sidebar_width.update(|w|{w.cancel(e.pointer_id());});
@@ -91,7 +100,8 @@ pub(super) fn SidebarResizer(model: Model) -> impl IntoView {
                 let _=node.focus(); e.prevent_default();
             }
             on:pointermove=move|e|{
-                m.sidebar_width.update(|w|{w.drag(e.pointer_id(),f64::from(e.client_x()),m.sidebar_viewport.get_untracked());});
+                let viewport=m.refresh_sidebar_viewport();
+                m.sidebar_width.update(|w|{w.drag(e.pointer_id(),f64::from(e.client_x()),viewport);});
             }
             on:pointerup=move|e|{
                 let mut finished=false;
@@ -107,7 +117,8 @@ pub(super) fn SidebarResizer(model: Model) -> impl IntoView {
                 }
                 if m.blocked() { return; }
                 let mut changed=false;
-                m.sidebar_width.update(|w|changed=w.key(&e.key(),m.sidebar_viewport.get_untracked()));
+                let viewport=m.refresh_sidebar_viewport();
+                m.sidebar_width.update(|w|changed=w.key(&e.key(),viewport));
                 if changed { e.prevent_default(); m.save_sidebar_width(); }
             }/>
     }

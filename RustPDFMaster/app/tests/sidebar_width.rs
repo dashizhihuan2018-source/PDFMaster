@@ -145,3 +145,38 @@ fn actual_sidebar_wires_capture_cleanup_persistence_and_shared_geometry() {
         .unwrap();
     assert!(!mode.contains("sidebar_width"));
 }
+
+#[test]
+fn resize_measures_after_layout_and_interactions_never_use_a_stale_viewport() {
+    let sidebar = include_str!("../src/thumbnail_view.rs");
+    let resizer = sidebar.split("fn SidebarResizer").nth(1).unwrap();
+    let resize = resizer
+        .split("let resize =")
+        .nth(1)
+        .unwrap()
+        .split("let blur =")
+        .next()
+        .unwrap();
+    assert!(
+        resize.contains("request_animation_frame"),
+        "native resize events may precede WebView layout"
+    );
+    for (start, end) in [
+        ("on:pointerdown", "on:pointermove"),
+        ("on:pointermove", "on:pointerup"),
+        ("on:keydown", "/>"),
+    ] {
+        let handler = resizer
+            .split(start)
+            .nth(1)
+            .unwrap()
+            .split(end)
+            .next()
+            .unwrap();
+        assert!(
+            handler.contains("m.refresh_sidebar_viewport()"),
+            "{start} must sample the actual current workspace, not the last resize callback"
+        );
+        assert!(!handler.contains("m.sidebar_viewport.get_untracked()"));
+    }
+}
