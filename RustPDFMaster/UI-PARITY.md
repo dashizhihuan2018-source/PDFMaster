@@ -4,6 +4,14 @@
 
 当前 Rust 候选 **未通过 UI 对等验收**。自动测试、同名按钮、CSS 数值和编译通过均不是视觉或交互一致的证明。
 
+## 2026-10-27 批注矩形导航增量（未验收）
+
+再次只读回读原版ReaderNavigation.swift，当前SHA-256 `8c4af22fe4471e97143fbd4d6ea080949e037bdce67e1f6f98cd09f516509a6e`（较早记录e9f7703b已变化，未沿用旧哈希）。navigateToAnnotationRow仍先go(page)，再对finite正矩形go(bounds.insetBy -12,on:page)。Rust保留原行选择/稳定列表焦点，按当前页面四分之一旋转映射12pt扩边区域，使用实际CSS图片与reader边框/滚动位置进行最小双轴揭示；不新增选区overlay、不改zoom、不滚动app或侧栏。缺失/无效/全页外bounds只跳页，部分页外区域裁至可见页面。
+
+定位只属于当前document generation、页码和批注身份；普通翻页/zoom/文档替换失效旧请求。一张成功raster回复与当前实际已解码主图才可排下一动画帧，帧内再次校验状态。主img以source+owner为key，旧节点事件拒绝，延迟error仅释放捕获的旧票，不能取消新Waiting导航；同字节图片也校验owner。共享Ink同图取消保留真实DOM解码快路径，staging在主图先load时主动完成，避免等待不会再发生的load。CSS只将reader的justify-content改为flex-start，现有auto margins继续居中可容纳页面，同时保持超大页面左起点可达。
+
+新增真实几何/单票状态回归及源码接线契约；两处独立review Important均先增加失败回归再修复、复审关闭。源码测试不证明WebKit/Windows WebView/iOS滚动效果，浏览器图片交错故障未作真实注入。当前GUI归属未明确的本人旧QA未保存会话保留、不操作，本轮不声称新原生界面验收。选中文字摘录、非零页面原点/异CropBox支持、精确图标、完整批注编辑和三端实际运行仍待。
+
 ## 已读取的原版基线
 
 路径相对原版源码根目录。下表SHA-256固定2026-10-26首轮读取的实际文件；不是之后原版更新的实时指针，也不代表其历史未提交改动获准覆盖。原版后续build44的紧凑样式栏/页面图像剪贴板增量另记在迁移报告，仍须追加复刻。

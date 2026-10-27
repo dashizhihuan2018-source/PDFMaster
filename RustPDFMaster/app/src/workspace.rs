@@ -21,6 +21,22 @@ fn image_event_source(event: &web_sys::Event) -> Option<String> {
         .map(|image| image.src())
 }
 
+fn image_event_is_current(event: &web_sys::Event) -> bool {
+    let Some(target) = event
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::HtmlImageElement>().ok())
+    else {
+        return false;
+    };
+    let Some(current) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("pdf-page-image"))
+    else {
+        return false;
+    };
+    target.is_same_node(Some(&current))
+}
+
 fn reveal_search_hit(index: usize) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -223,6 +239,8 @@ struct Model {
     annotation_selection: RwSignal<Option<pdfmaster_ui::annotations::Identity>>,
     annotation_sort: RwSignal<pdfmaster_ui::annotations::Sort>,
     annotation_copying: RwSignal<bool>,
+    annotation_navigation: RwSignal<pdfmaster_ui::annotation_navigation::Navigation>,
+    annotation_image_ticket: RwSignal<Option<u64>>,
     page: RwSignal<usize>,
     zoom: RwSignal<f32>,
     image: RwSignal<String>,
@@ -259,6 +277,7 @@ struct Model {
 
 impl Model {
     fn replace_document_view(self, document: Option<Document>) {
+        self.annotation_navigation.update(|nav| nav.cancel());
         self.annotation_cache.update(|cache| cache.invalidate());
         self.annotation_selection.set(None);
         self.outline_cache.update(|cache| cache.invalidate());
@@ -434,7 +453,14 @@ impl Model {
         self.ink_gesture.set(None);
         self.busy.set(false);
     }
-    fn image_loaded(self, source: Option<String>) {
+    fn image_loaded(self, source: Option<String>, owner: Option<u64>) {
+        if self.annotation_image_ticket.get_untracked() != owner
+            || !self
+                .image
+                .with_untracked(|current| source.as_ref() == Some(current))
+        {
+            return;
+        }
         self.image_ready.set(true);
         if self.ink_handoff.get_untracked() {
             let ready = self.ink_image.with_untracked(|h| {
@@ -443,6 +469,20 @@ impl Model {
             });
             if ready {
                 self.complete_ink_handoff();
+            }
+        }
+        self.queue_annotation_reveal();
+    }
+    fn page_image_failed(self, owner: Option<u64>, source: &str) {
+        if let Some(ticket) = owner {
+            self.annotation_navigation.update(|nav| nav.abandon(ticket));
+        }
+        if self.annotation_image_ticket.get_untracked() == owner
+            && self.image.with_untracked(|current| current == source)
+        {
+            self.image_ready.set(false);
+            if let Some(h) = self.ink_image.get_untracked() {
+                self.ink_image_failed(h.revision);
             }
         }
     }
@@ -454,8 +494,16 @@ impl Model {
             }
         });
         if let Some(image) = image {
-            self.image_ready.set(false);
-            self.image.set(image);
+            if self.image.with_untracked(|current| current == &image)
+                && annotation_view::decoded_page_image(self).is_some()
+            {
+                // The primary element may have loaded before its staged twin.
+                // A keyed identical source will not emit a second load event.
+                self.image_loaded(Some(image), self.annotation_image_ticket.get_untracked());
+            } else {
+                self.image_ready.set(false);
+                self.image.set(image);
+            }
         }
     }
     fn ink_image_failed(self, revision: u32) {
@@ -878,9 +926,18 @@ impl Model {
             return false;
         };
         let args = json!({"page":self.page.get_untracked(),"scale":plan.scale});
+        let annotation_ticket = self
+            .annotation_navigation
+            .with_untracked(|nav| nav.ticket());
         match bridge::call_bounded::<String>("render_page", &args).await {
             Ok(image) => {
-                if self.image.get_untracked() == image && self.image_ready.get_untracked() {
+                let same_decoded_image = self.image.with_untracked(|current| current == &image)
+                    && annotation_view::decoded_page_image(self).is_some();
+                if self.annotation_image_ticket.get_untracked() != annotation_ticket {
+                    self.image_ready.set(false);
+                }
+                self.annotation_image_ticket.set(annotation_ticket);
+                if same_decoded_image {
                     if self.ink_handoff.get_untracked() {
                         self.complete_ink_handoff();
                     }
@@ -913,6 +970,9 @@ impl Model {
                 }
             }
             Err(e) => {
+                if let Some(ticket) = annotation_ticket {
+                    self.annotation_navigation.update(|nav| nav.abandon(ticket));
+                }
                 if !self.ink_handoff.get_untracked() {
                     self.image.set(String::new());
                     self.image_ready.set(false);
@@ -920,6 +980,11 @@ impl Model {
                 self.message.set(e);
                 return false;
             }
+        }
+        if let Some(ticket) = annotation_ticket {
+            self.annotation_navigation
+                .update(|nav| nav.rendered(ticket));
+            self.queue_annotation_reveal();
         }
         self.refresh_notes().await;
         self.shapes.set(Some(
@@ -941,6 +1006,13 @@ impl Model {
         ));
     }
     fn navigate(self, page: usize) {
+        self.navigate_with_annotation(page, None);
+    }
+    fn navigate_with_annotation(
+        self,
+        page: usize,
+        target: Option<pdfmaster_ui::annotation_navigation::Target>,
+    ) {
         if self.busy.get_untracked() || !self.loaded() {
             return;
         }
@@ -958,7 +1030,7 @@ impl Model {
         }
         self.page.set(page);
         self.page_jump.set((page + 1).to_string());
-        self.refresh();
+        self.refresh_with_annotation(target);
     }
     fn jump_to_page(self) {
         if self.blocked() {
@@ -1231,9 +1303,15 @@ impl Model {
         });
     }
     fn refresh(self) {
+        self.refresh_with_annotation(None);
+    }
+    fn refresh_with_annotation(self, target: Option<pdfmaster_ui::annotation_navigation::Target>) {
         if self.busy.get_untracked() {
             return;
         }
+        self.annotation_navigation.update(|nav| {
+            nav.begin(target);
+        });
         self.busy.set(true);
         spawn_local(async move {
             self.render().await;
@@ -1554,6 +1632,10 @@ pub fn Workspace() -> impl IntoView {
         annotation_selection: RwSignal::new(None),
         annotation_sort: RwSignal::new(pdfmaster_ui::annotations::Sort::default()),
         annotation_copying: RwSignal::new(false),
+        annotation_navigation: RwSignal::new(
+            pdfmaster_ui::annotation_navigation::Navigation::default(),
+        ),
+        annotation_image_ticket: RwSignal::new(None),
         page: RwSignal::new(0),
         zoom: RwSignal::new(1.),
         image: RwSignal::new(String::new()),
@@ -1620,7 +1702,10 @@ pub fn Workspace() -> impl IntoView {
                             on:pointerup=move|e|m.pointer_up(e,surface)
                             on:pointercancel=move|e|m.pointer_cancel(e)
                             on:lostpointercapture=move|e|m.pointer_cancel(e)>
-                            <img class="pdf-page" src=move||m.image.get() style=move||m.raster().map(|p|p.image_style()).unwrap_or_default() alt=move||format!("PDF 第 {} 页",m.page.get()+1) draggable="false" on:load=move|e|m.image_loaded(image_event_source(&e)) on:error=move|_|{if let Some(h)=m.ink_image.get_untracked(){m.ink_image_failed(h.revision);}}/>
+                            <For each=move||vec![(m.image.get(),m.annotation_image_ticket.get())] key=|(source,owner)|(source.clone(),*owner) children=move|(source,owner)|{
+                                let failed_source=source.clone();
+                                view!{<img id="pdf-page-image" class="pdf-page" src=source data-annotation-owner=owner.map(|t|t.to_string()).unwrap_or_default() style=move||m.raster().map(|p|p.image_style()).unwrap_or_default() alt=move||format!("PDF 第 {} 页",m.page.get()+1) draggable="false" on:load=move|e|{if image_event_is_current(&e){m.image_loaded(image_event_source(&e),owner);}} on:error=move|e|{if image_event_is_current(&e){m.page_image_failed(owner, &failed_source);}}/>}
+                            }/>
                             {move||m.ink_image.get().filter(|h|!h.decoded).map(|h|{let revision=h.revision;view!{<img class="ink-staged-image" src=h.next alt="" aria-hidden="true" on:load=move|_|m.ink_image_decoded(revision) on:error=move|_|m.ink_image_failed(revision)/>}})}
                             {move||m.ink_gesture.with(|s|s.as_ref().filter(|s|s.guard.is_some()&&!s.cancelled).map(|s|{
                                 let(w,h)=if s.rotation.rem_euclid(180)==0{(s.page_width,s.page_height)}else{(s.page_height,s.page_width)};

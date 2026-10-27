@@ -15,7 +15,12 @@ fn clicking_a_row_keeps_keyboard_focus_on_a_stable_list_before_busy_disables_row
     let focus = select
         .find("focus_annotation_list()")
         .expect("focus a stable list before navigation disables the clicked row");
-    assert!(focus < select.find("self.navigate(row.page_index)").unwrap());
+    assert!(
+        focus
+            < select
+                .find("self.navigate_with_annotation(row.page_index, target)")
+                .unwrap()
+    );
     assert!(view.contains("id=\"annotation-list\" tabindex=\"0\""));
     let helper = view
         .split("fn focus_annotation_list()")
@@ -185,7 +190,7 @@ fn real_sidebar_invalidates_rows_and_wires_bounded_reads_and_original_geometry()
         !completion.contains("self.blocked()"),
         "a page render must not leave the owned pending copy status forever"
     );
-    assert!(view.contains("self.navigate(row.page_index)"));
+    assert!(view.contains("self.navigate_with_annotation(row.page_index, target)"));
     assert!(view.contains("使用批注和绘画工具标记PDF"));
     let sidebar = include_str!("../src/thumbnail_view.rs");
     assert!(sidebar.contains("Mode::Annotations"));

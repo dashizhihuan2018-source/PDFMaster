@@ -1,5 +1,6 @@
 use super::{Model, bridge};
 use leptos::{prelude::*, task::spawn_local};
+use pdfmaster_ui::annotation_navigation::{Axis, Context, Page, Target};
 use pdfmaster_ui::annotations::{Identity, Row, Sort, copy_status_is_current, sort_rows, summary};
 use pdfmaster_ui::{
     outline::Mode,
@@ -83,7 +84,98 @@ fn focus_annotation_list() {
     }
 }
 
+pub(super) fn decoded_page_image(model: Model) -> Option<web_sys::HtmlImageElement> {
+    let image = web_sys::window()?
+        .document()?
+        .get_element_by_id("pdf-page-image")?
+        .dyn_into::<web_sys::HtmlImageElement>()
+        .ok()?;
+    let current = image.current_src();
+    (image.complete()
+        && image.natural_width() > 0
+        && image.natural_height() > 0
+        && model
+            .image
+            .with_untracked(|source| !source.is_empty() && source == &current)
+        && image.get_attribute("data-annotation-owner")
+            == Some(
+                model
+                    .annotation_image_ticket
+                    .get_untracked()
+                    .map(|t| t.to_string())
+                    .unwrap_or_default(),
+            ))
+    .then_some(image)
+}
+
+fn reveal_annotation_region(model: Model, region: pdfmaster_ui::annotation_navigation::Region) {
+    let Some(image) = decoded_page_image(model) else {
+        return;
+    };
+    let Some(reader) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("pdf-reader"))
+    else {
+        return;
+    };
+    let frame = reader.get_bounding_client_rect();
+    let page = image.get_bounding_client_rect();
+    let horizontal = Axis {
+        scroll: f64::from(reader.scroll_left()),
+        viewport: f64::from(reader.client_width()),
+        viewport_start: frame.left(),
+        border: f64::from(reader.client_left()),
+        page_start: page.left(),
+        page_extent: page.width(),
+    };
+    let vertical = Axis {
+        scroll: f64::from(reader.scroll_top()),
+        viewport: f64::from(reader.client_height()),
+        viewport_start: frame.top(),
+        border: f64::from(reader.client_top()),
+        page_start: page.top(),
+        page_extent: page.height(),
+    };
+    if let (Some(x), Some(y)) = (
+        horizontal.reveal(region.left, region.right),
+        vertical.reveal(region.top, region.bottom),
+    ) {
+        reader.set_scroll_left(x);
+        reader.set_scroll_top(y);
+    }
+}
+
 impl Model {
+    fn annotation_context(self) -> Context {
+        Context {
+            generation: self.annotation_cache.with_untracked(|c| c.generation()),
+            page: self.page.get_untracked(),
+            selection: self.annotation_selection.get_untracked(),
+        }
+    }
+    pub(super) fn queue_annotation_reveal(self) {
+        let context = self.annotation_context();
+        let decoded = decoded_page_image(self).is_some();
+        let mut ticket = None;
+        self.annotation_navigation
+            .update(|nav| ticket = nav.schedule(context, decoded));
+        let Some(ticket) = ticket else {
+            return;
+        };
+        leptos::leptos_dom::helpers::request_animation_frame(move || {
+            let context = self.annotation_context();
+            let mut target = None;
+            self.annotation_navigation
+                .update(|nav| target = nav.take(ticket, context));
+            if let Some(target) = target.filter(|_| {
+                self.route.get_untracked() == Route::Document
+                    && !self.has_note_draft()
+                    && !self.has_ink()
+            }) {
+                reveal_annotation_region(self, target.region);
+            }
+        });
+    }
     pub(super) fn annotation_rows(self) -> Vec<Row> {
         let mut rows = self.annotation_cache.with(|cache| {
             if cache.suspended() {
@@ -140,7 +232,19 @@ impl Model {
         // Navigation makes row buttons transiently disabled. Keep focus on the
         // stable list so the next Delete/Backspace still reaches this sidebar.
         focus_annotation_list();
-        self.navigate(row.page_index);
+        let target = self.document.with_untracked(|d| {
+            let page = d.as_ref()?.info.pages.get(row.page_index)?;
+            Target::new(
+                &row,
+                self.annotation_cache.with_untracked(|c| c.generation()),
+                Page {
+                    width: f64::from(page.width),
+                    height: f64::from(page.height),
+                    rotation: page.rotation,
+                },
+            )
+        });
+        self.navigate_with_annotation(row.page_index, target);
     }
     fn sort_annotations(self, sort: Sort) {
         if self.blocked() {
@@ -277,7 +381,7 @@ pub(super) fn AnnotationSidebar(model: Model) -> impl IntoView {
                     </button>}
                 }/>
             </div>
-            <details class="annotation-limitations"><summary>"当前限制"</summary><p>"当前列表只跳转到所在页，精确定位与选中文字摘录尚未迁移。删除须系统确认，可撤销但不是安全擦除；标记结构、回复或弹窗归属不明确时会拒绝修改。设备颜色未做ICC色彩管理。"</p></details>
+            <details class="annotation-limitations"><summary>"当前限制"</summary><p>"有效矩形会在页面图片加载后定位，并保留12pt边距；缺失、无效或完全位于页外时仅跳页。选中文字摘录尚未迁移。删除须系统确认，可撤销但不是安全擦除；标记结构、回复或弹窗归属不明确时会拒绝修改。设备颜色未做ICC色彩管理。"</p></details>
         </section>
     }
 }
