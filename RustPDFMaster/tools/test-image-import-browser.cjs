@@ -1,7 +1,8 @@
 // Compiled Rust/WASM UI with synthetic native replies, not OS picker or PDF acceptance.
 const fs=require('node:fs'),http=require('node:http'),path=require('node:path'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const root=path.resolve(__dirname,'../app/dist');
+// Read the same output as Trunk.toml / Tauri frontendDist, not stale app/dist.
+const root=path.resolve(__dirname,'../dist');
 const server=http.createServer((req,res)=>{
   const file=path.resolve(root,'.'+new URL(req.url,'http://localhost').pathname);
   if(file!==root&&!file.startsWith(root+path.sep)){res.writeHead(403);return res.end();}
@@ -113,7 +114,7 @@ async function openTools(page){
       const prepare1=await requestCount(page,'prepare_image_import');await tool.click();await waitForRequestCount(page,'prepare_image_import',prepare1+1);
       await page.waitForTimeout(100);await assertNoCard(page);
       assert.equal(await requestCount(page,'convert_image_import'),1,'selection must convert without another click');
-      assert.deepEqual((await page.evaluate(()=>window.requests.findLast(r=>r.command==='convert_image_import'))).args,{id:1,order:[0,1,2],layout:{paper:'a4',landscape:false,margin:24}});
+      assert.deepEqual((await page.evaluate(()=>window.requests.findLast(r=>r.command==='convert_image_import'))).args,{id:1,order:[0,1,2],layout:{paper:'source',landscape:false,margin:0}});
       assert.equal(await tool.isDisabled(),true,'tool stays disabled while conversion owns the selection');
       cancel=page.getByRole('button',{name:'取消图片转换',exact:true});await cancel.waitFor();
       assert.equal(await page.locator('.home-status button[aria-label="取消图片转换"]').count(),1,'only the Home footer owns the image action');

@@ -7,6 +7,7 @@ pub struct Selection {
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Paper {
+    Source,
     A4,
     Letter,
     Pixels,
@@ -80,9 +81,9 @@ impl Configuration {
             order: (0..selection.names.len()).collect(),
             selected: Some(0),
             selection,
-            paper: Paper::A4,
+            paper: Paper::Source,
             landscape: false,
-            margin: "24".into(),
+            margin: "0".into(),
             running: false,
             cancelling: false,
             error: String::new(),
@@ -92,7 +93,7 @@ impl Configuration {
         if self.order.is_empty() {
             return Err("请至少保留一张图片。".into());
         }
-        let margin = if self.paper == Paper::Pixels {
+        let margin = if matches!(self.paper, Paper::Pixels | Paper::Source) {
             0.
         } else {
             let margin = self
@@ -152,6 +153,15 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn automatic_picker_layout_preserves_selection_without_paper_configuration() {
+        let c = config();
+        assert_eq!(c.order, [0, 1, 2]);
+        let value = serde_json::to_value(c.layout().unwrap()).unwrap();
+        assert_eq!(value["paper"], "source");
+        assert_eq!(value["margin"], 0.);
+        assert_eq!(value["landscape"], false);
+    }
+    #[test]
     fn reordered_rows_keep_native_indices_and_selection_then_remove_only_the_selected_row() {
         let mut c = config();
         c.selected = Some(1);
@@ -182,7 +192,7 @@ mod tests {
             .is_err()
         );
         let mut c = config();
-        assert_eq!(c.layout().unwrap().margin, 24.);
+        assert_eq!(c.layout().unwrap().margin, 0.);
         c.paper = Paper::Letter;
         for s in ["306", "NaN", "inf", "-1", ""] {
             c.margin = s.into();

@@ -299,6 +299,42 @@ pub(super) fn png(bytes: &[u8], total: &mut usize) -> Result<Option<Box<ColorPro
     Err(budget())
 }
 
+/// Called only after the full CRC/container/color preflight above succeeds.
+pub(super) fn png_dpi(bytes: &[u8]) -> Result<Option<f64>> {
+    let mut offset = 8usize;
+    let mut seen = false;
+    let mut dpi = None;
+    let mut before_data = true;
+    for _ in 0..65_536 {
+        let header = bytes
+            .get(offset..offset.saturating_add(8))
+            .ok_or_else(unsupported)?;
+        let size = be32(&header[..4])?;
+        let end = offset
+            .checked_add(size)
+            .and_then(|v| v.checked_add(12))
+            .ok_or_else(unsupported)?;
+        let data = bytes.get(offset + 8..end - 4).ok_or_else(unsupported)?;
+        match &header[4..] {
+            b"pHYs" => {
+                if seen || !before_data || data.len() != 9 || data[8] > 1 {
+                    return Err(unsupported());
+                }
+                seen = true;
+                let (x, y) = (be32(&data[..4])?, be32(&data[4..8])?);
+                if data[8] == 1 && x != 0 && y != 0 {
+                    dpi = Some((x as f64 * 0.0254).round());
+                }
+            }
+            b"IDAT" => before_data = false,
+            b"IEND" => return Ok(dpi),
+            _ => {}
+        }
+        offset = end;
+    }
+    Err(budget())
+}
+
 pub(super) fn normalize(image: image::DynamicImage, profile: &ColorProfile) -> Result<Vec<u8>> {
     let rgba = image.into_rgba16().into_raw();
     let gray = profile.color_space == DataColorSpace::Gray;

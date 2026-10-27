@@ -1,6 +1,18 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 60388afb (2026-10-28)
+## Current snapshot: development b24ba5a2 (2026-10-28)
+
+Exactly **193 tracked Rust/workflow files** from development `b24ba5a202cd4a706888227363fa3625e4775de0`, plus this public-only record. Only reviewed candidate source is shared. Private Git history, reference binaries/REA evidence, memory, user media/screenshots and generated output are excluded. The installed Apple-native app and native release/tag/website remain unchanged.
+
+The rejected image-import configuration card stays removed. Native picker selection automatically requests source geometry: oriented image dimensions uniformly scaled by72/horizontal metadata DPI (72 when absent), no paper/margin/extra confirmation; each selected TIFF contributes only its first frame. PNG pHYs, JPEG JFIF/Exif and TIFF resolution parsing have bounded, synthetic system-ImageIO comparison cases, including relative units, single-axis synthesis, zero fallback, centimeter conversion and float32 behavior. Malformed declared resolution types/denominators reject the entire batch. Explicit A4/Letter/Pixels APIs and mixed-file imports retain separate compatibility behavior, including all TIFF frames. The14,400pt page-side and existing input/pixel/output budgets remain admission restrictions, not full compatibility.
+
+Actual RED→GREEN regression and independent read-only re-review found/fixed TIFF unused-axis metadata validation and Exif/TIFF fallback differences. Complete local checks passed **290 core,145 UI,132 native +8 security**, three-workspace fmt/host-Clippy, five target notices,12 notice-validator tests and locked release WASM. Additional11-case source-geometry and core Clippy recheck passed after adding fractional-density assertions. The browser harness now reads the configured root `dist`, not stale `app/dist`; rebuilt1280/390 synthetic-native IPC replay verifies source policy, no card and cancellation/error/stale-reply guards. Native real file conversion/new dirty-tab geometry has a regression. These are not the current source's actual OS-picker/save/reopen GUI or authorized reference runtime output acceptance.
+
+Prior hosted [40563752961](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40563752961) succeeded at public `270c951f8e35213c30ce051eb37328c4f796c2d2`; its complete Mac/Windows/iOS-simulator candidate downloads were checked separately. It certifies the previous no-card source, **not this geometry change**. Exact-new-source hosted results remain pending; no new Release/tag, store submission or formal installation is claimed.
+
+Inventory remains **28 partial /42 unsupported /0 complete**, with801 frozen legacy contracts pending. Reference progress presentation, wider input/color compatibility, full functionality/UI and actual Windows/iOS GUI remain unfinished. Full goal and Rustall/public skill are not complete.
+
+## Historical snapshot: development 60388afb (superseded)
 
 Exactly **192 tracked Rust/workflow files** from development `60388afb46fa0618e3a353128b3aa4e47f23845c`, plus this public-only record. This shares reviewed source, not private Git history, memory/evidence, user files/screenshots, credentials or generated output. The installed Apple-native app, native release/tag and website remain untouched; Rust is public-sharing/cross-platform work, not an installation replacement.
 

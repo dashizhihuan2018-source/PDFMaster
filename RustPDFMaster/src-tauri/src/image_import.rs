@@ -292,6 +292,30 @@ pub(super) fn cancel_image_import(id: u32, state: State<'_, Store>) -> Reply<boo
 mod tests {
     use super::*;
     #[test]
+    fn automatic_source_layout_reaches_real_file_conversion_and_new_tab_geometry() {
+        let (_dir, paths) = files();
+        let mut w = Workspace::default();
+        let id = w.start_image_picker().unwrap();
+        w.accept_image_selection(id, paths).unwrap();
+        let layout =
+            serde_json::from_str(r#"{"paper":"source","landscape":false,"margin":0}"#).unwrap();
+        let (r, ordered, name) = w.begin_image_conversion(id, &[0, 1], layout).unwrap();
+        let converted = file_import::read_images(&ordered, layout).unwrap();
+        let refs: Vec<_> = converted.iter().map(Vec::as_slice).collect();
+        let reply = w.finish_image_conversion(id, r, name, &refs).unwrap();
+        assert!(reply.info.dirty);
+        assert_eq!(reply.info.page_count, 2);
+        // files() uses the clipboard renderer's 3x, untagged PNG fixture.
+        assert_eq!(
+            (reply.info.pages[0].width, reply.info.pages[0].height),
+            (240., 120.)
+        );
+        assert_eq!(
+            (reply.info.pages[1].width, reply.info.pages[1].height),
+            (120., 240.)
+        );
+    }
+    #[test]
     fn failed_tab_admission_retains_configuration_for_retry() {
         let (_dir, paths) = files();
         let mut w = Workspace::default();

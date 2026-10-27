@@ -10,6 +10,7 @@ use moxcms::ColorProfile;
 pub(super) struct Metadata {
     pub profile: Option<Box<ColorProfile>>,
     pub orientation: Orientation,
+    pub dpi: Option<f64>,
 }
 fn budget() -> PdfMasterError {
     PdfMasterError::Budget("JPEG metadata")
@@ -27,6 +28,7 @@ pub(super) fn preflight(bytes: &[u8], color_bytes: &mut usize) -> Result<Metadat
     let mut count = None;
     let mut profile_size = 0usize;
     let mut exif = None;
+    let mut jfif = None;
     for _ in 0..65_536 {
         let marker = loop {
             if entropy {
@@ -65,10 +67,10 @@ pub(super) fn preflight(bytes: &[u8], color_bytes: &mut usize) -> Result<Metadat
             } else {
                 None
             };
-            let (orientation, dcf) = if let Some(data) = exif {
+            let (orientation, dcf, exif_dpi) = if let Some(data) = exif {
                 exif_metadata(data, profile.is_some())?
             } else {
-                (Orientation::NoTransforms, false)
+                (Orientation::NoTransforms, false, None)
             };
             let profile = if dcf {
                 if gray {
@@ -96,6 +98,7 @@ pub(super) fn preflight(bytes: &[u8], color_bytes: &mut usize) -> Result<Metadat
             return Ok(Metadata {
                 profile,
                 orientation,
+                dpi: exif_dpi.or(jfif.flatten()),
             });
         }
         if marker == 0 || marker == 216 || marker == 1 || (208..=215).contains(&marker) {
@@ -110,6 +113,24 @@ pub(super) fn preflight(bytes: &[u8], color_bytes: &mut usize) -> Result<Metadat
         let data = bytes.get(offset + 2..end).ok_or_else(unsupported)?;
         offset = end;
         match marker {
+            224 if data.starts_with(b"JFIF\0") => {
+                if scans != 0
+                    || jfif.is_some()
+                    || data.len() < 14
+                    || data[7] > 2
+                    || data.len() != 14 + usize::from(data[12]) * usize::from(data[13]) * 3
+                {
+                    return Err(unsupported());
+                }
+                let x = u16::from_be_bytes([data[8], data[9]]);
+                let y = u16::from_be_bytes([data[10], data[11]]);
+                jfif = Some(match data[7] {
+                    1 | 2 if x != 0 && y != 0 => {
+                        Some(f64::from(x) * if data[7] == 2 { 2.54 } else { 1. })
+                    }
+                    _ => None,
+                });
+            }
             192..=195 | 197..=199 | 201..=203 | 205..=207 => {
                 if !matches!(marker, 192..=194)
                     || scans != 0
@@ -178,7 +199,7 @@ pub(super) fn preflight(bytes: &[u8], color_bytes: &mut usize) -> Result<Metadat
 
 /// Read only orientation and primary-image color declarations. Validate every
 /// field range, but never interpret/emit GPS, maker notes or thumbnail pixels.
-fn exif_metadata(bytes: &[u8], has_icc: bool) -> Result<(Orientation, bool)> {
+fn exif_metadata(bytes: &[u8], has_icc: bool) -> Result<(Orientation, bool, Option<f64>)> {
     let little = match bytes.get(..2) {
         Some(b"II") => true,
         Some(b"MM") => false,
@@ -218,6 +239,9 @@ fn exif_metadata(bytes: &[u8], has_icc: bool) -> Result<(Orientation, bool)> {
     let mut interop = None;
     let mut dcf_fields = 0u8;
     let mut dcf_values = true;
+    let mut resolution = None;
+    let mut resolution_y = None;
+    let mut resolution_unit = 2;
     while let Some((offset, kind)) = pending.pop() {
         if offset < 8 || !visited.insert(offset) {
             return Err(unsupported());
@@ -259,6 +283,29 @@ fn exif_metadata(bytes: &[u8], has_icc: bool) -> Result<(Orientation, bool)> {
                 .get(value..value.checked_add(size).ok_or_else(unsupported)?)
                 .ok_or_else(unsupported)?;
             match (kind, tag) {
+                (0, 282 | 283) => {
+                    if ty != 5 || count != 1 {
+                        return Err(unsupported());
+                    }
+                    let denominator = u32_at(value + 4)?;
+                    if denominator == 0 {
+                        return Err(unsupported());
+                    }
+                    if tag == 282 {
+                        resolution = Some(u32_at(value)? as f64 / denominator as f64);
+                    } else {
+                        resolution_y = Some(u32_at(value)? as f64 / denominator as f64);
+                    }
+                }
+                (0, 296) => {
+                    if ty != 3 || count != 1 {
+                        return Err(unsupported());
+                    }
+                    resolution_unit = u16_at(value)?;
+                    if !(1..=3).contains(&resolution_unit) {
+                        return Err(unsupported());
+                    }
+                }
                 (0, 0x112) => {
                     if ty != 3 || count != 1 {
                         return Err(unsupported());
@@ -336,13 +383,26 @@ fn exif_metadata(bytes: &[u8], has_icc: bool) -> Result<(Orientation, bool)> {
             pending.push((next, 3));
         }
     }
+    // ImageIO treats Exif unit1 (or no unit) as inch here, and synthesizes
+    // horizontal density from Y when X is absent. JFIF is only a fallback.
+    let dpi = if resolution == Some(0.) || resolution_y == Some(0.) {
+        Some(72.)
+    } else {
+        resolution.or(resolution_y).map(|x| {
+            if resolution_unit == 3 {
+                (x * 2.54).round()
+            } else {
+                x
+            }
+        })
+    };
     if has_icc {
-        return Ok((orientation, false));
+        return Ok((orientation, false, dpi));
     }
     let dcf = match (color, interop) {
         (None | Some(1), None | Some(b"R98\0")) if dcf_fields == 0 => false,
         (Some(65535), Some(b"R03\0")) if dcf_fields == 15 && dcf_values => true,
         _ => return Err(unsupported()),
     };
-    Ok((orientation, dcf))
+    Ok((orientation, dcf, dpi))
 }

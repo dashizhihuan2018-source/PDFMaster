@@ -10,6 +10,8 @@ const DECODE_BYTES: u64 = 320 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ImagePaper {
+    /// Automatic image-tool geometry: oriented pixels at source horizontal DPI.
+    Source,
     A4,
     Letter,
     Pixels,
@@ -32,7 +34,7 @@ impl Default for ImageImportLayout {
 }
 impl ImageImportLayout {
     pub fn validate(self) -> Result<()> {
-        if self.paper != ImagePaper::Pixels
+        if !matches!(self.paper, ImagePaper::Pixels | ImagePaper::Source)
             && (!self.margin.is_finite()
                 || self.margin < 0.
                 || self.margin * 2.
@@ -45,8 +47,25 @@ impl ImageImportLayout {
         }
         Ok(())
     }
-    fn page(self, w: u32, h: u32) -> Result<(f64, f64, f64)> {
+    fn page_with_density(self, w: u32, h: u32, dpi: Option<f64>) -> Result<(f64, f64, f64)> {
         self.validate()?;
+        if self.paper == ImagePaper::Source {
+            // Match the source metadata's floatValue before the double division.
+            let dpi = f64::from(dpi.unwrap_or(72.) as f32);
+            let (w, h) = (f64::from(w) * 72. / dpi, f64::from(h) * 72. / dpi);
+            if !dpi.is_finite()
+                || dpi <= 0.
+                || !w.is_finite()
+                || !h.is_finite()
+                || w <= 0.
+                || h <= 0.
+                || w > 14_400.
+                || h > 14_400.
+            {
+                return Err(PdfMasterError::Budget("image PDF page dimensions"));
+            }
+            return Ok((w, h, 0.));
+        }
         if self.paper == ImagePaper::Pixels {
             if w == 0 || h == 0 || w > 14_400 || h > 14_400 {
                 return Err(PdfMasterError::Budget("image PDF page dimensions"));
@@ -88,6 +107,7 @@ enum Plan {
         ImageFormat,
         Vec<Option<Box<moxcms::ColorProfile>>>,
         Option<Orientation>,
+        Vec<Option<f64>>,
     ),
 }
 fn invalid() -> PdfMasterError {
@@ -108,13 +128,18 @@ fn decoder(bytes: &[u8], format: ImageFormat) -> Result<impl ImageDecoder + '_> 
 fn unsupported_color() -> PdfMasterError {
     crate::import_color::unsupported()
 }
-fn color_preflight(
-    bytes: &[u8],
-    format: ImageFormat,
-    total: &mut usize,
-) -> Result<(Option<Box<moxcms::ColorProfile>>, Option<Orientation>)> {
+#[derive(Default)]
+struct ImageMetadata {
+    profile: Option<Box<moxcms::ColorProfile>>,
+    orientation: Option<Orientation>,
+    dpi: Option<f64>,
+}
+fn color_preflight(bytes: &[u8], format: ImageFormat, total: &mut usize) -> Result<ImageMetadata> {
     if format == ImageFormat::Png {
-        return crate::import_color::png(bytes, total).map(|p| (p, None));
+        return crate::import_color::png(bytes, total).map(|profile| ImageMetadata {
+            profile,
+            ..ImageMetadata::default()
+        });
     }
     if format == ImageFormat::Bmp {
         let header = bytes.get(14..18).ok_or_else(invalid)?;
@@ -124,9 +149,13 @@ fn color_preflight(
     }
     if format == ImageFormat::Jpeg {
         let metadata = crate::import_jpeg::preflight(bytes, total)?;
-        return Ok((metadata.profile, Some(metadata.orientation)));
+        return Ok(ImageMetadata {
+            profile: metadata.profile,
+            orientation: Some(metadata.orientation),
+            dpi: metadata.dpi,
+        });
     }
-    Ok((None, None))
+    Ok(ImageMetadata::default())
 }
 fn pixels(w: u32, h: u32, total: &mut u64) -> Result<()> {
     let n = u64::from(w) * u64::from(h);
@@ -238,6 +267,38 @@ fn tiff_color(
     }
     crate::import_color::icc(&bytes, gray, total).map(Some)
 }
+fn tiff_dpi(d: &mut tiff::decoder::Decoder<Cursor<&[u8]>>) -> Result<Option<f64>> {
+    use tiff::{decoder::ifd::Value, tags::Tag};
+    let unit = d
+        .find_tag_unsigned::<u16>(Tag::ResolutionUnit)
+        .map_err(|_| invalid())?
+        .unwrap_or(2);
+    if !matches!(unit, 1..=3) {
+        return Err(invalid());
+    }
+    let mut x = None;
+    let mut y = None;
+    for tag in [Tag::XResolution, Tag::YResolution] {
+        match d.find_tag(tag).map_err(|_| invalid())? {
+            None => {}
+            Some(Value::Rational(n, denominator)) if denominator != 0 => {
+                let value = Some(f64::from(n) / f64::from(denominator));
+                if tag == Tag::XResolution {
+                    x = value;
+                } else {
+                    y = value;
+                }
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(if x == Some(0.) || y == Some(0.) {
+        Some(72.)
+    } else {
+        x.or(y)
+            .map(|x| if unit == 3 { (x * 2.54).round() } else { x })
+    })
+}
 /// Preflights the whole batch before any pixel decoding or output publication.
 /// Limits supplement decoder-specific limits, not a promise of total heap use.
 pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
@@ -273,22 +334,37 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                 "tif" | "tiff" => ImageFormat::Tiff,
                 _ => return Err(invalid()),
             };
-            let (color, orientation) = color_preflight(bytes, format, &mut color_bytes)?;
+            let ImageMetadata {
+                profile: color,
+                orientation,
+                mut dpi,
+            } = color_preflight(bytes, format, &mut color_bytes)?;
+            if layout.paper == ImagePaper::Source && format == ImageFormat::Png {
+                dpi = crate::import_color::png_dpi(bytes)?;
+            }
             let mut colors = vec![];
+            let mut densities = vec![];
             let mut count = 1;
             if format == ImageFormat::Tiff {
                 let mut d = tiff_decoder(bytes)?;
                 count = 0;
                 loop {
-                    let (w, h, channels, _, _) = tiff_properties(&mut d)?;
+                    let (w, h, channels, orientation, _) = tiff_properties(&mut d)?;
                     colors.push(tiff_color(&mut d, channels <= 2, &mut color_bytes)?);
+                    let dpi = if layout.paper == ImagePaper::Source {
+                        tiff_dpi(&mut d)?
+                    } else {
+                        None
+                    };
+                    densities.push(dpi);
                     pixels(w, h, &mut total_pixels)?;
-                    layout.page(w, h)?;
+                    let (w, h) = oriented_size(w, h, orientation);
+                    layout.page_with_density(w, h, dpi)?;
                     count += 1;
                     if count + pages > MAX_PAGES {
                         return Err(PdfMasterError::Budget("import pages"));
                     }
-                    if !d.more_images() {
+                    if layout.paper == ImagePaper::Source || !d.more_images() {
                         break;
                     }
                     d.next_image().map_err(|_| invalid())?;
@@ -321,11 +397,13 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                 let d = decoder(bytes, format)?;
                 let (w, h) = d.dimensions();
                 pixels(w, h, &mut total_pixels)?;
-                layout.page(w, h)?;
+                let (w, h) = oriented_size(w, h, orientation.unwrap_or(Orientation::NoTransforms));
+                layout.page_with_density(w, h, dpi)?;
                 colors.push(color);
+                densities.push(dpi);
             }
             pages += count;
-            plans.push(Plan::Image(format, colors, orientation));
+            plans.push(Plan::Image(format, colors, orientation, densities));
         }
         if pages > MAX_PAGES {
             return Err(PdfMasterError::Budget("import pages"));
@@ -336,8 +414,8 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
     for ((_, bytes), plan) in files.iter().zip(plans) {
         let converted = match plan {
             Plan::Pdf => bytes.to_vec(),
-            Plan::Image(format, colors, orientation) => {
-                image_pdf(bytes, format, colors, orientation, layout)?
+            Plan::Image(format, colors, orientation, densities) => {
+                image_pdf(bytes, format, colors, orientation, densities, layout)?
             }
         };
         output_bytes = output_bytes
@@ -350,11 +428,21 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
     }
     Ok(output)
 }
+fn oriented_size(w: u32, h: u32, orientation: Orientation) -> (u32, u32) {
+    match orientation {
+        Orientation::Rotate90
+        | Orientation::Rotate270
+        | Orientation::Rotate90FlipH
+        | Orientation::Rotate270FlipH => (h, w),
+        _ => (w, h),
+    }
+}
 fn image_pdf(
     bytes: &[u8],
     format: ImageFormat,
     colors: Vec<Option<Box<moxcms::ColorProfile>>>,
     orientation: Option<Orientation>,
+    densities: Vec<Option<f64>>,
     layout: ImageImportLayout,
 ) -> Result<Vec<u8>> {
     let count = colors.len();
@@ -420,7 +508,8 @@ fn image_pdf(
         };
         let w = image.width();
         let h = image.height();
-        let (paper_width, paper_height, margin) = layout.page(w, h)?;
+        let (paper_width, paper_height, margin) =
+            layout.page_with_density(w, h, densities[index])?;
         let rgb: Vec<u8> = if let Some(profile) = &colors[index] {
             crate::import_color::normalize(image, profile)?
         } else {
