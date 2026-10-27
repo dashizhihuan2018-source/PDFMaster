@@ -311,6 +311,29 @@ mod tests {
     }
 
     #[test]
+    fn structural_edit_and_reopen_keep_search_hits_bound_to_surviving_page_labels() {
+        let mut session = labelled_session("r", "前言-", "needle");
+        let original = session.bytes().unwrap();
+        session
+            .apply(pdfmaster_core::Edit::DeletePage { page: 0 })
+            .unwrap();
+        let after = session.bytes().unwrap();
+        for current in [&session, &Session::open(&after).unwrap()] {
+            let result = search_session(current, "needle", true).unwrap();
+            let json = serde_json::to_value(result).unwrap();
+            assert_eq!(json["hits"][0]["page_index"], 0);
+            assert_eq!(json["hits"][0]["page_label"], "前言-ii");
+        }
+        session.undo().unwrap();
+        assert_eq!(session.bytes().unwrap(), original);
+        assert_eq!(
+            serde_json::to_value(search_session(&session, "needle", true).unwrap()).unwrap()["hits"]
+                [0]["page_label"],
+            "前言-i"
+        );
+    }
+
+    #[test]
     fn malformed_label_metadata_is_an_explicit_search_failure_not_a_numeric_label() {
         let session = labelled_session("unsupported", "prefix-", "needle needle");
         assert!(

@@ -374,7 +374,7 @@ fn reference_depth_accepts_exactly_sixty_four_hops_and_rejects_sixty_five() {
 }
 
 #[test]
-fn structural_edits_do_not_claim_to_migrate_catalog_label_ranges() {
+fn deleting_a_labeled_range_keeps_valid_labels_and_exact_undo() {
     let bytes = labels(
         2,
         vec![
@@ -390,10 +390,8 @@ fn structural_edits_do_not_claim_to_migrate_catalog_label_ranges() {
         .apply(pdfmaster_core::Edit::DeletePage { page: 1 })
         .unwrap();
     let after = session.bytes().unwrap();
-    assert!(matches!(
-        session.page_labels(),
-        Err(PdfMasterError::Malformed(_))
-    ));
+    assert_eq!(session.page_labels().unwrap(), ["1"]);
+    assert_eq!(Session::open(&after).unwrap().page_labels().unwrap(), ["1"]);
     assert_eq!(session.bytes().unwrap(), after);
     session.undo().unwrap();
     assert_eq!(session.bytes().unwrap(), bytes);

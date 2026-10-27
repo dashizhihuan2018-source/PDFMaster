@@ -360,7 +360,22 @@ impl Session {
 
     pub fn apply(&mut self, edit: Edit) -> Result<()> {
         let mut candidate = self.document.clone();
+        let structural = matches!(
+            &edit,
+            Edit::MovePage { .. }
+                | Edit::InsertBlank { .. }
+                | Edit::DuplicatePage { .. }
+                | Edit::DeletePage { .. }
+                | Edit::DeletePages { .. }
+        );
+        let duplicate = match &edit {
+            Edit::DuplicatePage { page, index } => Some((*page, *index)),
+            _ => None,
+        };
         apply_edit(&mut candidate, &self.pages, edit)?;
+        if structural {
+            crate::page_labels::migrate_edit_labels(&self.document, &mut candidate, duplicate)?;
+        }
         self.commit_document(candidate)
     }
 

@@ -1,5 +1,6 @@
-//! Read-only PDF 32000-1 sections 7.9.7/12.4.2; never rewrites catalog labels.
-use std::collections::HashSet;
+//! PDF 32000-1 sections 7.9.7/12.4.2: bounded reading and transactional page-label migration.
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use lopdf::{Dictionary, Document, Object, ObjectId, decode_text_string};
 
@@ -63,8 +64,12 @@ fn integer(value: &Object) -> Result<u64> {
     }
 }
 
+#[derive(Clone)]
 struct Rule {
-    prefix: String,
+    prefix: Arc<str>,
+    // Preserve admitted string bytes/encoding rather than re-encoding a prefix
+    // into a potentially larger representation or retaining foreign references.
+    prefix_object: Option<Arc<Object>>,
     style: Option<u8>,
     start: u64,
 }
@@ -77,6 +82,7 @@ struct Tree<'a> {
     raw_prefix_bytes: usize,
     decoded_prefix_bytes: usize,
     ranges: Vec<(usize, Rule)>,
+    rewriting: bool,
 }
 
 impl Tree<'_> {
@@ -85,6 +91,15 @@ impl Tree<'_> {
             .0
             .as_dict()
             .map_err(|_| malformed("label dictionary expected"))?;
+        if self.rewriting
+            && dictionary
+                .iter()
+                .any(|(key, _)| !matches!(key.as_slice(), b"Type" | b"S" | b"P" | b"St"))
+        {
+            return Err(PdfMasterError::InvalidOperation(
+                "page label extensions need lossless migration",
+            ));
+        }
         if let Some(value) = field(self.document, dictionary, b"Type")?
             && !matches!(value,Object::Name(name) if name==b"PageLabel")
         {
@@ -106,7 +121,8 @@ impl Tree<'_> {
         if start == 0 {
             return Err(malformed("numbering must start at one or later"));
         }
-        let prefix = match field(self.document, dictionary, b"P")? {
+        let prefix_value = field(self.document, dictionary, b"P")?;
+        let prefix = match prefix_value {
             None => String::new(),
             Some(value @ Object::String(bytes, _)) => {
                 if bytes.len() > MAX_LABEL_BYTES {
@@ -146,7 +162,8 @@ impl Tree<'_> {
             return Err(PdfMasterError::Budget("page label prefix bytes"));
         }
         Ok(Rule {
-            prefix,
+            prefix: prefix.into(),
+            prefix_object: prefix_value.cloned().map(Arc::new),
             style,
             start,
         })
@@ -164,6 +181,15 @@ impl Tree<'_> {
         let dictionary = value
             .as_dict()
             .map_err(|_| malformed("number-tree dictionary expected"))?;
+        if self.rewriting
+            && dictionary
+                .iter()
+                .any(|(key, _)| !matches!(key.as_slice(), b"Nums" | b"Kids" | b"Limits"))
+        {
+            return Err(PdfMasterError::InvalidOperation(
+                "page label tree extensions need lossless migration",
+            ));
+        }
         let before = self.ranges.len();
         match (
             field(self.document, dictionary, b"Nums")?,
@@ -278,55 +304,187 @@ impl Session {
     /// Malformed trees/text return an error, not fabricated numeric labels. Reads are
     /// bounded by 64 tree/reference levels, 8192 nodes, 4096 ranges, 8192 bytes per
     /// prefix/label and separate 1MiB raw-prefix, decoded-prefix and output totals.
-    /// Structural page edits do not migrate catalog ranges; stale ranges can fail here.
+    /// Supported structural edits migrate these labels transactionally. Unknown
+    /// extensions remain readable but are rejected before lossy rewriting.
     pub fn page_labels(&self) -> Result<Vec<String>> {
         let count = page_object_ids(&self.document)?.len();
-        let catalog = self
-            .document
-            .catalog()
-            .map_err(|_| malformed("catalog unavailable"))?;
-        let Some(root) = field(&self.document, catalog, b"PageLabels")? else {
-            return Ok((1..=count).map(|page| page.to_string()).collect());
-        };
-        let mut tree = Tree {
-            document: &self.document,
-            page_count: count,
-            nodes: 0,
-            seen: HashSet::new(),
-            raw_prefix_bytes: 0,
-            decoded_prefix_bytes: 0,
-            ranges: Vec::new(),
-        };
-        tree.walk(root, 0)?;
-        if tree.ranges.first().map(|(index, _)| *index) != Some(0) {
-            return Err(malformed("first label range must start at page zero"));
+        match read_rules(&self.document, count, false)? {
+            None => Ok((1..=count).map(|page| page.to_string()).collect()),
+            Some(rules) => render(&rules),
         }
-        let mut labels = Vec::with_capacity(count);
-        let mut range = 0;
-        let mut total = 0usize;
-        for page in 0..count {
-            while range + 1 < tree.ranges.len() && tree.ranges[range + 1].0 <= page {
-                range += 1;
-            }
-            let (first, rule) = &tree.ranges[range];
-            let suffix = if let Some(style) = rule.style {
-                let number = rule
-                    .start
-                    .checked_add((page - first) as u64)
-                    .ok_or(PdfMasterError::Budget("page label counter"))?;
-                numeral(style, number)?
-            } else {
-                String::new()
-            };
-            let length = rule.prefix.len() + suffix.len();
-            total = total
-                .checked_add(length)
-                .ok_or(PdfMasterError::Budget("page label output bytes"))?;
-            if length > MAX_LABEL_BYTES || total > MAX_TOTAL_BYTES {
-                return Err(PdfMasterError::Budget("page label output bytes"));
-            }
-            labels.push(format!("{}{}", rule.prefix, suffix));
-        }
-        Ok(labels)
     }
+}
+
+fn read_rules(document: &Document, count: usize, rewriting: bool) -> Result<Option<Vec<Rule>>> {
+    let catalog = document
+        .catalog()
+        .map_err(|_| malformed("catalog unavailable"))?;
+    let Some(root) = field(document, catalog, b"PageLabels")? else {
+        return Ok(None);
+    };
+    let mut tree = Tree {
+        document,
+        page_count: count,
+        nodes: 0,
+        seen: HashSet::new(),
+        raw_prefix_bytes: 0,
+        decoded_prefix_bytes: 0,
+        ranges: Vec::new(),
+        rewriting,
+    };
+    tree.walk(root, 0)?;
+    if tree.ranges.first().map(|(index, _)| *index) != Some(0) {
+        return Err(malformed("first label range must start at page zero"));
+    }
+    let mut rules = Vec::with_capacity(count);
+    let mut range = 0;
+    for page in 0..count {
+        while range + 1 < tree.ranges.len() && tree.ranges[range + 1].0 <= page {
+            range += 1;
+        }
+        let (first, rule) = &tree.ranges[range];
+        let mut expanded = rule.clone();
+        if rule.style.is_some() {
+            expanded.start = rule
+                .start
+                .checked_add((page - first) as u64)
+                .ok_or(PdfMasterError::Budget("page label counter"))?;
+        }
+        rules.push(expanded);
+    }
+    // Admission budgets apply to the entire source, even for a small extraction.
+    render(&rules)?;
+    Ok(Some(rules))
+}
+
+fn render(rules: &[Rule]) -> Result<Vec<String>> {
+    let mut labels = Vec::with_capacity(rules.len());
+    let mut total = 0usize;
+    for rule in rules {
+        let suffix = rule
+            .style
+            .map(|style| numeral(style, rule.start))
+            .transpose()?
+            .unwrap_or_default();
+        let length = rule.prefix.len() + suffix.len();
+        total = total
+            .checked_add(length)
+            .ok_or(PdfMasterError::Budget("page label output bytes"))?;
+        if length > MAX_LABEL_BYTES || total > MAX_TOTAL_BYTES {
+            return Err(PdfMasterError::Budget("page label output bytes"));
+        }
+        labels.push(format!("{}{}", rule.prefix, suffix));
+    }
+    Ok(labels)
+}
+
+/// A disposable semantic plan. None entries are implicit physical numbers until
+/// mixed with explicit labels; no catalog is invented for wholly unlabeled PDFs.
+pub(crate) struct PageLabelPlan(Vec<Option<Rule>>);
+
+impl PageLabelPlan {
+    pub(crate) fn read(document: &Document) -> Result<Self> {
+        let count = page_object_ids(document)?.len();
+        Ok(Self(match read_rules(document, count, true)? {
+            Some(rules) => rules.into_iter().map(Some).collect(),
+            None => vec![None; count],
+        }))
+    }
+
+    pub(crate) fn select(&self, indices: &[Option<usize>]) -> Result<Self> {
+        indices
+            .iter()
+            .map(|index| match index {
+                Some(index) => self
+                    .0
+                    .get(*index)
+                    .cloned()
+                    .ok_or_else(|| malformed("migration index outside source")),
+                None => Ok(None),
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Self)
+    }
+
+    pub(crate) fn insert(&mut self, index: usize, incoming: Self) {
+        self.0.splice(index..index, incoming.0);
+    }
+
+    pub(crate) fn write(self, document: &mut Document) -> Result<()> {
+        let count = page_object_ids(document)?.len();
+        if self.0.len() != count {
+            return Err(malformed("migration page count mismatch"));
+        }
+        if self.0.iter().all(Option::is_none) {
+            document
+                .catalog_mut()
+                .map_err(|_| malformed("catalog unavailable"))?
+                .remove(b"PageLabels");
+            return Ok(());
+        }
+        let mut nums = Vec::new();
+        let mut previous: Option<Rule> = None;
+        for (index, rule) in self.0.into_iter().enumerate() {
+            let rule = rule.unwrap_or_else(|| Rule {
+                prefix: String::new().into(),
+                prefix_object: None,
+                style: Some(b'D'),
+                start: (index + 1) as u64,
+            });
+            let consecutive = previous.as_ref().is_some_and(|old| {
+                old.prefix == rule.prefix
+                    && old.style == rule.style
+                    && (rule.style.is_none() || old.start.checked_add(1) == Some(rule.start))
+            });
+            if !consecutive {
+                let mut dictionary = Dictionary::new();
+                if let Some(prefix) = &rule.prefix_object {
+                    dictionary.set("P", prefix.as_ref().clone());
+                }
+                if let Some(style) = rule.style {
+                    dictionary.set("S", Object::Name(vec![style]));
+                    dictionary.set(
+                        "St",
+                        i64::try_from(rule.start).map_err(|_| {
+                            PdfMasterError::Budget("page label counter serialization")
+                        })?,
+                    );
+                }
+                nums.push(Object::Integer(index as i64));
+                nums.push(Object::Dictionary(dictionary));
+            }
+            previous = Some(rule);
+        }
+        let mut root = Dictionary::new();
+        root.set("Nums", nums);
+        document
+            .catalog_mut()
+            .map_err(|_| malformed("catalog unavailable"))?
+            .set("PageLabels", root);
+        // Range fragmentation may increase encoded-prefix work even when the
+        // visible output still fits. Reapply all reader budgets before commit.
+        read_rules(document, count, true)?;
+        Ok(())
+    }
+}
+
+pub(crate) fn migrate_edit_labels(
+    original: &Document,
+    candidate: &mut Document,
+    duplicate: Option<(usize, usize)>,
+) -> Result<()> {
+    let plan = PageLabelPlan::read(original)?;
+    let source: HashMap<_, _> = page_object_ids(original)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| (id, index))
+        .collect();
+    let mut indices: Vec<_> = page_object_ids(candidate)?
+        .into_iter()
+        .map(|id| source.get(&id).copied())
+        .collect();
+    if let Some((page, index)) = duplicate {
+        indices[index] = Some(page);
+    }
+    plan.select(&indices)?.write(candidate)
 }

@@ -39,14 +39,19 @@ impl Session {
             return Err(PdfMasterError::Budget("insert input bytes"));
         }
         let mut candidate = self.document.clone();
+        // Keep implicit pages implicit until the complete batch order is known.
+        // Writing after each input would freeze intermediate physical numbers.
+        let mut labels = crate::page_labels::PageLabelPlan::read(&self.document)?;
         let mut count = self.pages.len();
         let mut cursor = index;
         for bytes in files {
-            let (next, added) = insert_document(&candidate, count, bytes, cursor)?;
+            let (next, added, incoming_labels) = insert_document(&candidate, count, bytes, cursor)?;
+            labels.insert(cursor, incoming_labels);
             candidate = next;
             count += added;
             cursor += added;
         }
+        labels.write(&mut candidate)?;
         self.commit_document(candidate)
     }
 }
@@ -56,12 +61,13 @@ fn insert_document(
     count: usize,
     bytes: &[u8],
     index: usize,
-) -> Result<(lopdf::Document, usize)> {
+) -> Result<(lopdf::Document, usize, crate::page_labels::PageLabelPlan)> {
     let incoming = Session::open(bytes)?;
     let incoming_count = incoming.info().page_count;
     if count.saturating_add(incoming_count) > MAX_PAGES {
         return Err(PdfMasterError::Budget("inserted page count"));
     }
+    let labels = crate::page_labels::PageLabelPlan::read(&incoming.document)?;
     let catalog = incoming.document.catalog().map_err(malformed)?;
     if [b"AcroForm".as_slice(), b"StructTreeRoot", b"MarkInfo"]
         .iter()
@@ -147,7 +153,7 @@ fn insert_document(
     ids.splice(index..index, imported_ids);
     flatten_page_tree(&mut candidate, &ids)?;
     candidate.version = candidate.version.max(imported.version);
-    Ok((candidate, incoming_count))
+    Ok((candidate, incoming_count, labels))
 }
 
 fn page_reachable(document: &lopdf::Document, pages: &[ObjectId]) -> Result<BTreeSet<ObjectId>> {

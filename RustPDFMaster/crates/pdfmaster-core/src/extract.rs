@@ -32,7 +32,13 @@ impl Session {
             }
         }
         let all_ids = page_object_ids(&self.document)?;
-        let selected_ids: Vec<_> = ordered.into_iter().map(|page| all_ids[page]).collect();
+        let selected_indices: Vec<_> = ordered.into_iter().map(Some).collect();
+        let labels =
+            crate::page_labels::PageLabelPlan::read(&self.document)?.select(&selected_indices)?;
+        let selected_ids: Vec<_> = selected_indices
+            .iter()
+            .map(|page| all_ids[page.unwrap()])
+            .collect();
         let mut source = self.document.clone();
         materialize_page_attributes(&mut source, &selected_ids)?;
         let mut copier = GraphCopy {
@@ -88,6 +94,7 @@ impl Session {
             }
             copier.output.objects.insert(copier.map[&old_id], copied);
         }
+        labels.write(&mut copier.output)?;
         let bytes = serialize(&copier.output)?;
         // Reopen through the same strict admission/budget boundary as normal
         // documents. This never assigns into the source Session or its history.
