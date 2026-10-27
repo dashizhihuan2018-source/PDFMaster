@@ -123,6 +123,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private lazy var zoomPopup = readerCommands.makeZoomPopup()
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private weak var sidebarScrollView: NSView?
+    private weak var readerContentView: NSView?
+    private let sidebarDivider = ReaderSidebarDivider()
+    var sidebarWidthPreference = ReaderSidebarWidth()
+    private var sidebarDragWidth: CGFloat?
     private var toolbarControls: [NSControl] = []
     private var toolbarGroups: [NSView] = []
     var toolbarGroupFrames: [NSRect] { toolbarGroups.map { $0.convert($0.bounds, to: view) } }
@@ -168,7 +172,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         view = root
         let toolbar = makeToolbar()
         configureAnnotationPalette()
-        let content = NSView()
+        let content = NSView(); readerContentView = content
         let side = NSView(); sidebarScrollView = side
         side.wantsLayer = true; side.layer?.backgroundColor = ShellPalette.sidebar.cgColor
         addChild(readerSidebar)
@@ -211,8 +215,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
         readerCommands.setSidebarVisible = { [weak self] visible in
             guard let self else { return }
-            self.sidebarWidthConstraint?.constant = visible ? self.thumbnailSidebarWidth : 0
-            self.sidebarScrollView?.isHidden = !visible
+            self.sidebarDragWidth = nil
+            self.updateSidebarWidth()
         }
         readerCommands.onError = { [weak self] error in self?.setInteractionStatus("阅读操作失败：\(error)") }
         readerCommands.interceptCommand = { [weak self] command in
@@ -236,6 +240,25 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             side.leadingAnchor.constraint(equalTo: content.leadingAnchor), side.topAnchor.constraint(equalTo: content.topAnchor), side.bottomAnchor.constraint(equalTo: content.bottomAnchor), sideWidth,
             pdfView.leadingAnchor.constraint(equalTo: side.trailingAnchor), pdfView.trailingAnchor.constraint(equalTo: content.trailingAnchor), pdfView.topAnchor.constraint(equalTo: content.topAnchor), pdfView.bottomAnchor.constraint(equalTo: content.bottomAnchor)
         ])
+        sidebarDivider.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(sidebarDivider)
+        NSLayoutConstraint.activate([
+            sidebarDivider.centerXAnchor.constraint(equalTo: side.trailingAnchor),
+            sidebarDivider.widthAnchor.constraint(equalToConstant: 8),
+            sidebarDivider.topAnchor.constraint(equalTo: content.topAnchor),
+            sidebarDivider.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+        ])
+        sidebarDivider.currentWidth = { [weak self] in self?.sidebarWidthConstraint?.constant ?? 176 }
+        sidebarDivider.onWidth = { [weak self] proposed, commit in
+            guard let self else { return }
+            let width = self.sidebarWidthPreference.fitted(proposed, available: self.readerContentView?.bounds.width ?? 0)
+            if commit { self.sidebarWidthPreference.commit(width); self.sidebarDragWidth = nil }
+            else { self.sidebarDragWidth = width }
+            self.updateSidebarWidth(); self.view.layoutSubtreeIfNeeded()
+        }
+        sidebarDivider.onCancel = { [weak self] in
+            self?.sidebarDragWidth = nil; self?.updateSidebarWidth(); self?.view.layoutSubtreeIfNeeded()
+        }
         addChild(pageOverview)
         let overviewView = pageOverview.view
         overviewView.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(overviewView); overviewView.isHidden = true
@@ -664,10 +687,22 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         if isOverviewVisible { setOverviewVisible(false) }
         else { enterMode(.pages) }
     }
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        updateSidebarWidth()
+    }
+    private func updateSidebarWidth() {
+        let visible = readerCommands.sidebarVisible && !isOverviewVisible
+        sidebarScrollView?.isHidden = !visible
+        sidebarDivider.isHidden = !visible
+        let width = visible ? sidebarWidthPreference.fitted(sidebarDragWidth, available: readerContentView?.bounds.width ?? view.bounds.width) : 0
+        if sidebarWidthConstraint?.constant != width { sidebarWidthConstraint?.constant = width }
+        sidebarDivider.setAccessibilityValue("\(Int(width)) 点")
+    }
     private func setOverviewVisible(_ visible: Bool) {
         isOverviewVisible = visible
         pageOverview.view.isHidden = !visible; pdfView.isHidden = visible
-        sidebarScrollView?.isHidden = visible || !readerCommands.sidebarVisible
+        sidebarDragWidth = nil; updateSidebarWidth()
         zoomPopup.isEnabled = !visible
         if visible {
             if !readerPresentationNeedsRefresh { pageOverview.setDocument(pdfView.document, selectedPage: currentPageIndex, snapshot: readerSession.documentSnapshot ?? pdfView.presentationDataRepresentation()) }
