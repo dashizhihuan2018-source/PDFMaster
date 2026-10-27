@@ -8,6 +8,9 @@ license.workspace = true
 [dependencies]
 pdfmaster-drawing = { path = "../pdfmaster-drawing" }
 flate2 = "1.1"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }
+gif = { version = "=0.14.2", default-features = false, features = ["std"] }
+tiff = { version = "=0.11.3", default-features = false, features = ["deflate", "lzw", "jpeg", "fax"] }
 hayro = "=0.8.0"
 lopdf = { version = "=0.46.0", default-features = false }
 serde = { version = "1.0", features = ["derive"] }

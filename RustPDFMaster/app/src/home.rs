@@ -61,10 +61,11 @@ pub(super) fn Dashboard(model: Model) -> impl IntoView {
                     <div class="home-heading-row"><h1>{move||section().title()}</h1><Show when=move||section()==HomeSection::Home><button class="home-customize" disabled title="工具自定义尚未迁移">"自定义"</button></Show></div>
                     <Show when=move||section()==HomeSection::Home>
                         <div class="home-banner">"PDF Master · 阅读、批注、整理，让文档与灵感井然有序"</div>
-                        <div class="home-drop-zone" aria-label="打开 PDF；拖入及混合导入尚未迁移">
+                        <div class="home-drop-zone" class:drop-active=move||model.home_drop_active.get() aria-label="拖入 PDF 或支持的图片，新建独立合并文档" on:dragover=move|e|e.prevent_default() on:drop=move|e|e.prevent_default()>
                             <svg class="home-pdf-stack" viewBox="0 0 85 64" aria-hidden="true"><g transform="translate(0 64) scale(1 -1)" stroke="#454545" stroke-width="0.8" fill="#303030"><g transform="translate(30.5 29) rotate(-15)"><rect x="-21" y="-27" width="42" height="48" rx="1"/><path d="M-17 12h34 M-17 8h34 M-17 4h34 M-17 0h34 M-17 -4h34"/></g><g transform="translate(54.5 29) rotate(15)"><rect x="-21" y="-27" width="42" height="48" rx="1"/><path d="M-17 12h34 M-17 8h34 M-17 4h34 M-17 0h34 M-17 -4h34"/></g><rect x="20.5" y="3" width="44" height="60" rx="2" fill="#333" stroke-width="1"/></g><text x="42.5" y="50" text-anchor="middle" fill="#666" font-size="14" font-weight="700">"PDF"</text></svg>
                             <button class="home-open" disabled=move||model.busy.get() on:click=move|_|model.command("open_document",json!({}))>"打开文件"</button>
-                            <p>"当前支持打开 PDF；拖入与混合导入尚未迁移"</p>
+                            <p>"拖入 PDF 或图片，按顺序创建独立 PDF"</p>
+                            <Show when=move||model.file_drop_request.get().is_some()><div class="home-import-progress"><span class="home-import-spinner" aria-hidden="true"></span><span>"正在本地导入文件…"</span><button aria-label="取消文件导入" title="取消当前文件导入，不修改原文件" on:click=move|_|model.cancel_file_import()>"取消"</button></div></Show>
                         </div>
                         <div class="home-heading-row"><h2>"工具专为您"</h2><button class="home-all-tools" on:click=move|_|model.switch_to(Route::Home(HomeSection::Tools))>"查看全部"</button></div>
                         <div class="home-tool-grid">{RECOMMENDED.into_iter().filter_map(tool).map(|tool|view!{<ToolCard model=model tool=tool/>}).collect_view()}</div>
@@ -81,7 +82,7 @@ pub(super) fn Dashboard(model: Model) -> impl IntoView {
                     <p class="home-disclosure">"Rust 迁移候选 · 非正式版 · 多 PDF 标签保留独立修改，画布标签与完整三端 UI 对等仍在迁移。"</p>
                 </div>
             </section>
-            <footer class="home-status" role="status" aria-live="polite">{move||model.document.with(|d|pdfmaster_ui::visible_status(d.as_ref().and_then(|d|d.warning.as_deref()),&model.message.get(),model.busy.get()))}</footer>
+            <footer class="home-status"><span role="status" aria-live="polite">{move||model.document.with(|d|pdfmaster_ui::visible_status(d.as_ref().and_then(|d|d.warning.as_deref()),&model.message.get(),model.busy.get()))}</span><Show when=move||model.file_drop_request.get().is_some()&&!matches!(model.route.get(),Route::Home(HomeSection::Home))><button aria-label="取消文件导入" on:click=move|_|model.cancel_file_import()>"取消文件导入"</button></Show></footer>
         </div>
     }
 }

@@ -95,6 +95,22 @@ fn discard(id: u32) {
     });
 }
 impl Model {
+    fn file_drop_home(self, x: f64, y: f64) -> bool {
+        if !matches!(self.route.get_untracked(), Route::Home(_))
+            || self.busy.get_untracked()
+            || self.has_note_draft()
+            || self.has_ink()
+            || !x.is_finite()
+            || !y.is_finite()
+        {
+            return false;
+        }
+        web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.element_from_point(x as f32, y as f32))
+            .and_then(|e| e.closest(".dashboard").ok().flatten())
+            .is_some()
+    }
     fn file_drop_index(self, x: f64, y: f64) -> Option<usize> {
         if self.route.get_untracked() != Route::Document
             || self.blocked()
@@ -127,13 +143,16 @@ impl Model {
     }
     fn file_drop_notice(self, notice: Notice) {
         if notice.kind == "leave" {
+            self.home_drop_active.set(false);
             if self.overview_drag.with_untracked(|d| d.is_none()) {
                 self.overview_marker.set(None);
             }
             return;
         }
         let index = self.file_drop_index(notice.x, notice.y);
+        let home = self.file_drop_home(notice.x, notice.y);
         if notice.kind == "over" {
+            self.home_drop_active.set(home);
             self.overview_marker
                 .set(if self.overview_visible.get_untracked() {
                     index
@@ -146,6 +165,7 @@ impl Model {
             return;
         }
         self.overview_marker.set(None);
+        self.home_drop_active.set(false);
         if let Some(error) = notice.error {
             self.message.set(error);
             return;
@@ -153,25 +173,42 @@ impl Model {
         let Some(id) = notice.id else {
             return;
         };
-        let Some(index) = index else {
+        let Some(index) = (if home { Some(0) } else { index }) else {
             discard(id);
             return;
         };
-        let Some(document) = self.document.with_untracked(|d| d.as_ref().map(|d| d.id)) else {
+        let document = self
+            .document
+            .with_untracked(|d| d.as_ref().map_or(0, |d| d.id));
+        if !home && document == 0 {
             discard(id);
             return;
         };
-        let overview = self.overview_visible.get_untracked();
+        let overview = !home && self.overview_visible.get_untracked();
         let old_count = self.count();
         self.remember_tab();
         self.file_drop_request.set(Some(id));
         self.busy.set(true);
-        self.message
-            .set("正在导入拖入的 PDF；整批完成后才插入页面。".into());
+        self.message.set(
+            if home {
+                "正在本地转换文件；整批完成后创建独立PDF，原文件和已有文档不变。"
+            } else {
+                "正在本地转换文件；整批完成后才插入页面。"
+            }
+            .into(),
+        );
         spawn_local(async move {
             let result = bridge::call::<Option<Document>>(
-                "import_file_drop",
-                &json!({"id":id,"document":document,"index":index}),
+                if home {
+                    "open_file_drop"
+                } else {
+                    "import_file_drop"
+                },
+                &if home {
+                    json!({"id":id})
+                } else {
+                    json!({"id":id,"document":document,"index":index})
+                },
             )
             .await;
             // A confirmed cancellation already released native ownership and
@@ -181,7 +218,16 @@ impl Model {
             }
             match result {
                 Ok(Some(doc)) => {
-                    let added = doc.info.page_count.saturating_sub(old_count);
+                    let home_clean = home && !doc.info.dirty;
+                    let added = if home {
+                        doc.info.page_count
+                    } else {
+                        doc.info.page_count.saturating_sub(old_count)
+                    };
+                    if home {
+                        self.restore_tab(&doc);
+                        self.route.set(Route::Document);
+                    }
                     self.page
                         .set(index.min(doc.info.page_count.saturating_sub(1)));
                     self.page_jump
@@ -193,7 +239,19 @@ impl Model {
                             s.restore(&(index..index + added).collect::<Vec<_>>(), self.count())
                         });
                     }
-                    let mut status = format!("已导入 {} 页，可撤销；请导出完整副本保存。", added);
+                    let mut status = if home_clean {
+                        format!(
+                            "已打开独立 PDF 标签，共 {} 页；原文件和已有文档保持不变。",
+                            added
+                        )
+                    } else if home {
+                        format!(
+                            "已创建独立 PDF，共 {} 页；原文件和已有文档保持不变，请导出副本保存。",
+                            added
+                        )
+                    } else {
+                        format!("已导入 {} 页，可撤销；请导出完整副本保存。", added)
+                    };
                     if !self.render().await {
                         status.push_str(&format!(" 预览失败：{}", self.message.get_untracked()));
                     }

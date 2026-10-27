@@ -103,7 +103,9 @@ class ThirdPartyNoticeContract(unittest.TestCase):
         self.assertIn("{{text}}", source)
         self.assertIn("{{crate.name}}", source)
         self.assertIn("{{crate.version}}", source)
-        self.assertIn("{{crate.repository}}", source)
+        # Registry identity is authoritative, unlike untrusted upstream URLs
+        # (quick-error 2.0.1, for example, declares an HTTP repository).
+        self.assertNotIn("{{crate.repository}}", source)
         self.assertIn("{{#if crate.source}}", source)
         self.assertIn('data-crate-source="{{crate.source}}"', source)
         self.assertIn("https://crates.io/crates/{{crate.name}}/{{crate.version}}", source)

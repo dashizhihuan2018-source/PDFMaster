@@ -28,14 +28,10 @@
       <ul class="packages">
         {{#each used_by}}
         <li class="package" data-package-name="{{crate.name}}" data-package-version="{{crate.version}}">
-          {{#if crate.repository}}
-          <a class="crate-source" data-source-kind="repository" rel="noreferrer noopener" href="{{crate.repository}}">{{crate.name}} {{crate.version}}</a>
-          {{else}}
           {{#if crate.source}}
           <a class="crate-source" data-source-kind="registry" data-crate-source="{{crate.source}}" rel="noreferrer noopener" href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a>
           {{else}}
           <span class="workspace-package" data-source-kind="workspace">{{crate.name}} {{crate.version}}</span>
-          {{/if}}
           {{/if}}
         </li>
         {{/each}}

@@ -360,6 +360,20 @@ impl Session {
         }
     }
 
+    /// Uses the same admission for every input, then discards only the private
+    /// assembly history. A newly generated merge is dirty with no placeholder Undo.
+    pub fn from_imports(files: &[&[u8]]) -> Result<Self> {
+        let mut session = Self::blank(595.276, 841.89, 1)?;
+        session.insert_pdfs(files, 0)?;
+        session.apply(Edit::DeletePage {
+            page: session.pages.len() - 1,
+        })?;
+        session.undo.clear();
+        session.redo.clear();
+        session.saved_bytes.clear();
+        Ok(session)
+    }
+
     pub fn bytes(&self) -> Result<Vec<u8>> {
         Ok(self.current_bytes.clone())
     }

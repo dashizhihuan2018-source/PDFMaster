@@ -8,7 +8,7 @@ fn read_drop_files(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
     let _slot = READ_SLOT
         .try_lock()
         .map_err(|_| "上一批文件读取尚在结束，请稍后重试；本次未修改文档。")?;
-    read_insertion_files(paths)
+    file_import::read(paths)
 }
 
 fn logical_point(x: f64, y: f64, scale: f64, apple_points: bool) -> Option<(f64, f64)> {
@@ -33,11 +33,72 @@ pub(super) struct Pending {
     id: u32,
     document: u32,
     epoch: u64,
-    snapshot: Vec<u8>,
+    snapshot: Option<Vec<u8>>,
     created: Instant,
     paths: Vec<PathBuf>,
 }
 impl Workspace {
+    fn begin_home_file_drop(&mut self, drop: u32) -> Reply<(u32, Vec<PathBuf>)> {
+        self.ensure_editor_idle()?;
+        if self.recovery_fault && self.session.is_none() {
+            return Err("原草稿未能恢复，请先安全处理原草稿。".into());
+        }
+        if self.inactive_documents.len() + usize::from(self.session.is_some()) >= 16 {
+            return Err("最多同时打开16份PDF，请先保存并关闭部分标签。".into());
+        }
+        let p = self
+            .file_drop
+            .pending
+            .as_ref()
+            .filter(|p| p.id == drop)
+            .ok_or("拖入文件已失效，请重新拖入。")?;
+        let snapshot = self
+            .session
+            .as_ref()
+            .map(Session::bytes)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        if p.document != self.active_document_id
+            || p.epoch != self.document_epoch
+            || p.snapshot != snapshot
+            || p.created.elapsed().as_secs() >= 30
+        {
+            self.file_drop.pending = None;
+            return Err("拖放期间会话已改变或超时，请重新拖入；未创建文档。".into());
+        }
+        let r = self
+            .next_export_id
+            .checked_add(1)
+            .ok_or("文件操作编号已耗尽，请保存后重启。")?;
+        self.next_export_id = r;
+        self.export_reservation = Some(r);
+        let p = self.file_drop.pending.take().ok_or("拖放已失效。")?;
+        self.file_drop.running = Some((drop, r));
+        Ok((r, p.paths))
+    }
+    fn finish_home_file_drop(
+        &mut self,
+        drop: u32,
+        reservation: u32,
+        name: String,
+        files: &[&[u8]],
+        single_pdf: bool,
+    ) -> Reply<DocumentView> {
+        if self.file_drop.running != Some((drop, reservation))
+            || self.export_reservation != Some(reservation)
+        {
+            return Err("导入已取消或会话已改变，未创建文档。".into());
+        }
+        let session = if single_pdf && files.len() == 1 {
+            Session::open(files[0])
+        } else {
+            Session::from_imports(files)
+        }
+        .map_err(|e| e.to_string())?;
+        self.file_drop.running = None;
+        self.release_export(reservation);
+        self.replace_document(session, name)
+    }
     fn offer_file_drop(&mut self, paths: Vec<PathBuf>) -> Reply<u32> {
         self.file_drop.pending = None;
         self.ensure_editor_idle()?;
@@ -47,13 +108,13 @@ impl Workspace {
                 .iter()
                 .any(|p| !p.is_absolute() || p.as_os_str().len() > 8192)
         {
-            return Err("请拖入1–32份本地文件；当前仅支持PDF，整批未修改文档。".into());
+            return Err("请拖入1–32份本地PDF或支持的图片；整批未修改文档。".into());
         }
         let snapshot = self
             .session
             .as_ref()
-            .ok_or("请先打开 PDF，再拖入文件。")?
-            .bytes()
+            .map(Session::bytes)
+            .transpose()
             .map_err(|e| e.to_string())?;
         let id = self
             .file_drop
@@ -91,8 +152,8 @@ impl Workspace {
             || self
                 .session
                 .as_ref()
-                .ok_or("请先打开 PDF")?
-                .bytes()
+                .map(Session::bytes)
+                .transpose()
                 .map_err(|e| e.to_string())?
                 != pending.snapshot
         {
@@ -265,9 +326,98 @@ pub(super) async fn cancel_file_drop(state: State<'_, Store>, id: u32) -> Reply<
         .cancel_file_drop(id))
 }
 
+#[tauri::command]
+pub(super) async fn open_file_drop(
+    state: State<'_, Store>,
+    id: u32,
+) -> Reply<Option<DocumentView>> {
+    let (reservation, paths) = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .begin_home_file_drop(id)?;
+    let guard = ExportReservation {
+        store: state.inner(),
+        id: reservation,
+    };
+    let single_pdf = paths.len() == 1
+        && paths[0]
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("pdf"));
+    let name = if paths.len() == 1 {
+        let stem = paths[0].file_stem().unwrap_or_default().to_string_lossy();
+        format!("{}.pdf", stem.chars().take(512).collect::<String>())
+    } else {
+        "文件合并.pdf".into()
+    };
+    let files = tauri::async_runtime::spawn_blocking(move || read_drop_files(&paths))
+        .await
+        .map_err(|_| "无法读取拖入文件；未创建文档。")??;
+    let refs: Vec<_> = files.iter().map(Vec::as_slice).collect();
+    let result = state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .finish_home_file_drop(id, reservation, name, &refs, single_pdf)
+        .map(Some);
+    drop(guard);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn home_merge_creates_an_independent_unsaved_tab_and_never_appends_to_hidden_document() {
+        let mut w = workspace();
+        let old = w.session.as_ref().unwrap().bytes().unwrap();
+        let (_dir, paths) = paths();
+        let files = read_insertion_files(&paths).unwrap();
+        let id = w.offer_file_drop(paths).unwrap();
+        let (r, _) = w.begin_home_file_drop(id).unwrap();
+        let refs: Vec<_> = files.iter().map(Vec::as_slice).collect();
+        let view = w
+            .finish_home_file_drop(id, r, "文件合并.pdf".into(), &refs, false)
+            .unwrap();
+        assert_eq!(view.info.page_count, 3);
+        assert!(view.info.dirty && !view.info.can_undo && !view.info.can_redo);
+        assert_eq!(w.inactive_documents.len(), 1);
+        assert_eq!(w.inactive_documents[0].session.bytes().unwrap(), old);
+        let id = w
+            .offer_file_drop(vec![PathBuf::from("/synthetic.pdf")])
+            .unwrap();
+        let (r, _) = w.begin_home_file_drop(id).unwrap();
+        assert!(w.cancel_file_drop(id));
+        assert!(
+            w.finish_home_file_drop(id, r, "cancelled.pdf".into(), &refs, false)
+                .is_err()
+        );
+        assert_eq!(w.inactive_documents.len(), 1);
+    }
+    #[test]
+    fn home_first_import_has_no_session_and_late_invalid_batch_creates_no_tab() {
+        let mut w = Workspace::default();
+        let journal = tempfile::tempdir().unwrap();
+        w.journal = Some(recovery::Journal::new(journal.path().join("draft.json")));
+        let (_dir, paths) = paths();
+        let files = read_insertion_files(&paths).unwrap();
+        let id = w.offer_file_drop(paths.clone()).unwrap();
+        let (r, _) = w.begin_home_file_drop(id).unwrap();
+        assert!(
+            w.finish_home_file_drop(id, r, "bad.pdf".into(), &[&files[0], b"bad"], false)
+                .is_err()
+        );
+        w.release_export(r);
+        assert!(w.session.is_none() && w.inactive_documents.is_empty());
+        let id = w.offer_file_drop(paths).unwrap();
+        let (r, _) = w.begin_home_file_drop(id).unwrap();
+        let view = w
+            .finish_home_file_drop(id, r, "first.pdf".into(), &[&files[0]], true)
+            .unwrap();
+        assert_eq!(view.info.page_count, 2);
+        assert!(
+            !view.info.dirty && !view.info.can_undo,
+            "a single PDF drop follows the original open path, not a dirty merge"
+        );
+    }
     #[test]
     fn cancelled_slow_read_cannot_accumulate_unbounded_parallel_readers() {
         let _guard = READ_SLOT.lock().unwrap();

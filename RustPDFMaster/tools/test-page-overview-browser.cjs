@@ -22,7 +22,7 @@ const server=http.createServer((req,res)=>{
           args=args instanceof Map?Object.fromEntries(args):args;window.requests.push({command,args});
           if(command==='register_file_drop_channel'){window.nativeDrop=p=>args.channel.onmessage(p);return 1;}
           if(command==='unregister_file_drop_channel'){delete window.nativeDrop;return null;}
-          if(command==='document_info')return structuredClone(d);
+          if(command==='document_info'){if(location.search.includes('empty')){d.tabs=[];return null;}return structuredClone(d);}
           if(command==='render_page'){if(window.failRender){window.failRender=false;throw new Error('synthetic preview failure');}return image;}
           if(command==='copy_pages_document'){
             assertToken(args.token);if(args.document!==d.id)throw new Error('foreign document');
@@ -37,6 +37,12 @@ const server=http.createServer((req,res)=>{
           }
           if(command==='insert_pdf_document'||command==='insert_pdfs_document')return null;
           if(command==='cancel_file_drop')return true;
+          if(command==='open_file_drop'){
+            if(window.holdHome){window.holdHome=false;return new Promise((_,reject)=>{window.releaseHome=()=>reject(new Error('synthetic cancelled home import'));});}
+            d.id=2;d.name='文件合并.pdf';d.tabs.push({id:2,name:d.name,dirty:true});
+            d.info={page_count:3,pages:[{width:111,height:222,rotation:0},{width:595.276,height:841.89,rotation:0},{width:333,height:444,rotation:0}],dirty:true,can_undo:false,can_redo:false};
+            d.warning=null;current=0;return structuredClone(d);
+          }
           if(command==='import_file_drop'){
             if(window.holdDrop){window.holdDrop=false;return new Promise((_,reject)=>{window.releaseDrop=()=>reject(new Error('synthetic cancelled import'));});}
             if(window.failDrop){window.failDrop=false;throw new Error('synthetic invalid batch');}
@@ -181,6 +187,30 @@ const server=http.createServer((req,res)=>{
       await page.evaluate(p=>window.nativeDrop({kind:'drop',id:104,...p,error:null}),{x:reader.x+20,y:reader.y+20});
       await page.waitForFunction(()=>window.requests.some(r=>r.command==='import_file_drop'&&r.args.id===104));
       assert.equal(await page.evaluate(()=>window.requests.find(r=>r.command==='import_file_drop'&&r.args.id===104).args.index),2,'reader drop follows its current page');
+      const home=page.getByRole('button',{name:'主界面标签',exact:true});await page.waitForFunction(()=>!document.querySelector('.shell-home-tab').disabled);await home.click();
+      const zone=page.locator('.home-drop-zone');await zone.waitFor({state:'visible'});
+      const hb=await zone.boundingBox(),hp={x:hb.x+hb.width/2,y:hb.y+hb.height/2};
+      await page.evaluate(p=>window.nativeDrop({kind:'over',id:null,...p,error:null}),hp);
+      assert.equal(await zone.evaluate(el=>el.classList.contains('drop-active')),true,'home hover must mark the actual original drop target');
+      await page.evaluate(p=>{window.holdHome=true;window.nativeDrop({kind:'drop',id:201,...p,error:null});},hp);
+      await page.waitForFunction(()=>window.requests.some(r=>r.command==='open_file_drop'&&r.args.id===201));
+      const homeCancel=zone.getByRole('button',{name:'取消文件导入',exact:true});await homeCancel.click();
+      await page.waitForFunction(()=>!document.querySelector('.shell-home-tab').disabled);
+      await page.evaluate(p=>window.nativeDrop({kind:'drop',id:202,...p,error:null}),hp);
+      await page.locator('#pdf-reader').waitFor({state:'visible'});
+      await page.waitForFunction(()=>document.querySelectorAll('.shell-document-tab').length===2);
+      assert.equal(await page.getByRole('textbox',{name:'跳转页码',exact:true}).inputValue(),'1','new home merge starts at the first page');
+      assert.deepEqual(await page.evaluate(()=>window.requests.find(r=>r.command==='open_file_drop'&&r.args.id===202).args),{id:202},'home import exposes no paths or bytes');
+      await page.waitForFunction(()=>!document.querySelector('.shell-home-tab').disabled);
+      const homeStatus=await page.locator('.statusbar [role="status"]').innerText();assert.ok(homeStatus.includes('独立')&&!homeStatus.includes('可撤销'));
+      await page.evaluate(()=>window.releaseHome());await page.waitForTimeout(30);
+      assert.equal(await page.locator('.statusbar [role="status"]').innerText(),homeStatus,'cancelled old home import cannot overwrite the new tab status');
+      await page.goto(`http://127.0.0.1:${server.address().port}/?empty=1`);
+      await page.waitForFunction(()=>typeof window.nativeDrop==='function'&&!document.querySelector('.home-open').disabled);
+      const empty=await page.locator('.home-drop-zone').boundingBox();
+      await page.evaluate(p=>window.nativeDrop({kind:'drop',id:301,...p,error:null}),{x:empty.x+20,y:empty.y+20});
+      await page.locator('#pdf-reader').waitFor({state:'visible'});
+      assert.equal(await page.locator('.shell-document-tab').count(),1,'home import does not require a pre-existing PDF');
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'no body horizontal overflow');
       console.log(JSON.stringify({case:'overview',width,selection:true,snapshotMove:true,deleteCancel:true,openPage:true,virtualScroll:true,result:'pass'}));
       await page.close();

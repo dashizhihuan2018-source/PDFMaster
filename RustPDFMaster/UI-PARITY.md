@@ -4,7 +4,15 @@
 
 当前 Rust 候选 **未通过 UI 对等验收**。自动测试、同名按钮、CSS 数值和编译通过均不是视觉或交互一致的证明。
 
-## 2026-10-27 外部PDF拖入增量（未验收）
+## 2026-10-27 首页与图片混合导入增量（未验收）
+
+只读回读原版 DashboardView、FileImportController、FilePDFImport 和 ImagePDFImport：整个首页 Dashboard 根区域接受拖入，不局限导入框；单个 PDF 独立打开为干净标签，多文件／图片生成独立未保存 PDF，不能插入隐藏的旧文档。Rust 新命令只收一次性编号，保留旧标签与空工作区流程；原有文档拖入继续按落点整批插入／单步 Undo。取消撤销提交权限，迟到回包不覆盖新任务。首页导入框保留190px布局、原版hover配色；进度行位于框内底部4px、12px spinner、8px间距、11px文案和46×24px取消键，移动命中区44px为显式适配。
+
+新增全输入预检的 PDF／PNG／JPEG／BMP／静态GIF／受支持多帧TIFF转换，保持源序；A4 595.276×841.89、24pt页边距、等比居中、透明合成白底。TIFF逐帧检查方向、8/16位灰度／RGB与明确alpha语义，关联alpha先解预乘再合成；WhiteIsZero多通道、其它色彩模型拒绝。32文件、每份32MiB／整批64MiB、单帧4000万／整批1亿像素、500页与输出预算不等同总堆内存上限。普通文件的有界读取不跟随最终符号链接／reparse point；不写源文件、不用外部转换进程。
+
+色彩管理尚未迁移，因此明确拒绝PNG gamma／色度／ICC／cICP／HDR／Exif、JPEG ICC／Exif、校准或profiled BMP、GIF ICC及TIFF颜色／Exif元数据，不悄悄改变颜色；即使某些元数据可描述sRGB，当前仍可能保守拒绝。无其它颜色元数据的PNG sRGB声明允许。HEIC、文字／Office、完整TIFF、工具入口／picker和移动系统拖放仍待。真实核心PDF/像素测试、原生工作区状态测试及1280/390编译WASM合成协议回放不等于OS拖入链路或三端视觉验收；本机Apple专用版与旧未保存QA不操作。
+
+## 2026-10-27 外部PDF拖入增量（历史阶段，未验收）
 
 主窗口实际 WindowEvent::DragDrop 接一次性原生文件broker；自定义Channel只传编号、坐标和错误，禁止标准event.listen以免标准Tauri拖放事件另带路径。导入IPC不接路径／字节。编号绑定当前文档ID、epoch、精确PDF与30秒时限；新拖入和checkpoint失效旧票，拖放完成后的Leave不提前撤销。按锁定Wry0.57.1行为，Apple拖放points不再除backing scale，Windows物理坐标转逻辑坐标；更换依赖须重审。界面按实际命中元素、网格滚动和左右半边插入，背景追加；阅读器在当前页之后插入，不覆盖页面。成功才选新范围／跳新页，原文件不写，整批失败不插页。
 

@@ -1,6 +1,21 @@
 use serde_json::Value;
 
 #[test]
+fn home_file_drop_is_registered_without_accepting_frontend_paths_or_pdf_bytes() {
+    let source = include_str!("../src/lib.rs");
+    assert!(source.contains("file_drop::open_file_drop,"));
+    let drop = include_str!("../src/file_drop.rs");
+    let args = drop
+        .split("async fn open_file_drop(")
+        .nth(1)
+        .unwrap()
+        .split(") ->")
+        .next()
+        .unwrap();
+    assert!(!args.contains("Path") && !args.contains("paths") && !args.contains("bytes"));
+}
+
+#[test]
 fn native_file_drop_routes_the_main_window_and_denies_path_bearing_event_listeners() {
     let source = include_str!("../src/lib.rs");
     assert!(source.contains("tauri::WindowEvent::DragDrop(event)"));
