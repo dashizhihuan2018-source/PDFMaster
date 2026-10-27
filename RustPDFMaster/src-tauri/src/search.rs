@@ -17,6 +17,7 @@ const SNIPPET_AFTER_CHARS: usize = 50;
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SearchHit {
     pub page_index: usize,
+    pub page_label: String,
     pub match_start: usize,
     pub match_end: usize,
     pub snippet: String,
@@ -96,8 +97,11 @@ pub(crate) fn search_session(
     case_sensitive: bool,
 ) -> Result<SearchResponse, String> {
     let page_count = session.info().page_count;
+    let labels = session
+        .page_labels()
+        .map_err(|error| format!("PDF页标签无法安全读取：{error}"))?;
     let reader = session.text_reader().map_err(|error| error.to_string())?;
-    search_with_loader(page_count, query, case_sensitive, |page| {
+    search_with_labels(page_count, query, case_sensitive, &labels, |page| {
         reader.text(page).map_err(|error| error.to_string())
     })
 }
@@ -110,10 +114,30 @@ fn bounded_prefix(text: &str, remaining_bytes: usize) -> (&str, bool) {
     (&text[..end], end < text.len())
 }
 
+#[cfg(test)]
 fn search_with_loader<F>(
     page_count: usize,
     query: &str,
     case_sensitive: bool,
+    load_page: F,
+) -> Result<SearchResponse, String>
+where
+    F: FnMut(usize) -> Result<String, String>,
+{
+    if page_count == 0 || page_count > MAX_PAGES {
+        return Err("文档页数超出搜索范围。".into());
+    }
+    let labels = (1..=page_count)
+        .map(|page| page.to_string())
+        .collect::<Vec<_>>();
+    search_with_labels(page_count, query, case_sensitive, &labels, load_page)
+}
+
+fn search_with_labels<F>(
+    page_count: usize,
+    query: &str,
+    case_sensitive: bool,
+    labels: &[String],
     mut load_page: F,
 ) -> Result<SearchResponse, String>
 where
@@ -132,6 +156,9 @@ where
     if page_count == 0 || page_count > MAX_PAGES {
         return Err(format!("文档页数超出搜索范围（1–{MAX_PAGES} 页）。"));
     }
+    if labels.len() != page_count {
+        return Err("页标签与当前文档页数不一致。".into());
+    }
     let needle = if case_sensitive {
         query.to_owned()
     } else {
@@ -149,7 +176,7 @@ where
     let mut processed_text_bytes = 0usize;
     let mut snippet_bytes = 0usize;
 
-    for page_index in 0..page_count {
+    for (page_index, page_label) in labels.iter().enumerate() {
         if processed_text_bytes >= MAX_TOTAL_TEXT_BYTES {
             response.truncated = true;
             break;
@@ -199,13 +226,16 @@ where
                     }
                 })
                 .collect();
-            if snippet_bytes.saturating_add(snippet.len()) > MAX_TOTAL_SNIPPET_BYTES {
+            // Repeated long labels are part of the response budget, not free metadata.
+            let result_bytes = snippet.len().saturating_add(page_label.len());
+            if snippet_bytes.saturating_add(result_bytes) > MAX_TOTAL_SNIPPET_BYTES {
                 response.truncated = true;
                 return Ok(response);
             }
-            snippet_bytes += snippet.len();
+            snippet_bytes += result_bytes;
             response.hits.push(SearchHit {
                 page_index,
+                page_label: page_label.clone(),
                 match_start,
                 match_end,
                 snippet,
@@ -236,6 +266,76 @@ fn search_text_pages<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labelled_session(style: &str, prefix: &str, text: &str) -> Session {
+        let mut session = Session::blank(200., 200., 2).unwrap();
+        for page in 0..2 {
+            session
+                .apply(pdfmaster_core::Edit::AddText {
+                    page,
+                    bounds: pdfmaster_core::Rect {
+                        x: 10.,
+                        y: 30.,
+                        width: 160.,
+                        height: 40.,
+                    },
+                    text: text.into(),
+                    font_size: 12.,
+                    color: pdfmaster_core::Color {
+                        r: 0.,
+                        g: 0.,
+                        b: 0.,
+                    },
+                })
+                .unwrap();
+        }
+        let mut document = lopdf::Document::load_mem(&session.bytes().unwrap()).unwrap();
+        document.catalog_mut().unwrap().set("PageLabels",lopdf::dictionary!{"Nums"=>vec![0.into(),lopdf::dictionary!{"S"=>style,"P"=>lopdf::text_string(prefix)}.into()]});
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        Session::open(&bytes).unwrap()
+    }
+
+    #[test]
+    fn actual_session_search_serializes_real_labels_without_changing_document() {
+        let session = labelled_session("r", "前言-", "needle needle");
+        let before = session.bytes().unwrap();
+        let info = session.info();
+        let result = search_session(&session, "needle", true).unwrap();
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["hits"][0]["page_label"], "前言-i");
+        assert_eq!(value["hits"][2]["page_label"], "前言-ii");
+        assert_eq!(result.hits.len(), 4);
+        assert_eq!(session.bytes().unwrap(), before);
+        assert_eq!(session.info(), info);
+    }
+
+    #[test]
+    fn malformed_label_metadata_is_an_explicit_search_failure_not_a_numeric_label() {
+        let session = labelled_session("unsupported", "prefix-", "needle needle");
+        assert!(
+            search_session(&session, "needle", true)
+                .unwrap_err()
+                .contains("page label")
+        );
+    }
+
+    #[test]
+    fn repeated_long_labels_share_the_search_result_byte_budget_with_snippets() {
+        let session = labelled_session("D", &"x".repeat(8190), &"needle ".repeat(40));
+        let response = search_session(&session, "needle", true).unwrap();
+        assert!(response.truncated);
+        assert!(response.hits.len() < 80);
+        assert!(!response.hits.is_empty());
+        let value = serde_json::to_value(&response).unwrap();
+        let total = value["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["page_label"].as_str().unwrap().len() + h["snippet"].as_str().unwrap().len())
+            .sum::<usize>();
+        assert!(total <= MAX_TOTAL_SNIPPET_BYTES);
+    }
 
     #[test]
     fn chinese_match_positions_and_snippet_offsets_are_character_based() {

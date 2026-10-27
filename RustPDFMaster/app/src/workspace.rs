@@ -155,9 +155,10 @@ struct NoteDraft {
     original: TextNote,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
 struct SearchHit {
     page_index: usize,
+    page_label: String,
     match_start: usize,
     match_end: usize,
     snippet: String,

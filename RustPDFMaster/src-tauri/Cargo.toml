@@ -36,3 +36,6 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [workspace]
+
+[dev-dependencies]
+lopdf = { version = "=0.46.0", default-features = false }

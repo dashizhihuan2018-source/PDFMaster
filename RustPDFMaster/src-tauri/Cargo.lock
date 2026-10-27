@@ -2625,6 +2625,7 @@ version = "2.0.0-dev.1"
 dependencies = [
  "base64 0.22.1",
  "block2",
+ "lopdf",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

@@ -4,6 +4,14 @@
 
 当前 Rust 候选 **未通过 UI 对等验收**。自动测试、同名按钮、CSS 数值和编译通过均不是视觉或交互一致的证明。
 
+## 2026-10-27 搜索页标签增量（未验收，覆盖下文旧标签缺口）
+
+只读核对当前ReaderSession.swift SHA-256 `9778565ceccbc8cf6565604f9485cedae2cc4300c2a405908ca046ca46b56356` 与ReaderNavigation.swift `8c4af22fe4471e97143fbd4d6ea080949e037bdce67e1f6f98cd09f516509a6e`。搜索行恢复“第N页 [PDF页标签]＋换行片段”，保留原54px/12px双行与既有导航/代际/超时守卫。无PageLabels时回退物理页号，实际空标签不伪造数字；完整命中作为列表key，标签/片段变化时不复用旧文本。
+
+核心只读实现依据[PDF32000-1 §§7.9.7/12.4.2](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf)，支持分段编号/Unicode前缀、十进制、大小写罗马及PDF重复字母（不是电子表格列名）、无S的纯前缀。树/引用深度、节点/范围、原始及解码前缀、单标签与累计展开均有边界；严格拒绝损坏UTF-16/UTF-8和未定义PDFDocEncoding字节，不沿用依赖的静默缩短行为。重复标签计入搜索响应预算，原件/会话状态不因读取改变。
+
+这是只读显示，不是标签编辑或跨页面操作的元数据保真：现有结构编辑尚不迁移PageLabels，删页可留下越界范围并使搜索明确失败，提取会丢失标签；已用回归记录该缺口，仍需后续完整迁移。字形坐标/文字选择与页面高亮、精确原生控件及三端真实视觉验收仍未闭合；本聊天未操作本机Apple专用版或旧未保存Rust QA。
+
 ## 2026-10-27 批注矩形导航增量（未验收）
 
 再次只读回读原版ReaderNavigation.swift，当前SHA-256 `8c4af22fe4471e97143fbd4d6ea080949e037bdce67e1f6f98cd09f516509a6e`（较早记录e9f7703b已变化，未沿用旧哈希）。navigateToAnnotationRow仍先go(page)，再对finite正矩形go(bounds.insetBy -12,on:page)。Rust保留原行选择/稳定列表焦点，按当前页面四分之一旋转映射12pt扩边区域，使用实际CSS图片与reader边框/滚动位置进行最小双轴揭示；不新增选区overlay、不改zoom、不滚动app或侧栏。缺失/无效/全页外bounds只跳页，部分页外区域裁至可见页面。

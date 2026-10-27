@@ -1,3 +1,12 @@
+pub fn search_result_label(page_index: usize, page_label: &str, snippet: &str) -> String {
+    format!(
+        "第{}页 [{}]\n{}",
+        page_index.saturating_add(1),
+        page_label,
+        snippet
+    )
+}
+
 pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
     if count == 0 {
         return 0;

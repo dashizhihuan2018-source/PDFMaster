@@ -380,15 +380,15 @@ fn SearchSidebar(model: Model) -> impl IntoView {
                 None=>m.search_status.get(),
             })}</p>
             <div class="search-results sidebar-search-results" id="search-results" aria-label="大纲或搜索结果列表">
-                <For each=move||m.search_result.with(|r|r.as_ref().map(|r|r.hits.clone().into_iter().enumerate().collect::<Vec<_>>()).unwrap_or_default()) key=|(index,hit)|(*index,hit.page_index,hit.match_start) children=move|(index,hit)|{
-                    let label=format!("第{}页\n{}",hit.page_index+1,hit.snippet);
+                <For each=move||m.search_result.with(|r|r.as_ref().map(|r|r.hits.clone().into_iter().enumerate().collect::<Vec<_>>()).unwrap_or_default()) key=|(index,hit)|(*index,hit.clone()) children=move|(index,hit)|{
+                    let label=pdfmaster_ui::search_result_label(hit.page_index,&hit.page_label,&hit.snippet);
                     let detail=format!("{}；字符 {}–{} · 片段内 {}–{}",label,hit.match_start,hit.match_end,hit.snippet_match_start,hit.snippet_match_end);
                     view!{<button class="sidebar-search-row search-hit" id=format!("search-hit-{index}") class:selected=move||m.search_selection.get()==Some(index) aria-current=move||if m.search_selection.get()==Some(index){"true"}else{"false"} title=detail disabled=move||m.blocked() on:click=move|_|m.select_search_hit(index)><span>{label}</span></button>}
                 }/>
             </div>
             <details class="sidebar-search-options"><summary>"搜索说明与选项"</summary>
                 <label class="search-case"><input type="checkbox" disabled=move||m.search_input_blocked() prop:checked=move||m.search_case_sensitive.get() on:change=move|e|{m.search_case_sensitive.set(event_target_checked(&e));m.queue_live_search();}/><span>"区分大小写"</span></label>
-                <p>"搜索当前文档；结果暂不含PDF页标签或页面高亮。"</p>
+                <p>"搜索当前文档并显示PDF页标签；结果暂不提供页面高亮。"</p>
                 {move||m.search_result.with(|r|r.as_ref().map(|r|view!{<p>{format!("已扫描 {} 页 · {} 页含文字；{}",r.pages_scanned,r.searchable_pages,r.limitation)}</p>}))}
             </details>
         </section>

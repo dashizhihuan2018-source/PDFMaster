@@ -9,6 +9,7 @@ mod insert;
 mod lines;
 mod notes;
 mod outline;
+mod page_labels;
 mod ranges;
 mod render;
 mod shapes;
