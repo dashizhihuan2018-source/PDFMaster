@@ -1,40 +1,92 @@
 use super::*;
 use std::path::PathBuf;
+const FILE_BYTES: usize = 32 * 1024 * 1024;
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+fn file_error() -> String {
+    "仅接受普通本地文件，每份32MiB、整批64MiB；拒绝链接/文件夹或改变的文件。整批未导入。".to_owned()
+}
+fn cancellation_error() -> String {
+    "图片导入已取消；整批未导入。".to_owned()
+}
+fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Reply<()> {
+    if cancelled() {
+        Err(cancellation_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 pub(super) fn read_images(
     paths: &[PathBuf],
     layout: pdfmaster_core::ImageImportLayout,
 ) -> Reply<Vec<Vec<u8>>> {
-    read_with_layout(paths, Some(layout))
+    read_images_cancellable(paths, layout, || false)
+}
+pub(super) fn read_images_cancellable(
+    paths: &[PathBuf],
+    layout: pdfmaster_core::ImageImportLayout,
+    cancelled: impl Fn() -> bool,
+) -> Reply<Vec<Vec<u8>>> {
+    read_with_layout(paths, Some(layout), &cancelled)
 }
 pub(super) fn read(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
-    read_with_layout(paths, None)
+    read_with_layout(paths, None, &|| false)
+}
+fn read_file_cancellable(reader: &mut impl Read, cancelled: &dyn Fn() -> bool) -> Reply<Vec<u8>> {
+    check_cancelled(cancelled)?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0; READ_CHUNK_BYTES];
+    loop {
+        check_cancelled(cancelled)?;
+        let remaining = (FILE_BYTES + 1).saturating_sub(bytes.len());
+        if remaining == 0 {
+            break;
+        }
+        let read = match reader.read(&mut chunk[..remaining.min(READ_CHUNK_BYTES)]) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                check_cancelled(cancelled)?;
+                continue;
+            }
+            Err(_) => return Err(file_error()),
+        };
+        check_cancelled(cancelled)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    Ok(bytes)
 }
 fn read_with_layout(
     paths: &[PathBuf],
     layout: Option<pdfmaster_core::ImageImportLayout>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Reply<Vec<Vec<u8>>> {
-    let error = || {
-        "仅接受普通本地文件，每份32MiB、整批64MiB；拒绝链接/文件夹或改变的文件。整批未导入。"
-            .to_owned()
-    };
+    check_cancelled(cancelled)?;
     if paths.is_empty() || paths.len() > pdfmaster_core::MAX_INSERT_FILES {
-        return Err(error());
+        return Err(file_error());
     }
     let mut declared = 0u64;
     for path in paths {
-        let m = std::fs::symlink_metadata(path).map_err(|_| error())?;
-        if !m.is_file() || m.len() == 0 || m.len() > 32 * 1024 * 1024 {
-            return Err(error());
+        check_cancelled(cancelled)?;
+        let m = std::fs::symlink_metadata(path).map_err(|_| file_error())?;
+        check_cancelled(cancelled)?;
+        if !m.is_file() || m.len() == 0 || m.len() > FILE_BYTES as u64 {
+            return Err(file_error());
         }
-        declared = declared.checked_add(m.len()).ok_or_else(error)?;
+        declared = declared.checked_add(m.len()).ok_or_else(file_error)?;
         if declared > pdfmaster_core::MAX_INSERT_BYTES as u64 {
-            return Err(error());
+            return Err(file_error());
         }
     }
     let mut owned = vec![];
     let mut names = vec![];
     let mut actual = 0usize;
     for path in paths {
+        check_cancelled(cancelled)?;
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         #[cfg(unix)]
@@ -47,34 +99,34 @@ fn read_with_layout(
             use std::os::windows::fs::OpenOptionsExt;
             options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
         }
-        let mut file = options.open(path).map_err(|_| error())?;
-        let before = file.metadata().map_err(|_| error())?;
-        if !before.is_file() || before.len() > 32 * 1024 * 1024 {
-            return Err(error());
+        let mut file = options.open(path).map_err(|_| file_error())?;
+        check_cancelled(cancelled)?;
+        let before = file.metadata().map_err(|_| file_error())?;
+        check_cancelled(cancelled)?;
+        if !before.is_file() || before.len() > FILE_BYTES as u64 {
+            return Err(file_error());
         }
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
             if before.file_attributes() & 0x400 != 0 {
-                return Err(error());
+                return Err(file_error());
             }
         }
-        let mut bytes = vec![];
-        (&mut file)
-            .take(32 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| error())?;
-        let after = file.metadata().map_err(|_| error())?;
-        if bytes.len() > 32 * 1024 * 1024
+        let bytes = read_file_cancellable(&mut file, cancelled)?;
+        check_cancelled(cancelled)?;
+        let after = file.metadata().map_err(|_| file_error())?;
+        check_cancelled(cancelled)?;
+        if bytes.len() > FILE_BYTES
             || bytes.len() as u64 != before.len()
             || before.len() != after.len()
             || before.modified().ok() != after.modified().ok()
         {
-            return Err(error());
+            return Err(file_error());
         }
-        actual = actual.checked_add(bytes.len()).ok_or_else(error)?;
+        actual = actual.checked_add(bytes.len()).ok_or_else(file_error)?;
         if actual > pdfmaster_core::MAX_INSERT_BYTES {
-            return Err(error());
+            return Err(file_error());
         }
         names.push(
             path.file_name()
@@ -90,14 +142,191 @@ fn read_with_layout(
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
         .collect();
     let converted = match layout {
-        Some(layout) => pdfmaster_core::prepare_image_imports(&refs, layout),
+        Some(layout) => pdfmaster_core::prepare_image_imports_cancellable(&refs, layout, cancelled),
         None => pdfmaster_core::prepare_imports(&refs),
     };
-    converted.map_err(|e|format!("整批未导入，原文件未修改：{e}。当前支持PDF、PNG/JPEG/BMP、静态GIF及受支持的多页TIFF；HEIC/文字/Office及更广图片色彩模型仍待迁移。"))
+    match converted {
+        Err(pdfmaster_core::PdfMasterError::Cancelled) => Err(cancellation_error()),
+        Err(error) => Err(format!(
+            "整批未导入，原文件未修改：{error}。当前支持PDF、PNG/JPEG/BMP、静态GIF及受支持的多页TIFF；HEIC/文字/Office及更广图片色彩模型仍待迁移。"
+        )),
+        Ok(converted) => Ok(converted),
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct CountingReader {
+        bytes: Vec<u8>,
+        offset: usize,
+        reads: Rc<Cell<usize>>,
+        largest_request: Rc<Cell<usize>>,
+    }
+    impl Read for CountingReader {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            self.largest_request
+                .set(self.largest_request.get().max(output.len()));
+            let count = output.len().min(self.bytes.len() - self.offset);
+            output[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+
+    struct InterruptingReader {
+        bytes: Vec<u8>,
+        offset: usize,
+        interruptions_left: usize,
+        reads: Rc<Cell<usize>>,
+        interruptions: Rc<Cell<usize>>,
+    }
+    impl Read for InterruptingReader {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            if self.interruptions_left > 0 {
+                self.interruptions_left -= 1;
+                self.interruptions.set(self.interruptions.get() + 1);
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            let count = output.len().min(self.bytes.len() - self.offset);
+            output[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+
+    struct ErrorReader {
+        reads: Rc<Cell<usize>>,
+    }
+    impl Read for ErrorReader {
+        fn read(&mut self, _output: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        }
+    }
+
+    #[test]
+    fn pre_cancelled_regular_image_has_no_output_and_controlled_reader_is_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("own.png");
+        let source = Session::blank(80., 40., 1)
+            .unwrap()
+            .page_clipboard(&[0])
+            .unwrap()
+            .png;
+        std::fs::write(&path, &source).unwrap();
+
+        let error = read_images_cancellable(
+            std::slice::from_ref(&path),
+            pdfmaster_core::ImageImportLayout::default(),
+            || true,
+        )
+        .unwrap_err();
+        assert!(error.contains("取消") && !error.contains("own.png"));
+        assert_eq!(std::fs::read(path).unwrap(), source);
+
+        let reads = Rc::new(Cell::new(0));
+        let largest_request = Rc::new(Cell::new(0));
+        let mut reader = CountingReader {
+            bytes: vec![7; 3 * 64 * 1024],
+            offset: 0,
+            reads: reads.clone(),
+            largest_request,
+        };
+        assert!(read_file_cancellable(&mut reader, &|| true).is_err());
+        assert_eq!(reads.get(), 0, "pre-cancellation must happen before Read");
+    }
+
+    #[test]
+    fn controlled_reader_stops_after_the_first_bounded_chunk() {
+        let reads = Rc::new(Cell::new(0));
+        let largest_request = Rc::new(Cell::new(0));
+        let mut reader = CountingReader {
+            bytes: vec![11; 3 * 64 * 1024],
+            offset: 0,
+            reads: reads.clone(),
+            largest_request: largest_request.clone(),
+        };
+
+        let error = read_file_cancellable(&mut reader, &|| reads.get() >= 1).unwrap_err();
+
+        assert!(error.contains("取消"));
+        assert_eq!(
+            reads.get(),
+            1,
+            "no later chunk may be read after cancellation"
+        );
+        assert!(largest_request.get() <= 64 * 1024);
+        assert_eq!(reader.offset, 64 * 1024);
+    }
+
+    #[test]
+    fn controlled_reader_retries_one_or_multiple_interruptions() {
+        for interruption_count in [1, 3] {
+            let reads = Rc::new(Cell::new(0));
+            let interruptions = Rc::new(Cell::new(0));
+            let payload = vec![3, 1, 4, 1, 5];
+            let mut reader = InterruptingReader {
+                bytes: payload.clone(),
+                offset: 0,
+                interruptions_left: interruption_count,
+                reads,
+                interruptions: interruptions.clone(),
+            };
+
+            let output = read_file_cancellable(&mut reader, &|| false).unwrap();
+
+            assert_eq!(output, payload);
+            assert_eq!(interruptions.get(), interruption_count);
+        }
+    }
+
+    #[test]
+    fn cancellation_after_interrupted_read_prevents_another_read_attempt() {
+        let reads = Rc::new(Cell::new(0));
+        let interruptions = Rc::new(Cell::new(0));
+        let mut reader = InterruptingReader {
+            bytes: vec![9, 2, 6],
+            offset: 0,
+            interruptions_left: 1,
+            reads: reads.clone(),
+            interruptions: interruptions.clone(),
+        };
+
+        let result = read_file_cancellable(&mut reader, &|| interruptions.get() > 0);
+        let error = match result {
+            Err(error) => error,
+            Ok(bytes) => panic!("expected cancellation, got {} bytes", bytes.len()),
+        };
+
+        assert!(error.contains("取消"));
+        assert_eq!(
+            reads.get(),
+            1,
+            "Interrupted must not be retried after cancellation"
+        );
+    }
+
+    #[test]
+    fn non_interrupted_read_errors_remain_terminal() {
+        let reads = Rc::new(Cell::new(0));
+        let mut reader = ErrorReader {
+            reads: reads.clone(),
+        };
+
+        let result = read_file_cancellable(&mut reader, &|| false);
+        let error = match result {
+            Err(error) => error,
+            Ok(bytes) => panic!("expected read failure, got {} bytes", bytes.len()),
+        };
+
+        assert!(error.contains("整批未导入"));
+        assert_eq!(reads.get(), 1);
+    }
+
     #[test]
     fn native_mixed_batch_uses_owned_bytes_in_order_without_writing_sources() {
         let dir = tempfile::tempdir().unwrap();

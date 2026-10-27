@@ -1,5 +1,11 @@
 use super::*;
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 #[derive(Default)]
 pub(super) struct ImportState {
     next: u32,
@@ -8,7 +14,11 @@ pub(super) struct ImportState {
 struct Pending {
     id: u32,
     paths: Option<Vec<PathBuf>>,
-    running: Option<u32>,
+    running: Option<Running>,
+}
+struct Running {
+    reservation: u32,
+    cancelled: Arc<AtomicBool>,
 }
 impl Workspace {
     fn start_image_picker(&mut self) -> Reply<u32> {
@@ -87,8 +97,18 @@ impl Workspace {
         {
             return false;
         }
-        if let Some(r) = self.image_import.pending.take().and_then(|p| p.running) {
-            self.release_export(r);
+        let reservation = self
+            .image_import
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.running.as_ref())
+            .map(|running| {
+                running.cancelled.store(true, Ordering::Release);
+                running.reservation
+            });
+        self.image_import.pending = None;
+        if let Some(reservation) = reservation {
+            self.release_export(reservation);
         }
         true
     }
@@ -97,7 +117,7 @@ impl Workspace {
         id: u32,
         order: &[usize],
         layout: pdfmaster_core::ImageImportLayout,
-    ) -> Reply<(u32, Vec<PathBuf>, String)> {
+    ) -> Reply<(u32, Vec<PathBuf>, String, Arc<AtomicBool>)> {
         self.ensure_editor_idle()?;
         layout.validate().map_err(|e| e.to_string())?;
         if self.recovery_fault && self.session.is_none() {
@@ -138,12 +158,16 @@ impl Workspace {
             .ok_or("图片任务编号已耗尽。")?;
         self.next_export_id = r;
         self.export_reservation = Some(r);
+        let cancelled = Arc::new(AtomicBool::new(false));
         self.image_import
             .pending
             .as_mut()
             .ok_or("图片会话失效。")?
-            .running = Some(r);
-        Ok((r, selected, name))
+            .running = Some(Running {
+            reservation: r,
+            cancelled: cancelled.clone(),
+        });
+        Ok((r, selected, name, cancelled))
     }
     fn finish_image_conversion(
         &mut self,
@@ -153,11 +177,12 @@ impl Workspace {
         files: &[&[u8]],
     ) -> Reply<DocumentView> {
         if self.export_reservation != Some(r)
-            || self
-                .image_import
-                .pending
-                .as_ref()
-                .is_none_or(|p| p.id != id || p.running != Some(r))
+            || self.image_import.pending.as_ref().is_none_or(|p| {
+                p.id != id
+                    || p.running
+                        .as_ref()
+                        .is_none_or(|running| running.reservation != r)
+            })
         {
             return Err("图片导入已取消或会话改变，未创建文档。".into());
         }
@@ -169,13 +194,15 @@ impl Workspace {
     }
 }
 pub(super) fn released(w: &mut Workspace, r: u32) {
-    if let Some(p) = w
-        .image_import
-        .pending
-        .as_mut()
-        .filter(|p| p.running == Some(r))
+    let Some(p) = w.image_import.pending.as_mut() else {
+        return;
+    };
+    if p.running
+        .as_ref()
+        .is_some_and(|running| running.reservation == r)
     {
-        p.running = None;
+        let running = p.running.take().expect("matching image worker");
+        running.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -260,7 +287,7 @@ pub(super) async fn convert_image_import(
     layout: pdfmaster_core::ImageImportLayout,
     state: State<'_, Store>,
 ) -> Reply<DocumentView> {
-    let (reservation, paths, name) = state
+    let (reservation, paths, name, cancel) = state
         .lock()
         .map_err(|_| "文档状态不可用")?
         .begin_image_conversion(id, &order, layout)?;
@@ -268,8 +295,13 @@ pub(super) async fn convert_image_import(
         store: state.inner(),
         id: reservation,
     };
+    let worker_cancel = cancel.clone();
     let files = tauri::async_runtime::spawn_blocking(move || {
-        file_drop::with_read_slot(|| file_import::read_images(&paths, layout))
+        file_drop::with_read_slot(|| {
+            file_import::read_images_cancellable(&paths, layout, || {
+                worker_cancel.load(Ordering::Acquire)
+            })
+        })
     })
     .await
     .map_err(|_| "图片转换任务失败；未创建文档。")??;
@@ -299,7 +331,7 @@ mod tests {
         w.accept_image_selection(id, paths).unwrap();
         let layout =
             serde_json::from_str(r#"{"paper":"source","landscape":false,"margin":0}"#).unwrap();
-        let (r, ordered, name) = w.begin_image_conversion(id, &[0, 1], layout).unwrap();
+        let (r, ordered, name, _) = w.begin_image_conversion(id, &[0, 1], layout).unwrap();
         let converted = file_import::read_images(&ordered, layout).unwrap();
         let refs: Vec<_> = converted.iter().map(Vec::as_slice).collect();
         let reply = w.finish_image_conversion(id, r, name, &refs).unwrap();
@@ -322,7 +354,7 @@ mod tests {
         let id = w.start_image_picker().unwrap();
         w.accept_image_selection(id, paths).unwrap();
         let layout = pdfmaster_core::ImageImportLayout::default();
-        let (r, _, name) = w.begin_image_conversion(id, &[0], layout).unwrap();
+        let (r, _, name, _) = w.begin_image_conversion(id, &[0], layout).unwrap();
         let pdf = Session::blank(100., 100., 1).unwrap().bytes().unwrap();
         w.next_document_id = u32::MAX;
         assert!(w.finish_image_conversion(id, r, name, &[&pdf]).is_err());
@@ -376,7 +408,7 @@ mod tests {
             landscape: false,
             margin: 0.,
         };
-        let (r, ordered, name) = w.begin_image_conversion(id, &[1, 0], layout).unwrap();
+        let (r, ordered, name, _) = w.begin_image_conversion(id, &[1, 0], layout).unwrap();
         assert_eq!(ordered, [paths[1].clone(), paths[0].clone()]);
         assert!(w.ensure_editor_idle().is_err());
         let converted = file_import::read_images(&ordered, layout).unwrap();
@@ -394,18 +426,26 @@ mod tests {
         let id = w.start_image_picker().unwrap();
         w.accept_image_selection(id, paths.clone()).unwrap();
         let layout = pdfmaster_core::ImageImportLayout::default();
-        let (r, _, name) = w.begin_image_conversion(id, &[0], layout).unwrap();
+        let (r, _, name, old_cancel) = w.begin_image_conversion(id, &[0], layout).unwrap();
+        assert!(!old_cancel.load(std::sync::atomic::Ordering::Acquire));
         let pdf = Session::blank(100., 100., 1).unwrap().bytes().unwrap();
         assert!(w.cancel_image_tool(id));
+        assert!(old_cancel.load(std::sync::atomic::Ordering::Acquire));
         assert!(w.finish_image_conversion(id, r, name, &[&pdf]).is_err());
         assert!(w.session.is_none());
         let next = w.start_image_picker().unwrap();
         w.accept_image_selection(next, paths).unwrap();
-        let (new, _, _) = w.begin_image_conversion(next, &[1], layout).unwrap();
+        let (new, _, _, new_cancel) = w.begin_image_conversion(next, &[1], layout).unwrap();
+        assert!(!new_cancel.load(std::sync::atomic::Ordering::Acquire));
         assert!(!w.cancel_image_tool(id));
         w.release_export(r);
         assert_eq!(w.export_reservation, Some(new));
-        assert!(w.cancel_image_tool(next));
+        assert!(
+            !new_cancel.load(std::sync::atomic::Ordering::Acquire),
+            "stale cancel/release must not invalidate the new worker token"
+        );
+        w.release_export(new);
+        assert!(new_cancel.load(std::sync::atomic::Ordering::Acquire));
         assert!(w.ensure_editor_idle().is_ok());
     }
     #[test]
@@ -434,7 +474,7 @@ mod tests {
             .is_err()
         );
         assert!(w.export_reservation.is_none());
-        let (r, _, name) = w.begin_image_conversion(id, &[0], layout).unwrap();
+        let (r, _, name, _) = w.begin_image_conversion(id, &[0], layout).unwrap();
         assert!(w.finish_image_conversion(id, r, name, &[b"bad"]).is_err());
         w.release_export(r);
         assert!(

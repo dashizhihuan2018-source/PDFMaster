@@ -87,6 +87,14 @@ pub fn prepare_image_imports(
     files: &[(&str, &[u8])],
     layout: ImageImportLayout,
 ) -> Result<Vec<Vec<u8>>> {
+    prepare_image_imports_cancellable(files, layout, || false)
+}
+pub fn prepare_image_imports_cancellable(
+    files: &[(&str, &[u8])],
+    layout: ImageImportLayout,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<Vec<u8>>> {
+    check_cancelled(&cancelled)?;
     if files.iter().any(|(name, _)| {
         !matches!(
             name.rsplit('.')
@@ -99,7 +107,15 @@ pub fn prepare_image_imports(
     }) {
         return Err(invalid());
     }
-    prepare_with_layout(files, layout)
+    check_cancelled(&cancelled)?;
+    prepare_with_layout(files, layout, &cancelled)
+}
+fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Result<()> {
+    if cancelled() {
+        Err(PdfMasterError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 enum Plan {
     Pdf,
@@ -303,9 +319,14 @@ fn tiff_dpi(d: &mut tiff::decoder::Decoder<Cursor<&[u8]>>) -> Result<Option<f64>
 /// Preflights the whole batch before any pixel decoding or output publication.
 /// Limits supplement decoder-specific limits, not a promise of total heap use.
 pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
-    prepare_with_layout(files, ImageImportLayout::default())
+    prepare_with_layout(files, ImageImportLayout::default(), &|| false)
 }
-fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Result<Vec<Vec<u8>>> {
+fn prepare_with_layout(
+    files: &[(&str, &[u8])],
+    layout: ImageImportLayout,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<Vec<u8>>> {
+    check_cancelled(cancelled)?;
     layout.validate()?;
     if files.is_empty() || files.len() > crate::MAX_INSERT_FILES {
         return Err(PdfMasterError::Budget("import file count"));
@@ -316,6 +337,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
     let mut pages = 0usize;
     let mut plans = vec![];
     for (name, bytes) in files {
+        check_cancelled(cancelled)?;
         bytes_total = bytes_total
             .checked_add(bytes.len())
             .ok_or(PdfMasterError::Budget("import input bytes"))?;
@@ -347,6 +369,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                 let mut d = tiff_decoder(bytes)?;
                 count = 0;
                 loop {
+                    check_cancelled(cancelled)?;
                     let (w, h, channels, orientation, _) = tiff_properties(&mut d)?;
                     colors.push(tiff_color(&mut d, channels <= 2, &mut color_bytes)?);
                     let dpi = if layout.paper == ImagePaper::Source {
@@ -362,6 +385,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                     if count + pages > MAX_PAGES {
                         return Err(PdfMasterError::Budget("import pages"));
                     }
+                    check_cancelled(cancelled)?;
                     if layout.paper == ImagePaper::Source || !d.more_images() {
                         break;
                     }
@@ -406,16 +430,25 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
         if pages > MAX_PAGES {
             return Err(PdfMasterError::Budget("import pages"));
         }
+        check_cancelled(cancelled)?;
     }
     let mut output = vec![];
     let mut output_bytes = 0usize;
     for ((_, bytes), plan) in files.iter().zip(plans) {
+        check_cancelled(cancelled)?;
         let converted = match plan {
             Plan::Pdf => bytes.to_vec(),
-            Plan::Image(format, colors, orientation, densities) => {
-                image_pdf(bytes, format, colors, orientation, densities, layout)?
-            }
+            Plan::Image(format, colors, orientation, densities) => image_pdf(
+                bytes,
+                format,
+                colors,
+                orientation,
+                densities,
+                layout,
+                cancelled,
+            )?,
         };
+        check_cancelled(cancelled)?;
         output_bytes = output_bytes
             .checked_add(converted.len())
             .ok_or(PdfMasterError::Budget("import output bytes"))?;
@@ -424,6 +457,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
         }
         output.push(converted);
     }
+    check_cancelled(cancelled)?;
     Ok(output)
 }
 fn oriented_size(w: u32, h: u32, orientation: Orientation) -> (u32, u32) {
@@ -442,7 +476,9 @@ fn image_pdf(
     orientation: Option<Orientation>,
     densities: Vec<Option<f64>>,
     layout: ImageImportLayout,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>> {
+    check_cancelled(cancelled)?;
     let count = colors.len();
     let mut session = Session::blank(595.276, 841.89, count)?;
     let ids = crate::document::page_object_ids(&session.document)?;
@@ -452,6 +488,7 @@ fn image_pdf(
         None
     };
     for (index, page) in ids.into_iter().enumerate() {
+        check_cancelled(cancelled)?;
         let image = if let Some(d) = &mut tiff {
             let (w, h, channels, orientation, associated) = tiff_properties(d)?;
             let raw = match d.read_image().map_err(|_| invalid())? {
@@ -461,6 +498,7 @@ fn image_pdf(
                 tiff::decoder::DecodingResult::U16(raw) => raw,
                 _ => return Err(invalid()),
             };
+            check_cancelled(cancelled)?;
             if raw.len() != w as usize * h as usize * channels {
                 return Err(invalid());
             }
@@ -489,6 +527,7 @@ fn image_pdf(
                 image::ImageBuffer::from_raw(w, h, rgba).ok_or_else(invalid)?,
             );
             image.apply_orientation(orientation);
+            check_cancelled(cancelled)?;
             if index + 1 < count {
                 d.next_image().map_err(|_| invalid())?;
             }
@@ -501,7 +540,9 @@ fn image_pdf(
                 d.orientation().map_err(|_| invalid())?
             };
             let mut image = DynamicImage::from_decoder(d).map_err(|_| invalid())?;
+            check_cancelled(cancelled)?;
             image.apply_orientation(orientation);
+            check_cancelled(cancelled)?;
             image
         };
         let w = image.width();
@@ -519,6 +560,7 @@ fn image_pdf(
                 })
                 .collect()
         };
+        check_cancelled(cancelled)?;
         let mut stream = Stream::new(
             dictionary! {
                 "Type"=>"XObject", "Subtype"=>"Image", "Width"=>i64::from(w), "Height"=>i64::from(h),
@@ -529,6 +571,7 @@ fn image_pdf(
         stream
             .compress()
             .map_err(|e| PdfMasterError::Serialization(e.to_string()))?;
+        check_cancelled(cancelled)?;
         let image_id = session.document.add_object(stream);
         let scale = ((paper_width - 2. * margin) / f64::from(w))
             .min((paper_height - 2. * margin) / f64::from(h));
@@ -557,12 +600,17 @@ fn image_pdf(
             "Resources",
             dictionary! {"XObject"=>dictionary!{"ImportedImage"=>image_id}},
         );
+        check_cancelled(cancelled)?;
         let bytes = crate::document::serialize(&session.document)?;
+        check_cancelled(cancelled)?;
         if bytes.len() > crate::document::MAX_INPUT_BYTES {
             return Err(PdfMasterError::Budget("image PDF bytes"));
         }
     }
+    check_cancelled(cancelled)?;
     let bytes = crate::document::serialize(&session.document)?;
+    check_cancelled(cancelled)?;
     Session::open(&bytes)?;
+    check_cancelled(cancelled)?;
     Ok(bytes)
 }

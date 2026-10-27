@@ -6,8 +6,8 @@ fn read_drop_files(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
     with_read_slot(|| file_import::read(paths))
 }
 pub(super) fn with_read_slot<T>(read: impl FnOnce() -> Reply<T>) -> Reply<T> {
-    // Cancellation revokes mutation authority, not an OS read already in
-    // progress. Bound those reads independently of the document reservation.
+    // Keep the slot until the worker closure actually exits. Image import may
+    // cooperate at safe checkpoints, but cancellation never releases it early.
     let _slot = READ_SLOT
         .try_lock()
         .map_err(|_| "上一批文件读取尚在结束，请稍后重试；本次未修改文档。")?;

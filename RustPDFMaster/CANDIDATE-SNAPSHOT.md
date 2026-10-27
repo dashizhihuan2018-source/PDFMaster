@@ -1,6 +1,16 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 12723a2b (2026-10-28)
+## Current snapshot: development 4aebd33c (2026-10-28)
+
+Exactly **196 tracked Rust/workflow files** from development `4aebd33c`, plus this public-only record. The cancellation implementation is `ecdd3fd9`, compatibility fixes `b9e16058` and `ce0923af`. This is reviewed candidate source sharing, not a product release. Private history, REA evidence/expression/resources, memory, screenshots, samples and generated packages are excluded; the installed Apple-native app and native Release/tag/site are unchanged.
+
+The rejected image configuration card stays removed. Image-tool cancellation now observes a fresh per-reservation atomic token at bounded64KiB read, file/frame preflight, decode, normalization, compression and serialization boundaries, sharing the legacy conversion pipeline. Interrupted reads retain their prior retry behavior, with cancellation checked before retry and every read. Other errors remain terminal. Cancellation is transactional and cannot publish partial output; stale cancellation/release cannot affect a new token. A positive reply means publication revoked and stop requested, not that a worker already exited: individual OS/codec calls cannot be preempted, and the shared read slot remains owned until the worker closure returns. No new IPC/UI/dependency/version or relaxed safety budget was introduced.
+
+Actual RED→GREEN, independent spec/quality re-review with no remaining findings and fresh main-controlled checks passed **301 core,145 UI,137 native +8 security**, three-workspace fmt/host-Clippy,5 exact target notices,12 notice tests,19 candidate/feature-tool tests,70-feature inventory and locked release WASM. An isolated current-source Mac390px debug candidate actually cancelled three30MP owned images without creating a new tab, retained its existing two-page PDF including a visible second-page check, and reopened the native picker. Subsequent conversion retry was not completed after computer-use window routing failed; this is recorded as unverified, not a successful retry. The candidate exited normally. Existing footer feedback is not original progress-sheet UI or paired visual acceptance.
+
+Hosted [40586375161](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40586375161) is pinned to **preceding public `cc7e826802b7d763526bbd843ef0afd310ea8852`** and was still running during this export; its artifacts do not certify this newer cancellation source. Follow that exact handle without redispatch while active. Current-source hosted builds, same-process cancel/reconvert/save integration, full functionality/UI, Windows/iOS real runtime and final Rustall/public skill remain incomplete. Inventory remains0complete;801 legacy contracts remain pending. No Release/tag, website, store, signing or formal installation change is made by this snapshot.
+
+## Historical snapshot: development 12723a2b (superseded)
 
 Exactly **195 tracked Rust/workflow files** from development `12723a2bdd78bfaa98d8ea19e95d901a18ac7c19`, plus this public-only record. The reviewed PNG eXIf implementation is `62d55c8f`; private evidence, memory, original binaries/resources, screenshots, owned fixtures and generated packages are excluded. The installed Apple-native app and native Release/tag/site remain untouched.
 

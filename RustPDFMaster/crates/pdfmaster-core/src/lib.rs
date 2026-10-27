@@ -29,7 +29,10 @@ pub use document::{
 pub use image_export::{
     ExportedImage, ImageExportFormat, ImageExportLimits, ImageExportRequest, ImageExportSummary,
 };
-pub use import::{ImageImportLayout, ImagePaper, prepare_image_imports, prepare_imports};
+pub use import::{
+    ImageImportLayout, ImagePaper, prepare_image_imports, prepare_image_imports_cancellable,
+    prepare_imports,
+};
 pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};
 pub use lines::{LineEnding, LineGeometry, Point};
 pub use notes::{NoteList, TextNote};
