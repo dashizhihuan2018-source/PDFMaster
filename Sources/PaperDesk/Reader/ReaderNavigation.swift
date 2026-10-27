@@ -19,7 +19,8 @@ public struct ReaderOutlineItem {
                 let pageIndex = destination?.page.map { document.index(for: $0) }
                 let localIndex = pageIndex.flatMap { $0 == NSNotFound ? nil : $0 }
                 let childPath = path + [index]
-                result.append(.init(title: child.label ?? "未命名", depth: path.count, path: childPath,
+                let title = (child.label ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                result.append(.init(title: title.isEmpty ? "未命名" : title, depth: path.count, path: childPath,
                                     destination: localIndex == nil ? nil : destination, pageIndex: localIndex))
                 children(child, path: childPath)
             }
@@ -315,7 +316,7 @@ public struct ReaderAnnotationItem {
         annotationHeader.isHidden = mode != .annotations
         annotationEmptyView.isHidden = !isAnnotationEmptyStateVisible
         status.isHidden = mode == .annotations
-        table.rowHeight = mode == .annotations ? 44 : 54
+        table.rowHeight = mode == .outline ? 28 : (mode == .annotations ? 44 : 54)
         table.intercellSpacing = .zero
         table.setAccessibilityLabel(mode == .annotations ? "批注列表" : "大纲或搜索结果列表")
         updateAnnotationTools()
@@ -356,6 +357,8 @@ public struct ReaderAnnotationItem {
         label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = 2; label.lineBreakMode = .byTruncatingTail
         if mode == .outline, outlineRows.indices.contains(row) {
             let item = outlineRows[row]
+            label.maximumNumberOfLines = 1
+            label.toolTip = item.title
             label.stringValue = String(repeating: "  ", count: min(12, item.depth)) + item.title + (item.pageIndex.map { "   · \($0 + 1)" } ?? "")
             label.textColor = item.destination == nil ? .secondaryLabelColor : .labelColor
         } else if mode == .search, session.hits.indices.contains(row) {
@@ -364,6 +367,7 @@ public struct ReaderAnnotationItem {
         return label
     }
     public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if mode == .outline { return 28 }
         guard mode == .annotations, annotationRows.indices.contains(row) else { return 54 }
         let item = annotationRows[row]
         return item.contents.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.excerpt.isEmpty ? 44 : 60
