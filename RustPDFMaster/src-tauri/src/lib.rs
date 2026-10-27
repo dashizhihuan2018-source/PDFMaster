@@ -580,6 +580,146 @@ mod workspace_tests {
     }
 
     #[test]
+    fn unified_sidebar_delete_cannot_bypass_native_confirmation() {
+        let (mut workspace, _directory) = note_workspace();
+        let expected = workspace
+            .session
+            .as_ref()
+            .unwrap()
+            .annotations()
+            .unwrap()
+            .remove(0);
+        let bytes = workspace.session.as_ref().unwrap().bytes().unwrap();
+        let info = workspace.session.as_ref().unwrap().info();
+        assert!(
+            apply_single_edit(
+                &mut workspace,
+                Edit::DeleteAnnotation {
+                    expected: Box::new(expected)
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(workspace.session.as_ref().unwrap().bytes().unwrap(), bytes);
+        assert_eq!(workspace.session.as_ref().unwrap().info(), info);
+    }
+
+    #[test]
+    fn unified_annotation_confirmation_preflight_is_readonly_and_preserves_exact_undo() {
+        let (mut workspace, _directory) = note_workspace();
+        let expected = workspace
+            .session
+            .as_ref()
+            .unwrap()
+            .annotations()
+            .unwrap()
+            .remove(0);
+        let before = workspace.session.as_ref().unwrap().bytes().unwrap();
+        let info = workspace.session.as_ref().unwrap().info();
+        let selected = prepare_annotation_delete(&workspace, expected.clone()).unwrap();
+        assert_eq!(workspace.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert_eq!(workspace.session.as_ref().unwrap().info(), info);
+        let mut stale = expected;
+        stale.contents.push('!');
+        assert!(prepare_annotation_delete(&workspace, stale).is_err());
+        let view = apply_confirmed_annotation_delete(&mut workspace, &selected).unwrap();
+        assert!(view.info.dirty);
+        assert!(
+            workspace
+                .session
+                .as_ref()
+                .unwrap()
+                .annotations()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(apply_confirmed_annotation_delete(&mut workspace, &selected).is_err());
+        workspace.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(workspace.session.as_ref().unwrap().bytes().unwrap(), before);
+        assert!(workspace.session.as_ref().unwrap().info().can_redo);
+    }
+
+    #[test]
+    fn unified_annotation_confirmation_rejects_editor_export_mutation_and_reopen() {
+        let (mut workspace, _directory) = note_workspace();
+        let expected = workspace
+            .session
+            .as_ref()
+            .unwrap()
+            .annotations()
+            .unwrap()
+            .remove(0);
+        let selected = prepare_annotation_delete(&workspace, expected.clone()).unwrap();
+        let editor = workspace.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
+        assert!(prepare_annotation_delete(&workspace, expected.clone()).is_err());
+        assert!(apply_confirmed_annotation_delete(&mut workspace, &selected).is_err());
+        workspace.cancel_note_editor(editor.id).unwrap();
+        let (export, _, _) = workspace.begin_export().unwrap();
+        assert!(prepare_annotation_delete(&workspace, expected).is_err());
+        assert!(apply_confirmed_annotation_delete(&mut workspace, &selected).is_err());
+        workspace.release_export(export);
+        apply_single_edit(
+            &mut workspace,
+            Edit::Rotate {
+                page: 0,
+                degrees: 90,
+            },
+        )
+        .unwrap();
+        let changed = workspace.session.as_ref().unwrap().bytes().unwrap();
+        assert!(apply_confirmed_annotation_delete(&mut workspace, &selected).is_err());
+        assert_eq!(
+            workspace.session.as_ref().unwrap().bytes().unwrap(),
+            changed
+        );
+        workspace.session.as_mut().unwrap().undo().unwrap();
+        assert_eq!(
+            workspace.session.as_ref().unwrap().bytes().unwrap(),
+            selected.snapshot
+        );
+        workspace
+            .replace_document(
+                Session::open(&selected.snapshot).unwrap(),
+                "identical.pdf".into(),
+            )
+            .unwrap();
+        assert!(apply_confirmed_annotation_delete(&mut workspace, &selected).is_err());
+        assert_eq!(
+            workspace.session.as_ref().unwrap().bytes().unwrap(),
+            selected.snapshot
+        );
+    }
+
+    #[test]
+    fn unified_annotation_checkpoint_failure_retains_deleted_state_and_warns() {
+        let (mut workspace, directory) = note_workspace();
+        workspace.journal = Some(recovery::Journal::new(
+            directory.path().join("missing/draft.json"),
+        ));
+        let expected = workspace
+            .session
+            .as_ref()
+            .unwrap()
+            .annotations()
+            .unwrap()
+            .remove(0);
+        let selected = prepare_annotation_delete(&workspace, expected).unwrap();
+        let view = apply_confirmed_annotation_delete(&mut workspace, &selected).unwrap();
+        assert!(view.info.dirty);
+        assert!(view.warning.is_some());
+        assert!(workspace.has_unsaved_work());
+        assert!(
+            workspace
+                .session
+                .as_ref()
+                .unwrap()
+                .annotations()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn note_confirmation_cannot_delete_an_identical_but_reopened_document() {
         let (mut w, _directory) = note_workspace();
         let selected = prepare_note_delete(&w, 0, 0, "原便笺 🦀").unwrap();
@@ -1860,9 +2000,10 @@ fn apply_single_edit(workspace: &mut Workspace, edit: Edit) -> Reply<DocumentVie
             | Edit::DeletePage { .. }
             | Edit::DeleteNote { .. }
             | Edit::DeleteShape { .. }
+            | Edit::DeleteAnnotation { .. }
     ) {
         return Err(
-            "批量旋转、页面删除和便笺删除必须使用对应的原生确认入口。图形删除也须原生确认。".into(),
+            "批量旋转、手绘和删除必须使用各自的专用入口；页面与批注删除须原生确认。".into(),
         );
     }
     workspace
@@ -1982,6 +2123,98 @@ async fn delete_shape_document(
     }
     let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
     apply_confirmed_shape_delete(&mut workspace, &selected).map(Some)
+}
+
+struct PreparedAnnotationDelete {
+    document_epoch: u64,
+    expected: pdfmaster_core::AnnotationRow,
+    snapshot: Vec<u8>,
+}
+
+fn prepare_annotation_delete(
+    workspace: &Workspace,
+    expected: pdfmaster_core::AnnotationRow,
+) -> Reply<PreparedAnnotationDelete> {
+    workspace.ensure_editor_idle()?;
+    if expected.contents.len() > 65_536
+        || expected.subtype.len() > 128
+        || expected
+            .modified
+            .as_ref()
+            .is_some_and(|date| date.len() > 64)
+    {
+        return Err("所选批注超出预算；文档未修改。".into());
+    }
+    let snapshot = workspace
+        .session
+        .as_ref()
+        .ok_or("请先打开 PDF")?
+        .bytes()
+        .map_err(|error| error.to_string())?;
+    let mut candidate = Session::open(&snapshot).map_err(|error| error.to_string())?;
+    candidate
+        .apply(Edit::DeleteAnnotation {
+            expected: Box::new(expected.clone()),
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(PreparedAnnotationDelete {
+        document_epoch: workspace.document_epoch,
+        expected,
+        snapshot,
+    })
+}
+
+fn apply_confirmed_annotation_delete(
+    workspace: &mut Workspace,
+    selected: &PreparedAnnotationDelete,
+) -> Reply<DocumentView> {
+    workspace.ensure_editor_idle()?;
+    if workspace.document_epoch != selected.document_epoch {
+        return Err("确认期间已切换文档，请重新选择批注；文档未修改。".into());
+    }
+    let session = workspace.session.as_mut().ok_or("请先打开 PDF")?;
+    if session.bytes().map_err(|error| error.to_string())? != selected.snapshot {
+        return Err("确认期间文档已改变，请重新选择批注；文档未修改。".into());
+    }
+    session
+        .apply(Edit::DeleteAnnotation {
+            expected: Box::new(selected.expected.clone()),
+        })
+        .map_err(|error| error.to_string())?;
+    workspace.checkpoint()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn delete_annotation_document(
+    app: tauri::AppHandle,
+    expected: pdfmaster_core::AnnotationRow,
+    state: State<'_, Store>,
+) -> Reply<Option<DocumentView>> {
+    let selected = {
+        let workspace = state.lock().map_err(|_| "文档状态不可用")?;
+        prepare_annotation_delete(&workspace, expected)?
+    };
+    let preview: String = selected.expected.contents.chars().take(120).collect();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let dialog=app.dialog().message(format!("确认删除第 {} 页的选中批注（{}）？\n{}\n关联弹窗会一并移除。可通过撤销恢复；此操作不是安全擦除，保存仍需导出副本。",selected.expected.page_index+1,selected.expected.subtype,preview))
+        .title("删除选中批注？")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("删除".into(),"取消".into()));
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let dialog = dialog.parent(
+        &app.get_webview_window("main")
+            .ok_or("确认窗口不存在；文档未修改。")?,
+    );
+    dialog.show(move |confirmed| {
+        let _ = sender.send(confirmed);
+    });
+    if !receiver
+        .await
+        .map_err(|_| "系统确认窗口不可用；文档未修改。")?
+    {
+        return Ok(None);
+    }
+    let mut workspace = state.lock().map_err(|_| "文档状态不可用")?;
+    apply_confirmed_annotation_delete(&mut workspace, &selected).map(Some)
 }
 
 struct PreparedNoteDelete {
@@ -2540,7 +2773,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![open_document,new_document,document_info,render_page,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 let state=window.state::<Store>();

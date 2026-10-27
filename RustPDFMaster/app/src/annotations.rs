@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sort {
@@ -10,14 +10,22 @@ pub enum Sort {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Identity(pub (u32, u16), pub Option<(u32, u16)>, pub usize);
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Color {
     pub r: f32,
     pub g: f32,
     pub b: f32,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Bounds {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Row {
     pub page_index: usize,
     pub annotation_index: usize,
@@ -26,6 +34,7 @@ pub struct Row {
     pub subtype: String,
     pub contents: String,
     pub color: Option<Color>,
+    pub bounds: Option<Bounds>,
     pub modified: Option<String>,
     // Filled by the actual browser date parser. Floating PDF dates use the
     // local timezone at that date, not today's offset (which may have DST).

@@ -11,6 +11,9 @@ use crate::notes::{delete_note, update_note, validate_notes_page, validated_anno
 
 pub(crate) fn apply_edit(document: &mut Document, pages: &[PageInfo], edit: Edit) -> Result<()> {
     match edit {
+        Edit::DeleteAnnotation { expected } => {
+            crate::annotations::delete_annotation(document, pages, &expected)
+        }
         Edit::AddInk {
             page,
             strokes,

@@ -2,7 +2,7 @@
 use lopdf::{Dictionary, Document, Object};
 use serde::{Deserialize, Serialize};
 
-use crate::document::{Color, PdfMasterError, Rect, Result, Session, page_object_ids};
+use crate::document::{Color, PageInfo, PdfMasterError, Rect, Result, Session, page_object_ids};
 use crate::notes::{decode_contents, resolve, resolve_with_id};
 
 const MAX_PAGE_ENTRIES: usize = 4096;
@@ -77,87 +77,122 @@ pub struct AnnotationRow {
 
 impl Session {
     pub fn annotations(&self) -> Result<Vec<AnnotationRow>> {
-        let document = &self.document;
-        let mut rows = Vec::new();
-        let mut visited = 0usize;
-        let mut text_bytes = 0usize;
-        for (page_index, page_id) in page_object_ids(document)?.into_iter().enumerate() {
-            let page = document
-                .get_object(page_id)
-                .and_then(Object::as_dict)
-                .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
-            let Ok(entries) = page.get(b"Annots") else {
-                continue;
-            };
-            let entries = resolve(document, entries)?
-                .as_array()
-                .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into()))?;
-            visited = visited
-                .checked_add(entries.len())
-                .ok_or(PdfMasterError::Budget("annotation projection entries"))?;
-            if entries.len() > MAX_PAGE_ENTRIES || visited > MAX_ENTRIES {
-                return Err(PdfMasterError::Budget("annotation projection entries"));
-            }
-            for (annotation_index, value) in entries.iter().enumerate() {
-                let (value, object_id) = resolve_with_id(document, value)?;
-                let annotation = value.as_dict().map_err(|_| {
-                    PdfMasterError::Malformed("annotation must be a dictionary".into())
-                })?;
-                let subtype = annotation.get(b"Subtype").map_err(|_| {
-                    PdfMasterError::Malformed("annotation is missing Subtype".into())
-                })?;
-                let subtype = resolve(document, subtype)?.as_name().map_err(|_| {
-                    PdfMasterError::Malformed("annotation Subtype must be a name".into())
-                })?;
-                if matches!(subtype, b"Widget" | b"Link" | b"Popup") {
-                    continue;
-                }
-                if rows.len() == MAX_ROWS || subtype.len() > 128 {
-                    return Err(PdfMasterError::Budget("annotation projection rows/type"));
-                }
-                let contents = match annotation.get(b"Contents") {
-                    Err(_) => String::new(),
-                    Ok(value) => {
-                        let raw = resolve(document, value)?;
-                        if raw.as_str().is_ok_and(|s| s.len() > MAX_TEXT * 2 + 3) {
-                            return Err(PdfMasterError::Budget("annotation projection text"));
-                        }
-                        decode_contents(document, raw)?
-                    }
-                };
-                text_bytes = text_bytes
-                    .checked_add(contents.len())
-                    .ok_or(PdfMasterError::Budget("annotation projection text"))?;
-                if contents.len() > MAX_TEXT || text_bytes > MAX_TOTAL_TEXT {
-                    return Err(PdfMasterError::Budget("annotation projection text"));
-                }
-                let modified = match annotation.get(b"M") {
-                    Ok(value) => {
-                        let value = resolve(document, value)?;
-                        value
-                            .as_str()
-                            .ok()
-                            .filter(|s| s.len() <= 32)
-                            .and_then(|s| std::str::from_utf8(s).ok())
-                            .and_then(pdf_date)
-                    }
-                    Err(_) => None,
-                };
-                rows.push(AnnotationRow {
-                    page_index,
-                    annotation_index,
-                    page_id,
-                    object_id,
-                    subtype: String::from_utf8_lossy(subtype).into_owned(),
-                    contents,
-                    color: color(document, annotation)?,
-                    bounds: bounds(document, annotation)?,
-                    modified,
-                });
-            }
-        }
-        Ok(rows)
+        enumerate_annotations(&self.document)
     }
+}
+
+pub(crate) fn delete_annotation(
+    document: &mut Document,
+    pages: &[PageInfo],
+    expected: &AnnotationRow,
+) -> Result<()> {
+    // Compare the exact displayed row, including its original page and slot.
+    // Filtered Widget/Link/Popup rows can never be forged into this operation.
+    if !enumerate_annotations(document)?
+        .iter()
+        .any(|row| row == expected)
+    {
+        return Err(PdfMasterError::InvalidOperation(
+            "annotation changed since it was selected",
+        ));
+    }
+    let remaining = crate::notes::annots_without_annotation(
+        document,
+        pages,
+        expected.page_index,
+        expected.annotation_index,
+    )?;
+    // Detach only this page's membership array; preserve indirect objects,
+    // embedded payloads, appearances and other pages. Not secure erasure.
+    let array = document.add_object(remaining);
+    document
+        .get_object_mut(expected.page_id)
+        .and_then(Object::as_dict_mut)
+        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?
+        .set("Annots", array);
+    Ok(())
+}
+
+fn enumerate_annotations(document: &Document) -> Result<Vec<AnnotationRow>> {
+    let mut rows = Vec::new();
+    let mut visited = 0usize;
+    let mut text_bytes = 0usize;
+    for (page_index, page_id) in page_object_ids(document)?.into_iter().enumerate() {
+        let page = document
+            .get_object(page_id)
+            .and_then(Object::as_dict)
+            .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+        let Ok(entries) = page.get(b"Annots") else {
+            continue;
+        };
+        let entries = resolve(document, entries)?
+            .as_array()
+            .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into()))?;
+        visited = visited
+            .checked_add(entries.len())
+            .ok_or(PdfMasterError::Budget("annotation projection entries"))?;
+        if entries.len() > MAX_PAGE_ENTRIES || visited > MAX_ENTRIES {
+            return Err(PdfMasterError::Budget("annotation projection entries"));
+        }
+        for (annotation_index, value) in entries.iter().enumerate() {
+            let (value, object_id) = resolve_with_id(document, value)?;
+            let annotation = value
+                .as_dict()
+                .map_err(|_| PdfMasterError::Malformed("annotation must be a dictionary".into()))?;
+            let subtype = annotation
+                .get(b"Subtype")
+                .map_err(|_| PdfMasterError::Malformed("annotation is missing Subtype".into()))?;
+            let subtype = resolve(document, subtype)?.as_name().map_err(|_| {
+                PdfMasterError::Malformed("annotation Subtype must be a name".into())
+            })?;
+            if matches!(subtype, b"Widget" | b"Link" | b"Popup") {
+                continue;
+            }
+            if rows.len() == MAX_ROWS || subtype.len() > 128 {
+                return Err(PdfMasterError::Budget("annotation projection rows/type"));
+            }
+            let contents = match annotation.get(b"Contents") {
+                Err(_) => String::new(),
+                Ok(value) => {
+                    let raw = resolve(document, value)?;
+                    if raw.as_str().is_ok_and(|s| s.len() > MAX_TEXT * 2 + 3) {
+                        return Err(PdfMasterError::Budget("annotation projection text"));
+                    }
+                    decode_contents(document, raw)?
+                }
+            };
+            text_bytes = text_bytes
+                .checked_add(contents.len())
+                .ok_or(PdfMasterError::Budget("annotation projection text"))?;
+            if contents.len() > MAX_TEXT || text_bytes > MAX_TOTAL_TEXT {
+                return Err(PdfMasterError::Budget("annotation projection text"));
+            }
+            let modified = match annotation.get(b"M") {
+                Ok(value) => {
+                    let value = resolve(document, value)?;
+                    value
+                        .as_str()
+                        .ok()
+                        .filter(|s| s.len() <= 32)
+                        .and_then(|s| std::str::from_utf8(s).ok())
+                        .and_then(pdf_date)
+                }
+                Err(_) => None,
+            };
+            rows.push(AnnotationRow {
+                page_index,
+                annotation_index,
+                page_id,
+                object_id,
+                subtype: String::from_utf8_lossy(subtype).into_owned(),
+                contents,
+                color: color(document, annotation)?,
+                bounds: bounds(document, annotation)?,
+                modified,
+            });
+        }
+    }
+    Ok(rows)
 }
 
 fn bounds(document: &Document, annotation: &Dictionary) -> Result<Option<Rect>> {

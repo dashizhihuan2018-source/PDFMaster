@@ -215,7 +215,7 @@ fn annots_without_note(
     annots_without_annotation(document, pages, page, annotation_index)
 }
 
-/// Ownership audit shared by Text and shape lifecycle. Removing membership
+/// Ownership audit shared by the unified, Text and shape lifecycle. Removing membership
 /// remains copy-on-write; this never deletes shared indirect objects.
 pub(crate) fn annots_without_annotation(
     document: &Document,
@@ -225,7 +225,22 @@ pub(crate) fn annots_without_annotation(
 ) -> Result<Vec<Object>> {
     validate_page_index(page, pages.len())?;
     let page_id = page_object_ids(document)?[page];
-    let annots = validated_annots_for_add(document, page_id, &pages[page])?;
+    // Removal does not require the target's geometry/style to be editable.
+    // Typed update callers have already validated their own projected snapshot.
+    let page_dictionary = document
+        .get_object(page_id)
+        .and_then(Object::as_dict)
+        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+    let entries = page_dictionary
+        .get(b"Annots")
+        .map_err(|_| PdfMasterError::InvalidOperation("page has no annotations"))?;
+    let annots = resolve(document, entries)?
+        .as_array()
+        .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into()))?;
+    if annots.len() > 4096 {
+        return Err(PdfMasterError::Budget("annotation removal entries"));
+    }
+    let annots = annots.clone();
     let target = annots
         .get(annotation_index)
         .ok_or(PdfMasterError::InvalidOperation(

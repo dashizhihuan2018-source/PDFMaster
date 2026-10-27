@@ -3,6 +3,45 @@ use pdfmaster_ui::outline::ProjectionCache as Cache;
 use serde_json::json;
 
 #[test]
+fn clicking_a_row_keeps_keyboard_focus_on_a_stable_list_before_busy_disables_rows() {
+    let view = include_str!("../src/annotation_view.rs").replace("\r\n", "\n");
+    let select = view
+        .split("fn select_annotation(")
+        .nth(1)
+        .unwrap()
+        .split("fn sort_annotations(")
+        .next()
+        .unwrap();
+    let focus = select
+        .find("focus_annotation_list()")
+        .expect("focus a stable list before navigation disables the clicked row");
+    assert!(focus < select.find("self.navigate(row.page_index)").unwrap());
+    assert!(view.contains("id=\"annotation-list\" tabindex=\"0\""));
+    let helper = view
+        .split("fn focus_annotation_list()")
+        .nth(1)
+        .unwrap()
+        .split("impl Model")
+        .next()
+        .unwrap();
+    assert!(helper.contains("HtmlElement"));
+    assert!(helper.contains(".focus()"));
+}
+
+#[test]
+fn selected_sidebar_annotation_uses_original_identity_and_native_delete_confirmation() {
+    let view = include_str!("../src/annotation_view.rs").replace("\r\n", "\n");
+    assert!(view.contains("fn delete_selected_annotation("));
+    assert!(view.contains("\"delete_annotation_document\""));
+    assert!(view.contains("m.delete_selected_annotation()"));
+    assert!(view.contains("m.annotation_delete_disabled()"));
+    assert!(view.contains("on:keydown="));
+    assert!(!view.contains("统一批注删除尚未迁移"));
+    let workspace = include_str!("../src/workspace.rs");
+    assert!(workspace.contains("| \"delete_annotation_document\""));
+}
+
+#[test]
 fn delayed_copy_status_belongs_only_to_its_unchanged_document_and_message_even_during_render() {
     use pdfmaster_ui::annotations::copy_status_is_current;
     let mut cache = Cache::<Row>::default();
@@ -30,6 +69,18 @@ fn delayed_copy_status_belongs_only_to_its_unchanged_document_and_message_even_d
 
 fn row(page: usize, index: usize, kind: &str, text: &str) -> Row {
     serde_json::from_value(json!({"page_index":page,"annotation_index":index,"page_id":[page+1,0],"object_id":[index+100,0],"subtype":kind,"contents":text,"modified":null,"color":null,"bounds":null})).unwrap()
+}
+
+#[test]
+fn delete_payload_retains_all_original_projection_fields_without_browser_only_date() {
+    let value = json!({"page_index":2,"annotation_index":7,"page_id":[90,0],"object_id":[91,1],"subtype":"Stamp","contents":"中文\n🦀","modified":"2020-01-02T03:04:05Z","color":{"r":0.25,"g":0.5,"b":1.0},"bounds":{"x":10.0,"y":20.0,"width":30.0,"height":40.0}});
+    let mut selected: Row = serde_json::from_value(value.clone()).unwrap();
+    selected.modified_millis = Some(1000);
+    assert_eq!(serde_json::to_value(&selected).unwrap(), value);
+    assert_eq!(
+        serde_json::to_value(row(0, 0, "Text", "")).unwrap()["bounds"],
+        serde_json::Value::Null
+    );
 }
 
 #[test]

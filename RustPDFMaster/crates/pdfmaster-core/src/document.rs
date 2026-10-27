@@ -174,6 +174,9 @@ pub enum Edit {
         annotation_index: usize,
         expected_contents: String,
     },
+    DeleteAnnotation {
+        expected: Box<crate::annotations::AnnotationRow>,
+    },
 }
 
 #[derive(Debug)]

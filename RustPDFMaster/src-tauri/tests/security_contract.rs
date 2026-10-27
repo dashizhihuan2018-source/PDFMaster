@@ -1,6 +1,29 @@
 use serde_json::Value;
 
 #[test]
+fn unified_annotation_deletion_uses_the_native_confirmation_and_snapshot_path() {
+    let source = include_str!("../src/lib.rs");
+    assert!(source.contains("async fn delete_annotation_document("));
+    let body = source
+        .split("async fn delete_annotation_document(")
+        .nth(1)
+        .unwrap()
+        .split("#[tauri::command")
+        .next()
+        .unwrap();
+    assert!(body.contains("prepare_annotation_delete("));
+    assert!(body.contains("dialog.show("));
+    assert!(body.contains("receiver"));
+    assert!(body.contains("return Ok(None)"));
+    assert!(body.contains("apply_confirmed_annotation_delete("));
+    let handlers = source
+        .rsplit_once(".invoke_handler(tauri::generate_handler![")
+        .unwrap()
+        .1;
+    assert!(handlers.contains("delete_annotation_document"));
+}
+
+#[test]
 fn wasm_can_load_only_from_the_packaged_origin() {
     let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
     let csp = config["app"]["security"]["csp"].as_str().unwrap();

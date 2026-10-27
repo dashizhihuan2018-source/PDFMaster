@@ -73,6 +73,16 @@ async fn copy_text(text: &str) -> Result<(), String> {
     })
 }
 
+fn focus_annotation_list() {
+    if let Some(list) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("annotation-list"))
+        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = list.focus();
+    }
+}
+
 impl Model {
     pub(super) fn annotation_rows(self) -> Vec<Row> {
         let mut rows = self.annotation_cache.with(|cache| {
@@ -127,6 +137,9 @@ impl Model {
             return;
         };
         self.annotation_selection.set(Some(identity));
+        // Navigation makes row buttons transiently disabled. Keep focus on the
+        // stable list so the next Delete/Backspace still reaches this sidebar.
+        focus_annotation_list();
         self.navigate(row.page_index);
     }
     fn sort_annotations(self, sort: Sort) {
@@ -135,6 +148,32 @@ impl Model {
         }
         self.annotation_sort.set(sort);
         close_options();
+    }
+    fn annotation_delete_disabled(self) -> bool {
+        self.blocked()
+            || self.sidebar_mode.get() != Mode::Annotations
+            || !self.annotation_rows().iter().any(|row| {
+                Some(row.identity()) == self.annotation_selection.get()
+                    && row.page_index < self.count()
+            })
+    }
+    fn delete_selected_annotation(self) {
+        if self.annotation_delete_disabled() {
+            return;
+        }
+        let Some(row) = self
+            .annotation_rows()
+            .into_iter()
+            .find(|row| Some(row.identity()) == self.annotation_selection.get_untracked())
+        else {
+            return;
+        };
+        close_options();
+        self.command_at_page(
+            "delete_annotation_document",
+            json!({"expected": row}),
+            Some(row.page_index),
+        );
     }
     fn copy_annotations(self) {
         if self.blocked() || self.annotation_copying.get_untracked() {
@@ -194,7 +233,7 @@ pub(super) fn AnnotationSidebar(model: Model) -> impl IntoView {
     view! {
         <section class="annotation-panel" aria-label="文档批注" hidden=move||m.sidebar_mode.get()!=Mode::Annotations>
             <div class="annotation-header"><strong>"批注"</strong>
-                <button class="annotation-delete" aria-label="删除所选批注" title="统一批注删除尚未迁移；便笺和形状仍可在各自编辑面板删除" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14 M7 5V3h6v2 M5 5l1 12h8l1-12 M8 8v6 M12 8v6"/></svg></button>
+                <button class="annotation-delete" aria-label="删除所选批注" title="删除所选批注…" disabled=move||m.annotation_delete_disabled() on:click=move|_|m.delete_selected_annotation()><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14 M7 5V3h6v2 M5 5l1 12h8l1-12 M8 8v6 M12 8v6"/></svg></button>
                 <details id="annotation-options" class="annotation-options"><summary aria-label="批注选项" title="批注排序与复制摘要">"•••"</summary>
                     <div class="annotation-menu" role="menu">
                         <button role="menuitemradio" aria-checked=move||(m.annotation_sort.get()==Sort::Page).to_string() disabled=move||m.blocked() on:click=move|_|m.sort_annotations(Sort::Page)>"按页码排序"</button>
@@ -218,7 +257,13 @@ pub(super) fn AnnotationSidebar(model: Model) -> impl IntoView {
                     </div>
                 </div>
             </Show>
-            <div class="annotation-scroll" role="list" aria-label="批注列表">
+            <div class="annotation-scroll" id="annotation-list" tabindex="0" role="list" aria-label="批注列表" on:keydown=move|event:web_sys::KeyboardEvent|{
+                if matches!(event.key().as_str(),"Delete"|"Backspace") && !event.repeat()
+                    && !event.alt_key() && !event.ctrl_key() && !event.meta_key() && !event.shift_key()
+                    && !m.annotation_delete_disabled() {
+                    event.prevent_default(); event.stop_propagation(); m.delete_selected_annotation();
+                }
+            }>
                 <For each=move||m.annotation_rows() key=|row|row.identity() children=move|row|{
                     let identity=row.identity();let heading=row.heading();let detail=row.detail();let time=time_label(&row);
                     let tooltip=format!("{heading}\n{detail}\n{time}");let color=row.color_css();let height=row.height();
@@ -232,7 +277,7 @@ pub(super) fn AnnotationSidebar(model: Model) -> impl IntoView {
                     </button>}
                 }/>
             </div>
-            <details class="annotation-limitations"><summary>"当前限制"</summary><p>"页内精确定位、选中文字摘录和统一批注删除尚未迁移；当前列表只跳转到所在页。设备颜色未做ICC色彩管理。"</p></details>
+            <details class="annotation-limitations"><summary>"当前限制"</summary><p>"当前列表只跳转到所在页，精确定位与选中文字摘录尚未迁移。删除须系统确认，可撤销但不是安全擦除；标记结构、回复或弹窗归属不明确时会拒绝修改。设备颜色未做ICC色彩管理。"</p></details>
         </section>
     }
 }

@@ -831,6 +831,7 @@ impl Model {
                             | "edit_document"
                             | "delete_note_document"
                             | "delete_shape_document"
+                            | "delete_annotation_document"
                             | "insert_pdf_document"
                             | "insert_pdfs_document"
                             | "undo_document"
