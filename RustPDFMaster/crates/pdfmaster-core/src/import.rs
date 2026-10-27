@@ -84,7 +84,7 @@ pub fn prepare_image_imports(
 }
 enum Plan {
     Pdf,
-    Image(ImageFormat, usize),
+    Image(ImageFormat, Vec<Option<Box<moxcms::ColorProfile>>>),
 }
 fn invalid() -> PdfMasterError {
     PdfMasterError::InvalidOperation("image format, color model, animation or data is unsupported")
@@ -102,44 +102,15 @@ fn decoder(bytes: &[u8], format: ImageFormat) -> Result<impl ImageDecoder + '_> 
     r.into_decoder().map_err(|_| invalid())
 }
 fn unsupported_color() -> PdfMasterError {
-    PdfMasterError::InvalidOperation(
-        "image color metadata requires color management not yet supported",
-    )
+    crate::import_color::unsupported()
 }
-// Do not reinterpret calibrated/profiled samples as uncalibrated RGB. The
-// initial importer accepts untagged samples and the PNG sRGB declaration only;
-// broader color management must be implemented before expanding this gate.
-fn color_preflight(bytes: &[u8], format: ImageFormat) -> Result<()> {
+fn color_preflight(
+    bytes: &[u8],
+    format: ImageFormat,
+    total: &mut usize,
+) -> Result<Option<Box<moxcms::ColorProfile>>> {
     if format == ImageFormat::Png {
-        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return Err(invalid());
-        }
-        let mut offset = 8usize;
-        while let Some(header) = bytes.get(offset..offset.saturating_add(8)) {
-            let size = u32::from_be_bytes(header[..4].try_into().map_err(|_| invalid())?) as usize;
-            let end = offset
-                .checked_add(size)
-                .and_then(|n| n.checked_add(12))
-                .ok_or_else(invalid)?;
-            if end > bytes.len() {
-                return Err(invalid());
-            }
-            if matches!(
-                &header[4..],
-                b"gAMA" | b"cHRM" | b"iCCP" | b"cICP" | b"mDCV" | b"cLLI" | b"eXIf"
-            ) {
-                return Err(unsupported_color());
-            }
-            if &header[4..] == b"IEND" {
-                return if end == bytes.len() {
-                    Ok(())
-                } else {
-                    Err(invalid())
-                };
-            }
-            offset = end;
-        }
-        return Err(invalid());
+        return crate::import_color::png(bytes, total);
     }
     if format == ImageFormat::Bmp {
         let header = bytes.get(14..18).ok_or_else(invalid)?;
@@ -157,7 +128,7 @@ fn color_preflight(bytes: &[u8], format: ImageFormat) -> Result<()> {
             return Err(unsupported_color());
         }
     }
-    Ok(())
+    Ok(None)
 }
 fn pixels(w: u32, h: u32, total: &mut u64) -> Result<()> {
     let n = u64::from(w) * u64::from(h);
@@ -185,7 +156,6 @@ fn tiff_properties(
 ) -> Result<(u32, u32, usize, Orientation, bool)> {
     use tiff::{ColorType as C, tags::Tag};
     for tag in [
-        Tag::IccProfile,
         Tag::ExifDirectory,
         Tag::Unknown(301),
         Tag::Unknown(318),
@@ -244,6 +214,32 @@ fn tiff_properties(
     let (w, h) = d.dimensions().map_err(|_| invalid())?;
     Ok((w, h, channels, orientation, associated))
 }
+fn tiff_color(
+    d: &mut tiff::decoder::Decoder<Cursor<&[u8]>>,
+    gray: bool,
+    total: &mut usize,
+) -> Result<Option<Box<moxcms::ColorProfile>>> {
+    use tiff::tags::{Tag, Type};
+    let mut ifd = d.image_ifd();
+    let Some(entry) = ifd.find_entry(Tag::IccProfile) else {
+        return Ok(None);
+    };
+    if entry.count() > crate::import_color::PROFILE_BYTES as u64 {
+        return Err(PdfMasterError::Budget("image color metadata"));
+    }
+    if !matches!(entry.field_type(), Type::BYTE | Type::UNDEFINED) {
+        return Err(unsupported_color());
+    }
+    let mut bytes = vec![0; entry.count() as usize];
+    if ifd
+        .find_tag_bytes(Tag::IccProfile, &mut bytes, 0)
+        .map_err(|_| invalid())?
+        != Some(bytes.len())
+    {
+        return Err(invalid());
+    }
+    crate::import_color::icc(&bytes, gray, total).map(Some)
+}
 /// Preflights the whole batch before any pixel decoding or output publication.
 /// Limits supplement decoder-specific limits, not a promise of total heap use.
 pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
@@ -256,6 +252,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
     }
     let mut bytes_total = 0usize;
     let mut total_pixels = 0;
+    let mut color_bytes = 0;
     let mut pages = 0usize;
     let mut plans = vec![];
     for (name, bytes) in files {
@@ -278,13 +275,15 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                 "tif" | "tiff" => ImageFormat::Tiff,
                 _ => return Err(invalid()),
             };
-            color_preflight(bytes, format)?;
+            let color = color_preflight(bytes, format, &mut color_bytes)?;
+            let mut colors = vec![];
             let mut count = 1;
             if format == ImageFormat::Tiff {
                 let mut d = tiff_decoder(bytes)?;
                 count = 0;
                 loop {
-                    let (w, h, _, _, _) = tiff_properties(&mut d)?;
+                    let (w, h, channels, _, _) = tiff_properties(&mut d)?;
+                    colors.push(tiff_color(&mut d, channels <= 2, &mut color_bytes)?);
                     pixels(w, h, &mut total_pixels)?;
                     layout.page(w, h)?;
                     count += 1;
@@ -325,9 +324,10 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
                 let (w, h) = d.dimensions();
                 pixels(w, h, &mut total_pixels)?;
                 layout.page(w, h)?;
+                colors.push(color);
             }
             pages += count;
-            plans.push(Plan::Image(format, count));
+            plans.push(Plan::Image(format, colors));
         }
         if pages > MAX_PAGES {
             return Err(PdfMasterError::Budget("import pages"));
@@ -338,7 +338,7 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
     for ((_, bytes), plan) in files.iter().zip(plans) {
         let converted = match plan {
             Plan::Pdf => bytes.to_vec(),
-            Plan::Image(format, count) => image_pdf(bytes, format, count, layout)?,
+            Plan::Image(format, colors) => image_pdf(bytes, format, colors, layout)?,
         };
         output_bytes = output_bytes
             .checked_add(converted.len())
@@ -353,9 +353,10 @@ fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Re
 fn image_pdf(
     bytes: &[u8],
     format: ImageFormat,
-    count: usize,
+    colors: Vec<Option<Box<moxcms::ColorProfile>>>,
     layout: ImageImportLayout,
 ) -> Result<Vec<u8>> {
+    let count = colors.len();
     let mut session = Session::blank(595.276, 841.89, count)?;
     let ids = crate::document::page_object_ids(&session.document)?;
     let mut tiff = if format == ImageFormat::Tiff {
@@ -367,10 +368,10 @@ fn image_pdf(
         let image = if let Some(d) = &mut tiff {
             let (w, h, channels, orientation, associated) = tiff_properties(d)?;
             let raw = match d.read_image().map_err(|_| invalid())? {
-                tiff::decoder::DecodingResult::U8(raw) => raw,
-                tiff::decoder::DecodingResult::U16(raw) => {
-                    raw.into_iter().map(|v| (v >> 8) as u8).collect()
+                tiff::decoder::DecodingResult::U8(raw) => {
+                    raw.into_iter().map(|v| u16::from(v) * 257).collect()
                 }
+                tiff::decoder::DecodingResult::U16(raw) => raw,
                 _ => return Err(invalid()),
             };
             if raw.len() != w as usize * h as usize * channels {
@@ -380,25 +381,25 @@ fn image_pdf(
                 .chunks_exact(channels)
                 .flat_map(|p| {
                     let mut rgba = match channels {
-                        1 => [p[0], p[0], p[0], 255],
+                        1 => [p[0], p[0], p[0], 65_535],
                         2 => [p[0], p[0], p[0], p[1]],
-                        3 => [p[0], p[1], p[2], 255],
+                        3 => [p[0], p[1], p[2], 65_535],
                         _ => [p[0], p[1], p[2], p[3]],
                     };
                     if associated {
-                        let a = u32::from(rgba[3]);
+                        let a = u64::from(rgba[3]);
                         for color in &mut rgba[..3] {
-                            *color = (u32::from(*color) * 255 + a / 2)
+                            *color = (u64::from(*color) * 65_535 + a / 2)
                                 .checked_div(a)
                                 .unwrap_or(0)
-                                .min(255) as u8;
+                                .min(65_535) as u16;
                         }
                     }
                     rgba
                 })
                 .collect();
-            let mut image = DynamicImage::ImageRgba8(
-                image::RgbaImage::from_raw(w, h, rgba).ok_or_else(invalid)?,
+            let mut image = DynamicImage::ImageRgba16(
+                image::ImageBuffer::from_raw(w, h, rgba).ok_or_else(invalid)?,
             );
             image.apply_orientation(orientation);
             if index + 1 < count {
@@ -415,14 +416,17 @@ fn image_pdf(
         let w = image.width();
         let h = image.height();
         let (paper_width, paper_height, margin) = layout.page(w, h)?;
-        let rgba = image.into_rgba8().into_raw();
-        let rgb: Vec<u8> = rgba
-            .chunks_exact(4)
-            .flat_map(|p| {
-                let a = u32::from(p[3]);
-                [0, 1, 2].map(|i| ((u32::from(p[i]) * a + 255 * (255 - a) + 127) / 255) as u8)
-            })
-            .collect();
+        let rgb: Vec<u8> = if let Some(profile) = &colors[index] {
+            crate::import_color::normalize(image, profile)?
+        } else {
+            let rgba = image.into_rgba8().into_raw();
+            rgba.chunks_exact(4)
+                .flat_map(|p| {
+                    let a = u32::from(p[3]);
+                    [0, 1, 2].map(|i| ((u32::from(p[i]) * a + 255 * (255 - a) + 127) / 255) as u8)
+                })
+                .collect()
+        };
         let mut stream = Stream::new(
             dictionary! {
                 "Type"=>"XObject", "Subtype"=>"Image", "Width"=>i64::from(w), "Height"=>i64::from(h),

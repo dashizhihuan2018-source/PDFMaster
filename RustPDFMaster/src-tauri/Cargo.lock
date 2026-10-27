@@ -2690,11 +2690,13 @@ dependencies = [
 name = "pdfmaster-core"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "flate2",
  "gif",
  "hayro",
  "image",
  "lopdf",
+ "moxcms",
  "pdfmaster-drawing",
  "serde",
  "thiserror 2.0.21",

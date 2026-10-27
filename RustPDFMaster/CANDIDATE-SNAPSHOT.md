@@ -1,6 +1,18 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 57a5d7db (2026-10-27)
+## Current snapshot: development 45c9a160 (2026-10-27)
+
+Exactly **185 tracked Rust/workflow files** from development `45c9a1605545f044242cf279af8715bd98034b0e`, plus this public-only record. Only reviewed source is shared; private development history, memory/evidence, user files/screenshots, credentials and generated output are excluded. The Apple-native daily-use application, native release/tag and website are unchanged.
+
+PNG and each supported TIFF frame now normalize bounded RGB/Gray matrix/TRC ICC profiles with XYZ PCS to sRGB before white-background composition and final8-bit DeviceRGB output. TIFF associated alpha and dark16-bit samples retain precision through transformation. PNG gAMA and RGB cHRM+gAMA also work; all chunks have CRC/order checks, and supported ICC takes precedence over legacy gamma. Compressed profile input, tag/TRC counts and descriptive-text expansions are admitted before CMS parsing. Shared localized text ranges are charged for every allocation. The pinned pure-Rust moxcms0.8.1 and crc32fast were already locked transitively; this adds direct references without version upgrades or external profile assets.
+
+Real RED→GREEN regressions cover former valid-profile rejection, linear128→sRGB188 pixels, Gray/RGB8/16 and alpha, independent Display-P3 ICC and gamma/chromaticity numeric oracles, per-TIFF-frame profiles/orientation, malformed/late/conflicting metadata, profile budgets and localized-text alias amplification. Independent read-only review closed text allocation and competing ICC CICP/HDR interpretation issues; no Critical/Important findings remain for this increment. Complete local checks passed: **260 core,144 UI,120 native +8 security,31 Python tools**, three-workspace fmt/host-Clippy, additional WASM all-target Clippy, locked release WASM, iOS-simulator target check and five notices. The original-derived image configuration UI still passes compiled1280/390 synthetic-native replay; this is not OS-picker or native-platform acceptance.
+
+Compatibility remains narrower than the original:32 files/32MiB each/64MiB total, supported TIFF models, ICC1MiB each/8MiB aggregate/64 tags/16,384 TRC entries/64KiB text/16 localized records per tag. JPEG ICC/Exif, BMP/GIF profiles, PNG/ICC CICP and HDR, gray cHRM, incomplete spaces, CLUT/device-link/unknown-tag profiles and TIFF non-ICC color/Exif metadata still reject explicitly. DeviceRGB pixel normalization does not prove target display color matching. Inventory remains **28 partial /42 unsupported /0 complete**, with801 legacy contracts pending. Full functionality/UI, Windows/iOS runtime and final Rustall/public skill are unfinished.
+
+Hosted [40520501855](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40520501855) still belongs to preceding public `e5b6a6396ecbeddb1312bf880c2f52ddd1a61c3e`: macOS packaging succeeded, iOS-simulator packaging and Windows checks were still in progress at observation. It does not certify this color increment. No duplicate run, installation or native GUI operation was performed.
+
+## Historical snapshot: development 57a5d7db (superseded)
 
 Exactly **184 tracked Rust/workflow files** from development `57a5d7db73acdc7f9051d441ec4f06104120ca9d`, plus this public-only record. Only reviewed source is shared; no private development history, memory/evidence, user files/screenshots, credentials or generated output. The installed Apple-native application and native release/tag/website remain unchanged.
 
