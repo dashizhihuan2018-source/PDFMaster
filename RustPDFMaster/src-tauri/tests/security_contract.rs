@@ -1,6 +1,30 @@
 use serde_json::Value;
 
 #[test]
+fn image_tool_selects_native_paths_and_conversion_accepts_only_ticket_indices_and_layout() {
+    let source = include_str!("../src/lib.rs");
+    for command in [
+        "prepare_image_import",
+        "convert_image_import",
+        "cancel_image_import",
+    ] {
+        assert!(source.contains(&format!("image_import::{command}")));
+    }
+    let module = include_str!("../src/image_import.rs");
+    assert!(module.contains(".pick_files("));
+    let args = module
+        .split("async fn convert_image_import(")
+        .nth(1)
+        .unwrap()
+        .split(") ->")
+        .next()
+        .unwrap();
+    assert!(args.contains("order") && args.contains("layout"));
+    assert!(!args.contains("Path") && !args.contains("paths") && !args.contains("bytes"));
+    assert!(module.contains("with_read_slot("));
+}
+
+#[test]
 fn home_file_drop_is_registered_without_accepting_frontend_paths_or_pdf_bytes() {
     let source = include_str!("../src/lib.rs");
     assert!(source.contains("file_drop::open_file_drop,"));

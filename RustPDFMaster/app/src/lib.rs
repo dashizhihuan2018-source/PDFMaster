@@ -15,6 +15,7 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
 }
 pub mod annotation_navigation;
 pub mod annotations;
+pub mod image_import;
 pub mod ink;
 pub mod outline;
 pub mod overview;

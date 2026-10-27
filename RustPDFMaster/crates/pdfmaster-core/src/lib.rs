@@ -22,7 +22,7 @@ pub use document::{
     Color, DocumentInfo, Edit, PageInfo, PdfMasterError, Rect, Result, Session, ShapeKind,
     TextReader,
 };
-pub use import::prepare_imports;
+pub use import::{ImageImportLayout, ImagePaper, prepare_image_imports, prepare_imports};
 pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};
 pub use lines::{LineEnding, LineGeometry, Point};
 pub use notes::{NoteList, TextNote};

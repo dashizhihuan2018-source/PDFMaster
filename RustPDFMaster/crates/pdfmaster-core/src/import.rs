@@ -7,6 +7,81 @@ const FRAME_PIXELS: u64 = 40_000_000;
 const TOTAL_PIXELS: u64 = 100_000_000;
 const MAX_PAGES: usize = 500;
 const DECODE_BYTES: u64 = 320 * 1024 * 1024;
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImagePaper {
+    A4,
+    Letter,
+    Pixels,
+}
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageImportLayout {
+    pub paper: ImagePaper,
+    pub landscape: bool,
+    pub margin: f64,
+}
+impl Default for ImageImportLayout {
+    fn default() -> Self {
+        Self {
+            paper: ImagePaper::A4,
+            landscape: false,
+            margin: 24.,
+        }
+    }
+}
+impl ImageImportLayout {
+    pub fn validate(self) -> Result<()> {
+        if self.paper != ImagePaper::Pixels
+            && (!self.margin.is_finite()
+                || self.margin < 0.
+                || self.margin * 2.
+                    >= match self.paper {
+                        ImagePaper::A4 => 595.276,
+                        _ => 612.,
+                    })
+        {
+            return Err(PdfMasterError::InvalidGeometry("image paper margin"));
+        }
+        Ok(())
+    }
+    fn page(self, w: u32, h: u32) -> Result<(f64, f64, f64)> {
+        self.validate()?;
+        if self.paper == ImagePaper::Pixels {
+            if w == 0 || h == 0 || w > 14_400 || h > 14_400 {
+                return Err(PdfMasterError::Budget("image PDF page dimensions"));
+            }
+            return Ok((f64::from(w), f64::from(h), 0.));
+        }
+        let (w, h) = match self.paper {
+            ImagePaper::A4 => (595.276, 841.89),
+            _ => (612., 792.),
+        };
+        Ok(if self.landscape {
+            (h, w, self.margin)
+        } else {
+            (w, h, self.margin)
+        })
+    }
+}
+pub fn prepare_image_imports(
+    files: &[(&str, &[u8])],
+    layout: ImageImportLayout,
+) -> Result<Vec<Vec<u8>>> {
+    if files.iter().any(|(name, _)| {
+        !matches!(
+            name.rsplit('.')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .as_str(),
+            "png" | "jpg" | "jpeg" | "tif" | "tiff"
+        )
+    }) {
+        return Err(invalid());
+    }
+    prepare_with_layout(files, layout)
+}
 enum Plan {
     Pdf,
     Image(ImageFormat, usize),
@@ -172,6 +247,10 @@ fn tiff_properties(
 /// Preflights the whole batch before any pixel decoding or output publication.
 /// Limits supplement decoder-specific limits, not a promise of total heap use.
 pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
+    prepare_with_layout(files, ImageImportLayout::default())
+}
+fn prepare_with_layout(files: &[(&str, &[u8])], layout: ImageImportLayout) -> Result<Vec<Vec<u8>>> {
+    layout.validate()?;
     if files.is_empty() || files.len() > crate::MAX_INSERT_FILES {
         return Err(PdfMasterError::Budget("import file count"));
     }
@@ -207,6 +286,7 @@ pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
                 loop {
                     let (w, h, _, _, _) = tiff_properties(&mut d)?;
                     pixels(w, h, &mut total_pixels)?;
+                    layout.page(w, h)?;
                     count += 1;
                     if count + pages > MAX_PAGES {
                         return Err(PdfMasterError::Budget("import pages"));
@@ -244,6 +324,7 @@ pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
                 let d = decoder(bytes, format)?;
                 let (w, h) = d.dimensions();
                 pixels(w, h, &mut total_pixels)?;
+                layout.page(w, h)?;
             }
             pages += count;
             plans.push(Plan::Image(format, count));
@@ -257,7 +338,7 @@ pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
     for ((_, bytes), plan) in files.iter().zip(plans) {
         let converted = match plan {
             Plan::Pdf => bytes.to_vec(),
-            Plan::Image(format, count) => image_pdf(bytes, format, count)?,
+            Plan::Image(format, count) => image_pdf(bytes, format, count, layout)?,
         };
         output_bytes = output_bytes
             .checked_add(converted.len())
@@ -269,7 +350,12 @@ pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
     }
     Ok(output)
 }
-fn image_pdf(bytes: &[u8], format: ImageFormat, count: usize) -> Result<Vec<u8>> {
+fn image_pdf(
+    bytes: &[u8],
+    format: ImageFormat,
+    count: usize,
+    layout: ImageImportLayout,
+) -> Result<Vec<u8>> {
     let mut session = Session::blank(595.276, 841.89, count)?;
     let ids = crate::document::page_object_ids(&session.document)?;
     let mut tiff = if format == ImageFormat::Tiff {
@@ -328,6 +414,7 @@ fn image_pdf(bytes: &[u8], format: ImageFormat, count: usize) -> Result<Vec<u8>>
         };
         let w = image.width();
         let h = image.height();
+        let (paper_width, paper_height, margin) = layout.page(w, h)?;
         let rgba = image.into_rgba8().into_raw();
         let rgb: Vec<u8> = rgba
             .chunks_exact(4)
@@ -347,19 +434,29 @@ fn image_pdf(bytes: &[u8], format: ImageFormat, count: usize) -> Result<Vec<u8>>
             .compress()
             .map_err(|e| PdfMasterError::Serialization(e.to_string()))?;
         let image_id = session.document.add_object(stream);
-        let scale = ((595.276_f64 - 48.) / f64::from(w)).min((841.89_f64 - 48.) / f64::from(h));
+        let scale = ((paper_width - 2. * margin) / f64::from(w))
+            .min((paper_height - 2. * margin) / f64::from(h));
         let width = f64::from(w) * scale;
         let height = f64::from(h) * scale;
-        let x = (595.276 - width) / 2.;
-        let y = (841.89 - height) / 2.;
+        let x = (paper_width - width) / 2.;
+        let y = (paper_height - height) / 2.;
         let content = session.document.add_object(Stream::new(lopdf::Dictionary::new(),
-            format!("q 1 1 1 rg 0 0 595.276 841.89 re f {width} 0 0 {height} {x} {y} cm /ImportedImage Do Q\n").into_bytes()));
+            format!("q 1 1 1 rg 0 0 {paper_width} {paper_height} re f {width} 0 0 {height} {x} {y} cm /ImportedImage Do Q\n").into_bytes()));
         let page = session
             .document
             .get_object_mut(page)
             .and_then(Object::as_dict_mut)
             .map_err(|_| invalid())?;
         page.set("Contents", content);
+        page.set(
+            "MediaBox",
+            vec![
+                0.into(),
+                0.into(),
+                Object::Real(paper_width as f32),
+                Object::Real(paper_height as f32),
+            ],
+        );
         page.set(
             "Resources",
             dictionary! {"XObject"=>dictionary!{"ImportedImage"=>image_id}},

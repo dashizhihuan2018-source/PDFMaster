@@ -6,6 +6,8 @@ mod bridge;
 mod file_drop_view;
 #[path = "home.rs"]
 mod home;
+#[path = "image_import_view.rs"]
+mod image_import_view;
 #[path = "overview_view.rs"]
 mod overview_view;
 #[path = "thumbnail_view.rs"]
@@ -283,6 +285,7 @@ struct Model {
     overview_marker: RwSignal<Option<usize>>,
     file_drop_request: RwSignal<Option<u32>>,
     home_drop_active: RwSignal<bool>,
+    image_import: RwSignal<Option<pdfmaster_ui::image_import::Configuration>>,
     sidebar_mode: RwSignal<pdfmaster_ui::outline::Mode>,
     sidebar_width: RwSignal<pdfmaster_ui::sidebar_width::Width>,
     sidebar_viewport: RwSignal<f64>,
@@ -657,7 +660,10 @@ impl Model {
             current,
             target,
             self.loaded(),
-            self.busy.get_untracked() || self.has_note_draft() || self.has_ink(),
+            self.busy.get_untracked()
+                || self.has_note_draft()
+                || self.has_ink()
+                || self.image_import.get_untracked().is_some(),
         );
         if next != target {
             self.message
@@ -676,6 +682,10 @@ impl Model {
         }
     }
     fn show_tool(self, id: &'static str) {
+        if id == "image-to-pdf" {
+            self.prepare_images();
+            return;
+        }
         if id == "blank" {
             self.command("new_document", json!({}));
             return;
@@ -1057,7 +1067,11 @@ impl Model {
             .with(|d| d.as_ref().map_or(0, |d| d.info.page_count))
     }
     fn blocked(self) -> bool {
-        self.busy.get() || !self.loaded() || self.has_note_draft() || self.has_ink()
+        self.busy.get()
+            || !self.loaded()
+            || self.has_note_draft()
+            || self.has_ink()
+            || self.image_import.with(|c| c.is_some())
     }
     fn has_ink(self) -> bool {
         self.ink_gesture.with(|s| s.is_some())
@@ -1080,7 +1094,7 @@ impl Model {
         self.command_at_page(command, args, None);
     }
     fn command_at_page(self, command: &'static str, args: Value, selected_page: Option<usize>) {
-        if self.busy.get_untracked() {
+        if self.busy.get_untracked() || self.image_import.get_untracked().is_some() {
             return;
         }
         if self.has_note_draft() {
@@ -1948,6 +1962,7 @@ pub fn Workspace() -> impl IntoView {
         overview_marker: RwSignal::new(None),
         file_drop_request: RwSignal::new(None),
         home_drop_active: RwSignal::new(false),
+        image_import: RwSignal::new(None),
         sidebar_mode: RwSignal::new(pdfmaster_ui::outline::Mode::default()),
         sidebar_width: RwSignal::new(thumbnail_view::restored_sidebar_width()),
         sidebar_viewport: RwSignal::new(thumbnail_view::reader_viewport()),
@@ -2006,6 +2021,7 @@ pub fn Workspace() -> impl IntoView {
     m.command("document_info", json!({}));
     view! {
         <div class="application-shell">
+            <image_import_view::Dialog model=m/>
             <nav class="shell-tabs" id="shell-tabs" aria-label="首页和文档标签">
                 <button class="shell-home-tab" class:active=move||matches!(m.route.get(),Route::Home(_)) aria-label="主界面标签" title="主界面" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))><img src="32x32.png" alt=""/></button>
                 <For each=move||m.document.with(|document|document.as_ref().map(|d|if d.tabs.is_empty(){vec![DocumentTab{id:d.id,name:d.name.clone(),dirty:d.info.dirty}]}else{d.tabs.clone()}).unwrap_or_default()) key=|tab|(tab.id,tab.name.clone(),tab.dirty) children=move|tab|{

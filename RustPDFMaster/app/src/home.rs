@@ -5,11 +5,12 @@ use serde_json::json;
 
 #[component]
 fn ToolCard(model: Model, tool: Tool) -> impl IntoView {
-    let available = tool.id == "blank" || tool.workbench_target.is_some();
+    let independent = matches!(tool.id, "blank" | "image-to-pdf");
+    let available = independent || tool.workbench_target.is_some();
     view! {
-        <button class="home-tool-card" aria-label=tool.title
-            title=move||if !available { "此功能尚未迁移" } else if tool.id=="blank" { "新建空白 PDF" } else if !model.loaded() { "请先打开 PDF" } else { "进入当前文档的已迁移工具；原版模式工具栏仍待迁移" }
-            disabled=move||!available||model.busy.get()||(tool.id!="blank"&&!model.loaded())
+        <button class="home-tool-card" aria-label=tool.title id=if tool.id=="image-to-pdf"{Some("image-tool-entry")}else{None}
+            title=move||if !available { "此功能尚未迁移" } else if tool.id=="blank" { "新建空白 PDF" } else if tool.id=="image-to-pdf" { "选择 PNG/JPEG/TIFF，配置后创建独立 PDF" } else if !model.loaded() { "请先打开 PDF" } else { "进入当前文档的已迁移工具；原版模式工具栏仍待迁移" }
+            disabled=move||!available||model.busy.get()||model.image_import.with(|c|c.is_some())||(!independent&&!model.loaded())
             on:click=move|_|model.show_tool(tool.id)>
             <svg viewBox="0 0 32 32" class="home-tool-icon" style:color=tool.color aria-hidden="true">
                 <path d=match tool.id {

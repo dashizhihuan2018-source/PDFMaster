@@ -8,6 +8,8 @@ This is an **in-progress full rewrite**, not the installed PDF Master replacemen
 
 ## Structure
 
+Image-to-PDF now has an independent native PNG/JPEG/TIFF picker followed by an original-derived 620×500 configuration sheet: reorder/remove sources, A4/Letter/pixel-sized pages, portrait/landscape and validated margins. Conversion creates a new unsaved tab without changing source images or existing documents. Native paths stay private; the frontend sends only a selection ID, indices and layout. Confirmed cancellation revokes publication, late replies cannot replace a newer configuration, and failure retains settings for retry. Pixel pages use oriented frame dimensions at 1px=1pt, never inferred DPI. The candidate still limits input to32 files/32MiB each/64MiB total and explicitly rejects unsupported color metadata; this is narrower than the original's compatibility. `tools/test-image-import-browser.cjs` replays the compiled UI at desktop/mobile widths with synthetic native replies. That replay and source-derived dimensions are not OS-picker, native-widget visual parity or three-platform acceptance.
+
 - `crates/pdfmaster-core`: transactional PDF operations and rendering via lopdf / hayro. Unsupported cases fail explicitly; complex geometry, Unicode content editing and several resource classes remain incomplete. It is **not yet approved for arbitrary untrusted PDFs**.
 - `crates/pdfmaster-drawing`: shared bounded midpoint/quadratic smoothing and quarter-turn point mapping for preview and PDF InkList; retains the original SwiftyDraw-derived MIT attribution.
 - `app`: Leptos Rust UI; no handwritten JavaScript application frontend.

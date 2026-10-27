@@ -1,6 +1,16 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development 80584bf2 (2026-10-27)
+## Current snapshot: development 57a5d7db (2026-10-27)
+
+Exactly **184 tracked Rust/workflow files** from development `57a5d7db73acdc7f9051d441ec4f06104120ca9d`, plus this public-only record. Only reviewed source is shared; no private development history, memory/evidence, user files/screenshots, credentials or generated output. The installed Apple-native application and native release/tag/website remain unchanged.
+
+The independent image-to-PDF tool now opens a native asynchronous PNG/JPEG/TIFF multi-picker, then an original-derived620×500 configuration sheet. It supports ordering/removal, A4/Letter/pixel-sized pages, orientation and margins; pixel mode uses oriented frame dimensions at1px=1pt without guessing DPI. Native paths stay private behind selection IDs; conversion submits indices/layout only. A new dirty tab preserves existing documents/source files. Failed conversion or new-tab admission retains settings for retry. Confirmed cancellation revokes publication; stale replies cannot overwrite newer jobs. One shared independent read/conversion slot prevents accumulating workers after cancellation. Desktop source geometry and explicit390px touch adaptation do not establish native-widget visual parity.
+
+New core/native/configuration behavior was observed failing before implementation. A boundary regression caught premature configuration loss after rejected tab admission and now passes. Independent read-only re-review has no remaining Critical/Important findings. Complete local checks passed: **254 core,144 UI,120 native +8 security,31 Python tools**, three-workspace fmt/host-Clippy, extra WASM all-target Clippy, iOS-simulator target check, five notices and locked release WASM. Compiled frontend1280/390 replays cover order/removal/layout/failed retry/cancel/late replies and successful new-tab rendering; old overview/tab replays also pass. Native replies in these browser tests are synthetic, not OS picker or target-platform acceptance.
+
+Prior hosted [40508507265](https://github.com/dashizhihuan2018-source/PDFMaster/actions/runs/40508507265), exact preceding public `b832f4a72e8b2bd85a518c81415eba8f2e68e160`, finished **Mac success / Windows failure**. Mac produced macOS/iOS-simulator artifacts; Windows failed a test fixture's Unix-only absolute path, so no Windows package was produced. This source uses an actual temporary-directory absolute path without weakening production validation. Current-source hosted validation remains pending. Input/color compatibility is still narrower than the original:32 files/32MiB each/64MiB total, supported TIFF only, calibrated/profiled images explicitly rejected. Inventory is **28 partial /42 unsupported /0 complete**,801 legacy contracts remain pending. Full functionality/UI, actual Windows/iOS runtime and final Rustall/public skill are unfinished. No native GUI or local installation was operated.
+
+## Historical snapshot: development 80584bf2 (superseded)
 
 Exactly **180 tracked Rust/workflow files** from development `80584bf2fda5f301acc816b958fea1b25fd7e051`, plus this public-only record. This is reviewed source sharing, not a product release or installation replacement. Private history, memory/evidence, user documents/screenshots, credentials and generated output are excluded. The installed Apple-native application and native release/tag/website remain unchanged.
 

@@ -1,6 +1,90 @@
 use pdfmaster_core::{Session, prepare_imports};
 use std::io::Cursor;
 
+#[test]
+fn image_tool_layout_matches_letter_landscape_margins_and_pixel_sized_pages() {
+    use pdfmaster_core::{ImageImportLayout, ImagePaper, prepare_image_imports};
+    let image = png();
+    let layout = ImageImportLayout {
+        paper: ImagePaper::Letter,
+        landscape: true,
+        margin: 30.,
+    };
+    let converted = prepare_image_imports(&[("test.png", &image)], layout).unwrap();
+    let s = Session::open(&converted[0]).unwrap();
+    assert_eq!(
+        (s.info().pages[0].width, s.info().pages[0].height),
+        (792., 612.)
+    );
+    let doc = lopdf::Document::load_mem(&converted[0]).unwrap();
+    let id = *doc.get_pages().values().next().unwrap();
+    let content = String::from_utf8(doc.get_page_content(id)).unwrap();
+    assert!(
+        content.contains("732 0 0 366 30 123 cm"),
+        "aspect-fit/centering must use chosen margins: {content}"
+    );
+    let pixels = ImageImportLayout {
+        paper: ImagePaper::Pixels,
+        landscape: true,
+        margin: 999.,
+    };
+    let converted = prepare_image_imports(&[("test.png", &image)], pixels).unwrap();
+    let s = Session::open(&converted[0]).unwrap();
+    assert_eq!(
+        (s.info().pages[0].width, s.info().pages[0].height),
+        (2., 1.),
+        "pixel mode ignores orientation and margin, 1px=1pt"
+    );
+    for margin in [-1., f64::NAN, f64::INFINITY, 306.] {
+        assert!(
+            prepare_image_imports(
+                &[("test.png", &image)],
+                ImageImportLayout { margin, ..layout }
+            )
+            .is_err()
+        );
+    }
+    let pdf = Session::blank(100., 100., 1).unwrap().bytes().unwrap();
+    assert!(
+        prepare_image_imports(&[("not-image.pdf", &pdf)], layout).is_err(),
+        "image tool is not the mixed-file importer"
+    );
+}
+
+#[test]
+fn pixel_paper_uses_each_oriented_tiff_frame_dimensions_without_dpi_guessing() {
+    use pdfmaster_core::{ImageImportLayout, ImagePaper, prepare_image_imports};
+    let mut bytes = Cursor::new(Vec::new());
+    {
+        let mut e = tiff::encoder::TiffEncoder::new(&mut bytes).unwrap();
+        let mut page = e.new_image::<tiff::encoder::colortype::RGB8>(3, 1).unwrap();
+        page.encoder()
+            .write_tag(tiff::tags::Tag::Orientation, 6u16)
+            .unwrap();
+        page.write_data(&[128; 9]).unwrap();
+        e.write_image::<tiff::encoder::colortype::RGB8>(2, 4, &[64; 24])
+            .unwrap();
+    }
+    let converted = prepare_image_imports(
+        &[("two.tif", bytes.get_ref())],
+        ImageImportLayout {
+            paper: ImagePaper::Pixels,
+            landscape: false,
+            margin: 0.,
+        },
+    )
+    .unwrap();
+    let s = Session::open(&converted[0]).unwrap();
+    assert_eq!(
+        s.info()
+            .pages
+            .iter()
+            .map(|p| (p.width, p.height))
+            .collect::<Vec<_>>(),
+        [(1., 3.), (2., 4.)]
+    );
+}
+
 fn png() -> Vec<u8> {
     let mut bytes = vec![];
     {

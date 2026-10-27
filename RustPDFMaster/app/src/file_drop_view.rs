@@ -100,6 +100,7 @@ impl Model {
             || self.busy.get_untracked()
             || self.has_note_draft()
             || self.has_ink()
+            || self.image_import.get_untracked().is_some()
             || !x.is_finite()
             || !y.is_finite()
         {

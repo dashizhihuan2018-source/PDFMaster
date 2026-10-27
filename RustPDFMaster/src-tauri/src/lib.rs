@@ -2,6 +2,7 @@ mod clipboard;
 mod export_staging;
 mod file_drop;
 mod file_import;
+mod image_import;
 #[cfg(target_os = "ios")]
 mod ios_export;
 #[cfg(target_os = "macos")]
@@ -20,6 +21,7 @@ use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
 struct Workspace {
+    image_import: image_import::ImportState,
     file_drop: file_drop::Broker,
     active_document_id: u32,
     next_document_id: u32,
@@ -1767,6 +1769,7 @@ impl Workspace {
         Ok((id, self.name.clone(), bytes))
     }
     fn release_export(&mut self, id: u32) {
+        image_import::released(self, id);
         if self.export_reservation == Some(id) {
             self.export_reservation = None;
         }
@@ -2847,7 +2850,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![file_drop::register_file_drop_channel,file_drop::unregister_file_drop_channel,file_drop::import_file_drop,file_drop::open_file_drop,file_drop::cancel_file_drop,open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,overview::prepare_page_overview,overview::move_overview_pages,overview::render_overview_page,clipboard::copy_pages_document,clipboard::paste_pages_document,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![image_import::prepare_image_import,image_import::convert_image_import,image_import::cancel_image_import,file_drop::register_file_drop_channel,file_drop::unregister_file_drop_channel,file_drop::import_file_drop,file_drop::open_file_drop,file_drop::cancel_file_drop,open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,overview::prepare_page_overview,overview::move_overview_pages,overview::render_overview_page,clipboard::copy_pages_document,clipboard::paste_pages_document,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::DragDrop(event) = event {
                 file_drop::event(window, event);

@@ -1,6 +1,18 @@
 use super::*;
 use std::path::PathBuf;
+pub(super) fn read_images(
+    paths: &[PathBuf],
+    layout: pdfmaster_core::ImageImportLayout,
+) -> Reply<Vec<Vec<u8>>> {
+    read_with_layout(paths, Some(layout))
+}
 pub(super) fn read(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
+    read_with_layout(paths, None)
+}
+fn read_with_layout(
+    paths: &[PathBuf],
+    layout: Option<pdfmaster_core::ImageImportLayout>,
+) -> Reply<Vec<Vec<u8>>> {
     let error = || {
         "仅接受普通本地文件，每份32MiB、整批64MiB；拒绝链接/文件夹或改变的文件。整批未导入。"
             .to_owned()
@@ -77,7 +89,11 @@ pub(super) fn read(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
         .zip(&owned)
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
         .collect();
-    pdfmaster_core::prepare_imports(&refs).map_err(|e|format!("整批未导入，原文件未修改：{e}。当前支持PDF、PNG/JPEG/BMP、静态GIF及受支持的多页TIFF；HEIC/文字/Office及更广图片色彩模型仍待迁移。"))
+    let converted = match layout {
+        Some(layout) => pdfmaster_core::prepare_image_imports(&refs, layout),
+        None => pdfmaster_core::prepare_imports(&refs),
+    };
+    converted.map_err(|e|format!("整批未导入，原文件未修改：{e}。当前支持PDF、PNG/JPEG/BMP、静态GIF及受支持的多页TIFF；HEIC/文字/Office及更广图片色彩模型仍待迁移。"))
 }
 #[cfg(test)]
 mod tests {

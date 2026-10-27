@@ -3,12 +3,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 static READ_SLOT: Mutex<()> = Mutex::new(());
 fn read_drop_files(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
+    with_read_slot(|| file_import::read(paths))
+}
+pub(super) fn with_read_slot<T>(read: impl FnOnce() -> Reply<T>) -> Reply<T> {
     // Cancellation revokes mutation authority, not an OS read already in
     // progress. Bound those reads independently of the document reservation.
     let _slot = READ_SLOT
         .try_lock()
         .map_err(|_| "上一批文件读取尚在结束，请稍后重试；本次未修改文档。")?;
-    file_import::read(paths)
+    read()
 }
 
 fn logical_point(x: f64, y: f64, scale: f64, apple_points: bool) -> Option<(f64, f64)> {
@@ -382,7 +385,7 @@ mod tests {
         assert_eq!(w.inactive_documents.len(), 1);
         assert_eq!(w.inactive_documents[0].session.bytes().unwrap(), old);
         let id = w
-            .offer_file_drop(vec![PathBuf::from("/synthetic.pdf")])
+            .offer_file_drop(vec![_dir.path().join("synthetic.pdf")])
             .unwrap();
         let (r, _) = w.begin_home_file_drop(id).unwrap();
         assert!(w.cancel_file_drop(id));
