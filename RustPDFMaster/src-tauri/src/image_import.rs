@@ -211,6 +211,38 @@ pub(super) struct Selection {
     id: u32,
     names: Vec<String>,
 }
+#[derive(Clone, serde::Serialize)]
+pub(super) struct ProgressNotice {
+    id: u32,
+    current: usize,
+    total: usize,
+}
+
+fn read_image_job(
+    id: u32,
+    paths: &[PathBuf],
+    layout: pdfmaster_core::ImageImportLayout,
+    cancelled: &AtomicBool,
+    on_progress: Option<tauri::ipc::Channel<ProgressNotice>>,
+) -> Reply<Vec<Vec<u8>>> {
+    match on_progress {
+        Some(channel) => file_import::read_images_observed(
+            paths,
+            layout,
+            || cancelled.load(Ordering::Acquire),
+            |progress| {
+                let _ = channel.send(ProgressNotice {
+                    id,
+                    current: progress.current,
+                    total: progress.total,
+                });
+            },
+        ),
+        None => file_import::read_images_cancellable(paths, layout, || {
+            cancelled.load(Ordering::Acquire)
+        }),
+    }
+}
 
 // A dismissed dialog, failed callback, or dropped command must not leave an
 // outstanding native picker. Successful selection hands ownership to the UI.
@@ -285,8 +317,11 @@ pub(super) async fn convert_image_import(
     id: u32,
     order: Vec<usize>,
     layout: pdfmaster_core::ImageImportLayout,
+    on_progress: Option<tauri::ipc::JavaScriptChannelId>,
+    webview: tauri::Webview,
     state: State<'_, Store>,
 ) -> Reply<DocumentView> {
+    let on_progress = on_progress.map(|channel| channel.channel_on(webview));
     let (reservation, paths, name, cancel) = state
         .lock()
         .map_err(|_| "文档状态不可用")?
@@ -298,9 +333,7 @@ pub(super) async fn convert_image_import(
     let worker_cancel = cancel.clone();
     let files = tauri::async_runtime::spawn_blocking(move || {
         file_drop::with_read_slot(|| {
-            file_import::read_images_cancellable(&paths, layout, || {
-                worker_cancel.load(Ordering::Acquire)
-            })
+            read_image_job(id, &paths, layout, &worker_cancel, on_progress)
         })
     })
     .await
@@ -323,6 +356,158 @@ pub(super) fn cancel_image_import(id: u32, state: State<'_, Store>) -> Reply<boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+    use std::sync::Mutex;
+
+    #[derive(Deserialize)]
+    struct ChannelArgument {
+        #[serde(default)]
+        on_progress: Option<tauri::ipc::JavaScriptChannelId>,
+    }
+
+    #[test]
+    fn optional_javascript_channel_id_accepts_omitted_null_and_valid_wire_values() {
+        assert!(
+            serde_json::from_str::<ChannelArgument>("{}")
+                .unwrap()
+                .on_progress
+                .is_none()
+        );
+        assert!(
+            serde_json::from_str::<ChannelArgument>(r#"{"on_progress":null}"#)
+                .unwrap()
+                .on_progress
+                .is_none()
+        );
+        assert!(
+            serde_json::from_str::<ChannelArgument>(r#"{"on_progress":"__CHANNEL__:17"}"#)
+                .unwrap()
+                .on_progress
+                .is_some()
+        );
+        assert!(serde_json::from_str::<ChannelArgument>(r#"{"on_progress":"invalid"}"#).is_err());
+    }
+
+    fn recording_channel(
+        messages: Arc<Mutex<Vec<serde_json::Value>>>,
+    ) -> tauri::ipc::Channel<ProgressNotice> {
+        tauri::ipc::Channel::new(move |body| {
+            let tauri::ipc::InvokeResponseBody::Json(json) = body else {
+                panic!("progress channel emitted non-JSON data")
+            };
+            messages
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&json).unwrap());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn worker_channel_reports_real_sources_and_preserves_none_output_and_inputs() {
+        let (_dir, paths) = files();
+        let before: Vec<_> = paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect();
+        let layout = pdfmaster_core::ImageImportLayout::default();
+        let messages = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let observed = read_image_job(
+            41,
+            &paths,
+            layout,
+            &AtomicBool::new(false),
+            Some(recording_channel(messages.clone())),
+        )
+        .unwrap();
+        let plain = read_image_job(41, &paths, layout, &AtomicBool::new(false), None).unwrap();
+
+        assert_eq!(observed, plain);
+        for pdf in &observed {
+            lopdf::Document::load_mem(pdf).unwrap();
+        }
+        let messages = messages.lock().unwrap();
+        assert_eq!(messages.len(), 2);
+        for (message, current) in messages.iter().zip([1, 2]) {
+            assert_eq!(message.as_object().unwrap().len(), 3);
+            assert_eq!(message["id"], 41);
+            assert_eq!(message["current"], current);
+            assert_eq!(message["total"], 2);
+        }
+        for (path, original) in paths.iter().zip(before) {
+            assert_eq!(std::fs::read(path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn worker_channel_emits_nothing_for_preflight_error_or_pre_cancel() {
+        let (dir, paths) = files();
+        let invalid = dir.path().join("invalid.png");
+        std::fs::write(&invalid, b"not an image").unwrap();
+        let layout = pdfmaster_core::ImageImportLayout::default();
+        for (batch, cancelled) in [
+            (vec![paths[0].clone(), invalid], false),
+            (paths.clone(), true),
+        ] {
+            let messages = Arc::new(Mutex::new(Vec::new()));
+            let result = read_image_job(
+                42,
+                &batch,
+                layout,
+                &AtomicBool::new(cancelled),
+                Some(recording_channel(messages.clone())),
+            );
+            assert!(result.is_err());
+            assert!(messages.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn worker_channel_callback_cancel_stops_after_first_real_source() {
+        let (_dir, paths) = files();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let messages = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let observed_messages = messages.clone();
+        let callback_cancel = cancelled.clone();
+        let channel = tauri::ipc::Channel::<ProgressNotice>::new(move |body| {
+            let tauri::ipc::InvokeResponseBody::Json(json) = body else {
+                panic!("progress channel emitted non-JSON data")
+            };
+            observed_messages
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&json).unwrap());
+            callback_cancel.store(true, Ordering::Release);
+            Ok(())
+        });
+
+        let result = read_image_job(
+            43,
+            &paths,
+            pdfmaster_core::ImageImportLayout::default(),
+            cancelled.as_ref(),
+            Some(channel),
+        );
+
+        assert!(result.is_err());
+        let messages = messages.lock().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["current"], 1);
+    }
+
+    #[test]
+    fn worker_ignores_channel_send_failure_without_changing_output() {
+        let (_dir, paths) = files();
+        let layout = pdfmaster_core::ImageImportLayout::default();
+        let failed = tauri::ipc::Channel::<ProgressNotice>::new(|_| {
+            Err(std::io::Error::other("synthetic channel failure").into())
+        });
+
+        let observed =
+            read_image_job(44, &paths, layout, &AtomicBool::new(false), Some(failed)).unwrap();
+        let plain = read_image_job(44, &paths, layout, &AtomicBool::new(false), None).unwrap();
+        assert_eq!(observed, plain);
+    }
     #[test]
     fn automatic_source_layout_reaches_real_file_conversion_and_new_tab_geometry() {
         let (_dir, paths) = files();

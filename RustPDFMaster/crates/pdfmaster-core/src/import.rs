@@ -7,6 +7,15 @@ const FRAME_PIXELS: u64 = 40_000_000;
 const TOTAL_PIXELS: u64 = 100_000_000;
 const MAX_PAGES: usize = 500;
 const DECODE_BYTES: u64 = 320 * 1024 * 1024;
+/// Identifies the source image whose conversion is about to start.
+///
+/// `current` is one-based and `total` is the number of source files in the
+/// batch. This is not a completion count, page count, byte count or percent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageImportProgress {
+    pub current: usize,
+    pub total: usize,
+}
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ImagePaper {
@@ -94,6 +103,17 @@ pub fn prepare_image_imports_cancellable(
     layout: ImageImportLayout,
     cancelled: impl Fn() -> bool,
 ) -> Result<Vec<Vec<u8>>> {
+    prepare_image_imports_observed(files, layout, cancelled, |_| {})
+}
+/// Prepares images while observing which source image is about to be processed.
+///
+/// Events are one-based source positions, not completion notifications.
+pub fn prepare_image_imports_observed(
+    files: &[(&str, &[u8])],
+    layout: ImageImportLayout,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(ImageImportProgress),
+) -> Result<Vec<Vec<u8>>> {
     check_cancelled(&cancelled)?;
     if files.iter().any(|(name, _)| {
         !matches!(
@@ -108,7 +128,7 @@ pub fn prepare_image_imports_cancellable(
         return Err(invalid());
     }
     check_cancelled(&cancelled)?;
-    prepare_with_layout(files, layout, &cancelled)
+    prepare_with_layout(files, layout, &cancelled, &mut progress)
 }
 fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Result<()> {
     if cancelled() {
@@ -319,12 +339,13 @@ fn tiff_dpi(d: &mut tiff::decoder::Decoder<Cursor<&[u8]>>) -> Result<Option<f64>
 /// Preflights the whole batch before any pixel decoding or output publication.
 /// Limits supplement decoder-specific limits, not a promise of total heap use.
 pub fn prepare_imports(files: &[(&str, &[u8])]) -> Result<Vec<Vec<u8>>> {
-    prepare_with_layout(files, ImageImportLayout::default(), &|| false)
+    prepare_with_layout(files, ImageImportLayout::default(), &|| false, &mut |_| {})
 }
 fn prepare_with_layout(
     files: &[(&str, &[u8])],
     layout: ImageImportLayout,
     cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(ImageImportProgress),
 ) -> Result<Vec<Vec<u8>>> {
     check_cancelled(cancelled)?;
     layout.validate()?;
@@ -434,7 +455,12 @@ fn prepare_with_layout(
     }
     let mut output = vec![];
     let mut output_bytes = 0usize;
-    for ((_, bytes), plan) in files.iter().zip(plans) {
+    for (index, ((_, bytes), plan)) in files.iter().zip(plans).enumerate() {
+        check_cancelled(cancelled)?;
+        progress(ImageImportProgress {
+            current: index + 1,
+            total: files.len(),
+        });
         check_cancelled(cancelled)?;
         let converted = match plan {
             Plan::Pdf => bytes.to_vec(),

@@ -30,8 +30,8 @@ pub use image_export::{
     ExportedImage, ImageExportFormat, ImageExportLimits, ImageExportRequest, ImageExportSummary,
 };
 pub use import::{
-    ImageImportLayout, ImagePaper, prepare_image_imports, prepare_image_imports_cancellable,
-    prepare_imports,
+    ImageImportLayout, ImageImportProgress, ImagePaper, prepare_image_imports,
+    prepare_image_imports_cancellable, prepare_image_imports_observed, prepare_imports,
 };
 pub use insert::{MAX_INSERT_BYTES, MAX_INSERT_FILES};
 pub use lines::{LineEnding, LineGeometry, Point};

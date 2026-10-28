@@ -1,4 +1,4 @@
-use super::{Document, Model, bridge};
+use super::{Model, bridge};
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::{
     image_import::{Configuration, Job, Selection},
@@ -90,9 +90,9 @@ impl Model {
                 Job::Configuration(configuration) if !configuration.error.is_empty() => {
                     configuration.error.clone()
                 }
-                Job::Configuration(configuration) if configuration.running => {
-                    "正在转换图片 · 不覆盖来源图片或当前文档".into()
-                }
+                Job::Configuration(configuration) if configuration.running => configuration
+                    .progress_text()
+                    .unwrap_or_else(|| "正在转换图片 · 不覆盖来源图片或当前文档".into()),
                 Job::Configuration(_) => "图片转换仍占用本地任务；请取消后重新选择。".into(),
                 Job::Recovery {
                     cancelling: true, ..
@@ -126,15 +126,20 @@ impl Model {
             if let Some(Job::Configuration(c)) = c {
                 c.running = true;
                 c.error.clear();
+                c.progress = None;
             }
         });
         self.busy.set(true);
         spawn_local(async move {
-            let result = bridge::call::<Document>(
-                "convert_image_import",
-                &json!({"id":id,"order":c.order,"layout":layout}),
-            )
-            .await;
+            let result =
+                super::image_progress_channel::convert(id, c.order, layout, move |notice| {
+                    let _ = self.image_import.try_update(|job| {
+                        if let Some(Job::Configuration(configuration)) = job {
+                            let _ = configuration.accept_progress(notice);
+                        }
+                    });
+                })
+                .await;
             if !self.image_current(id) {
                 return;
             }

@@ -29,10 +29,18 @@ pub(super) fn read_images_cancellable(
     layout: pdfmaster_core::ImageImportLayout,
     cancelled: impl Fn() -> bool,
 ) -> Reply<Vec<Vec<u8>>> {
-    read_with_layout(paths, Some(layout), &cancelled)
+    read_images_observed(paths, layout, cancelled, |_| {})
+}
+pub(super) fn read_images_observed(
+    paths: &[PathBuf],
+    layout: pdfmaster_core::ImageImportLayout,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(pdfmaster_core::ImageImportProgress),
+) -> Reply<Vec<Vec<u8>>> {
+    read_with_layout(paths, Some(layout), &cancelled, &mut progress)
 }
 pub(super) fn read(paths: &[PathBuf]) -> Reply<Vec<Vec<u8>>> {
-    read_with_layout(paths, None, &|| false)
+    read_with_layout(paths, None, &|| false, &mut |_| {})
 }
 fn read_file_cancellable(reader: &mut impl Read, cancelled: &dyn Fn() -> bool) -> Reply<Vec<u8>> {
     check_cancelled(cancelled)?;
@@ -64,6 +72,7 @@ fn read_with_layout(
     paths: &[PathBuf],
     layout: Option<pdfmaster_core::ImageImportLayout>,
     cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(pdfmaster_core::ImageImportProgress),
 ) -> Reply<Vec<Vec<u8>>> {
     check_cancelled(cancelled)?;
     if paths.is_empty() || paths.len() > pdfmaster_core::MAX_INSERT_FILES {
@@ -142,7 +151,9 @@ fn read_with_layout(
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
         .collect();
     let converted = match layout {
-        Some(layout) => pdfmaster_core::prepare_image_imports_cancellable(&refs, layout, cancelled),
+        Some(layout) => {
+            pdfmaster_core::prepare_image_imports_observed(&refs, layout, cancelled, progress)
+        }
         None => pdfmaster_core::prepare_imports(&refs),
     };
     match converted {
@@ -374,5 +385,115 @@ mod tests {
             std::os::unix::fs::symlink(&a, &link).unwrap();
             assert!(read(&[link]).is_err());
         }
+    }
+
+    #[test]
+    fn observed_image_reads_report_core_events_and_preserve_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Session::blank(80., 40., 1)
+            .unwrap()
+            .page_clipboard(&[0])
+            .unwrap()
+            .png;
+        let first = dir.path().join("first.png");
+        let second = dir.path().join("second.png");
+        std::fs::write(&first, &source).unwrap();
+        std::fs::write(&second, &source).unwrap();
+        let paths = [first.clone(), second.clone()];
+        let layout = pdfmaster_core::ImageImportLayout::default();
+        let mut seen = Vec::new();
+
+        let observed =
+            read_images_observed(&paths, layout, || false, |progress| seen.push(progress)).unwrap();
+
+        assert_eq!(
+            observed,
+            read_images_cancellable(&paths, layout, || false).unwrap()
+        );
+        assert_eq!(
+            seen.iter()
+                .map(|progress| (progress.current, progress.total))
+                .collect::<Vec<_>>(),
+            [(1, 2), (2, 2)]
+        );
+        assert_eq!(std::fs::read(first).unwrap(), source);
+        assert_eq!(std::fs::read(second).unwrap(), source);
+    }
+
+    #[test]
+    fn observed_image_reads_emit_no_events_for_preflight_failures_or_pre_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Session::blank(80., 40., 1)
+            .unwrap()
+            .page_clipboard(&[0])
+            .unwrap()
+            .png;
+        let good = dir.path().join("good.png");
+        let invalid = dir.path().join("invalid.png");
+        let missing = dir.path().join("missing.png");
+        std::fs::write(&good, &source).unwrap();
+        std::fs::write(&invalid, b"not an image").unwrap();
+        let layout = pdfmaster_core::ImageImportLayout::default();
+
+        for paths in [
+            vec![good.clone(), invalid.clone()],
+            vec![good.clone(), missing],
+        ] {
+            let mut seen = Vec::new();
+            let result =
+                read_images_observed(&paths, layout, || false, |progress| seen.push(progress));
+            assert!(
+                result.is_err(),
+                "invalid native batch unexpectedly succeeded"
+            );
+            assert!(seen.is_empty(), "preflight emitted {seen:?}");
+        }
+
+        let mut seen = Vec::new();
+        let result = read_images_observed(
+            std::slice::from_ref(&good),
+            layout,
+            || true,
+            |progress| seen.push(progress),
+        );
+        assert_eq!(result.unwrap_err(), cancellation_error());
+        assert!(seen.is_empty());
+        assert_eq!(std::fs::read(good).unwrap(), source);
+    }
+
+    #[test]
+    fn observed_image_read_callback_cancellation_is_atomic_and_preserves_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Session::blank(80., 40., 1)
+            .unwrap()
+            .page_clipboard(&[0])
+            .unwrap()
+            .png;
+        let first = dir.path().join("first.png");
+        let second = dir.path().join("second.png");
+        std::fs::write(&first, &source).unwrap();
+        std::fs::write(&second, &source).unwrap();
+        let stop = Cell::new(false);
+        let mut seen = Vec::new();
+
+        let result = read_images_observed(
+            &[first.clone(), second.clone()],
+            pdfmaster_core::ImageImportLayout::default(),
+            || stop.get(),
+            |progress| {
+                seen.push(progress);
+                stop.set(true);
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), cancellation_error());
+        assert_eq!(
+            seen.iter()
+                .map(|progress| (progress.current, progress.total))
+                .collect::<Vec<_>>(),
+            [(1, 2)]
+        );
+        assert_eq!(std::fs::read(first).unwrap(), source);
+        assert_eq!(std::fs::read(second).unwrap(), source);
     }
 }

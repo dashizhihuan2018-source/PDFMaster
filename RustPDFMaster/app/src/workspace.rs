@@ -8,6 +8,8 @@ mod file_drop_view;
 mod home;
 #[path = "image_import_view.rs"]
 mod image_import_view;
+#[path = "image_progress_channel.rs"]
+mod image_progress_channel;
 #[path = "overview_view.rs"]
 mod overview_view;
 #[path = "thumbnail_view.rs"]
