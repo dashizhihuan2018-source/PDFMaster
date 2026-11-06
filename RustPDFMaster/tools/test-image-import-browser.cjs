@@ -36,6 +36,10 @@ async function sendProgress(page,id,payload){await page.evaluate(({id,payload})=
   const channel=window.fixture.progress.get(id);if(!channel)throw new Error(`missing progress channel ${id}`);
   channel.onmessage(payload);
 },{id,payload});}
+async function sendCancelIntent(page,id,payload){await page.evaluate(({id,payload})=>{
+  const channel=window.fixture.cancelChannels.get(id);if(!channel)throw new Error(`missing cancel channel ${id}`);
+  channel.onmessage(payload);
+},{id,payload});}
 async function releaseCancel(page,id,reply){await page.evaluate(({id,reply})=>{
   const pending=window.fixture.cancelPending.get(id);if(!pending)throw new Error(`missing pending cancellation ${id}`);
   window.fixture.cancelPending.delete(id);reply.reject?pending.reject(reply.reject):pending.resolve(reply.value);
@@ -48,9 +52,18 @@ async function setChannelMode(page,mode){await page.evaluate(mode=>{
   else if(mode==='throw')core.Channel=class{constructor(callback){window.fixture.retainedThrowCallback=callback;throw new Error('synthetic Channel constructor failure');}};
   else throw new Error(`unknown Channel mode ${mode}`);
 },mode);}
+async function setCancelChannelMode(page,mode){await page.evaluate(mode=>{
+  if(!['normal','missing','throw','retained-throw'].includes(mode))throw new Error(`unknown cancel Channel mode ${mode}`);
+  window.fixture.cancelChannelMode=mode;window.fixture.channelConstructorCount=0;
+  window.__TAURI__.core.Channel=window.fixture.Channel;
+},mode);}
 async function sendRetainedThrowProgress(page,payload){await page.evaluate(payload=>{
   if(!window.fixture.retainedThrowCallback)throw new Error('missing retained throwing-constructor callback');
   window.fixture.retainedThrowCallback(payload);
+},payload);}
+async function sendRetainedThrowCancel(page,payload){await page.evaluate(payload=>{
+  if(!window.fixture.retainedCancelThrowCallback)throw new Error('missing retained cancel throwing-constructor callback');
+  window.fixture.retainedCancelThrowCallback(payload);
 },payload);}
 async function releaseConvert(page,id,reply){await page.evaluate(({id,reply})=>{
   const pending=window.fixture.pending.get(id);if(!pending)throw new Error(`missing pending conversion ${id}`);
@@ -69,17 +82,31 @@ async function openTools(page){
       const page=await browser.newPage({viewport:{width,height:900}});page.setDefaultTimeout(3000);
       const pageErrors=[];page.on('pageerror',error=>pageErrors.push(String(error)));
       await page.addInitScript(initialDraft=>{
-        class FixtureChannel{constructor(cb){this.onmessage=cb;}}
-        window.requests=[];window.fixture={pickers:[],converts:[],cancels:[],pending:new Map(),cancelPending:new Map(),progress:new Map(),plainConvertArgs:[],Channel:FixtureChannel,retainedThrowCallback:null,next:0};
+        class FixtureChannel{constructor(cb){
+          const fixture=window.fixture,slot=fixture.channelConstructorCount++;
+          if(slot===1&&fixture.cancelChannelMode==='throw')throw new Error('synthetic cancel Channel constructor failure');
+          if(slot===1&&fixture.cancelChannelMode==='retained-throw'){
+            fixture.retainedCancelThrowCallback=cb;throw new Error('synthetic retained cancel Channel constructor failure');
+          }
+          this.onmessage=cb;
+          if(slot===0&&fixture.cancelChannelMode==='missing')delete window.__TAURI__.core.Channel;
+        }}
+        window.requests=[];window.fixture={pickers:[],converts:[],cancels:[],pending:new Map(),cancelPending:new Map(),progress:new Map(),cancelChannels:new Map(),plainConvertArgs:[],Channel:FixtureChannel,retainedThrowCallback:null,retainedCancelThrowCallback:null,cancelChannelMode:'normal',channelConstructorCount:0,next:0};
         window.__TAURI__={core:{Channel:FixtureChannel,invoke:async(command,args)=>{
           if(command==='convert_image_import'){
             window.fixture.plainConvertArgs.push(!(args instanceof Map)&&Object.getPrototypeOf(args)===Object.prototype);
             const channel=args instanceof Map?args.get('on_progress'):args&&args.on_progress;
+            const cancelChannel=args instanceof Map?args.get('on_cancel'):args&&args.on_cancel;
             const id=args instanceof Map?args.get('id'):args&&args.id;
             if(channel)window.fixture.progress.set(id,channel);
+            if(cancelChannel)window.fixture.cancelChannels.set(id,cancelChannel);
+            window.fixture.channelConstructorCount=0;
+            if(window.fixture.cancelChannelMode==='missing'){
+              window.__TAURI__.core.Channel=window.fixture.Channel;window.fixture.cancelChannelMode='normal';
+            }
           }
           args=JSON.parse(JSON.stringify(args,(_k,v)=>v instanceof Map?Object.fromEntries(v):v));window.requests.push({command,args});
-          if(command==='convert_image_import'&&args)delete window.requests.at(-1).args.on_progress;
+          if(command==='convert_image_import'&&args){delete window.requests.at(-1).args.on_progress;delete window.requests.at(-1).args.on_cancel;}
           if(command==='document_info')return initialDraft;
           if(command==='register_file_drop_channel')return 1;
           if(command==='unregister_file_drop_channel')return null;
@@ -146,6 +173,7 @@ async function openTools(page){
       assert.equal(await requestCount(page,'convert_image_import'),1,'selection must convert without another click');
       assert.equal(await page.evaluate(()=>window.fixture.plainConvertArgs[0]),true,'observed conversion arguments must be a plain object');
       assert.equal(await page.evaluate(()=>window.fixture.progress.get(1) instanceof window.fixture.Channel),true,'conversion must attach the real Channel object before request recording');
+      assert.equal(await page.evaluate(()=>window.fixture.cancelChannels.get(1) instanceof window.fixture.Channel),true,'conversion must attach a dedicated real cancel Channel object before request recording');
       assert.deepEqual((await page.evaluate(()=>window.requests.findLast(r=>r.command==='convert_image_import'))).args,{id:1,order:[0,1,2],layout:{paper:'source',landscape:false,margin:0}});
       assert.equal(await tool.isDisabled(),true,'tool stays disabled while conversion owns the selection');
       assert.ok((await statusText(page)).includes('正在转换图片'),'首个真实事件前保留通用转换状态');
@@ -188,6 +216,8 @@ async function openTools(page){
       assert.ok((await page.getByRole('status').last().innerText()).includes('取消未确认'));
       const failedStatus=await statusText(page);await sendProgress(page,1,{id:1,current:3,total:3});
       assert.equal(await statusText(page),failedStatus,'settled conversion progress callback must be inert during error cleanup');
+      const failedCancelCount=await requestCount(page,'cancel_image_import');await sendCancelIntent(page,1,{id:1});await page.waitForTimeout(50);
+      assert.equal(await requestCount(page,'cancel_image_import'),failedCancelCount,'settled conversion cancel callback must be inert during error cleanup');
       await queueCancel(page,{reject:'synthetic automatic cleanup transport error'});await cancel.click();
       await page.waitForFunction(()=>!document.querySelector('[aria-label="取消图片转换"]').disabled,undefined,{timeout:3000});
       assert.ok((await page.getByRole('status').last().innerText()).includes('synthetic automatic cleanup transport error'));
@@ -212,6 +242,8 @@ async function openTools(page){
       assert.ok((await page.getByRole('status').last().innerText()).includes('synthetic automatic cleanup transport error'));
       const transportErrorStatus=await statusText(page);await sendProgress(page,2,{id:2,current:3,total:3});
       assert.equal(await statusText(page),transportErrorStatus,'settled progress must not overwrite cleanup transport error');
+      const transportCancelCount=await requestCount(page,'cancel_image_import');await sendCancelIntent(page,2,{id:2});await page.waitForTimeout(50);
+      assert.equal(await requestCount(page,'cancel_image_import'),transportCancelCount,'settled cancel callback must not retry a cleanup transport error');
       await queueCancel(page,true);await cancel.click();await cancel.waitFor({state:'hidden'});
       await page.waitForFunction(()=>!document.querySelector('[aria-label="图片转 PDF"]').disabled,undefined,{timeout:3000});
 
@@ -219,8 +251,15 @@ async function openTools(page){
       await tool.click();await waitForRequestCount(page,'convert_image_import',3);cancel=page.getByRole('button',{name:'取消图片转换',exact:true});await cancel.waitFor();
       await sendProgress(page,3,{id:3,current:1,total:3});
       await page.waitForFunction(()=>[...document.querySelectorAll('[role=status]')].some(e=>e.textContent.includes('正在处理第 1 张图 ，共 3 张...')));
-      const cancelRequest0=await requestCount(page,'cancel_image_import');await queueCancel(page,{pending:true});await cancel.click();
+      const cancelRequest0=await requestCount(page,'cancel_image_import');
+      for(const payload of ['bad cancel payload',null,{id:'3'},{id:3,extra:true},{id:2}]){
+        await sendCancelIntent(page,3,payload);await page.waitForTimeout(20);
+        assert.equal(await requestCount(page,'cancel_image_import'),cancelRequest0,`invalid native cancel payload must be ignored: ${JSON.stringify(payload)}`);
+      }
+      await queueCancel(page,{pending:true});await sendCancelIntent(page,3,{id:3});
       await waitForRequestCount(page,'cancel_image_import',cancelRequest0+1);
+      await sendCancelIntent(page,3,{id:3});await page.waitForTimeout(50);
+      assert.equal(await requestCount(page,'cancel_image_import'),cancelRequest0+1,'duplicate native cancel intent must merge while acknowledgement is pending');
       assert.ok((await statusText(page)).includes('正在取消图片转换'),'pending cancellation must outrank source progress');
       const pendingCancelStatus=await statusText(page);await sendProgress(page,3,{id:3,current:2,total:3});
       assert.equal(await statusText(page),pendingCancelStatus,'progress must not overwrite pending cancellation');
@@ -228,17 +267,21 @@ async function openTools(page){
       assert.ok((await statusText(page)).includes('取消未确认'));
       const falseCancelStatus=await statusText(page);await sendProgress(page,3,{id:3,current:3,total:3});
       assert.equal(await statusText(page),falseCancelStatus,'progress must not overwrite a false cancellation result');
-      await queueCancel(page,{reject:'synthetic cancel transport error'});await cancel.click();await page.waitForFunction(()=>!document.querySelector('[aria-label="取消图片转换"]').disabled,undefined,{timeout:3000});
+      await queueCancel(page,{reject:'synthetic cancel transport error'});await sendCancelIntent(page,3,{id:3});await page.waitForFunction(()=>!document.querySelector('[aria-label="取消图片转换"]').disabled,undefined,{timeout:3000});
       assert.ok((await page.getByRole('status').last().innerText()).includes('synthetic cancel transport error'));
       const rejectedCancelStatus=await statusText(page);await sendProgress(page,3,{id:3,current:3,total:3});
       assert.equal(await statusText(page),rejectedCancelStatus,'progress must not overwrite a cancellation transport error');
-      await queueCancel(page,true);await cancel.click();await cancel.waitFor({state:'hidden'});
+      await queueCancel(page,true);await sendCancelIntent(page,3,{id:3});await cancel.waitFor({state:'hidden'});
       assert.equal(await page.getByRole('button',{name:/文档标签/}).count(),1,'confirmed cancellation must not create a tab');
+      const settledCancel3=await requestCount(page,'cancel_image_import');await sendCancelIntent(page,3,{id:3});await page.waitForTimeout(50);
+      assert.equal(await requestCount(page,'cancel_image_import'),settledCancel3,'cancel callback must not act after its job is cleared');
 
       await queuePicker(page,{id:4,names:['first.png','second.tiff','third.jpg']});await queueConvert(page,{pending:true});
       await tool.click();await waitForRequestCount(page,'convert_image_import',4);
       assert.ok((await statusText(page)).includes('正在转换图片'),'new job begins without an old source count');
       await sendProgress(page,3,{id:3,current:3,total:3});
+      const staleCancel3=await requestCount(page,'cancel_image_import');await sendCancelIntent(page,3,{id:3});await page.waitForTimeout(50);
+      assert.equal(await requestCount(page,'cancel_image_import'),staleCancel3,'old job cancel intent must not cancel a newer job');
       assert.ok((await statusText(page)).includes('正在转换图片'),'unsettled old job progress must not affect current job');
       await releaseConvert(page,3,{ok:false,error:'late old rejection'});await page.waitForTimeout(100);
       await sendProgress(page,3,{id:3,current:3,total:3});
@@ -254,6 +297,28 @@ async function openTools(page){
       assert.equal(await page.getByRole('button',{name:'文档标签 迟到旧文档.pdf',exact:true}).count(),0,'stale success must not publish');
       assert.equal(await page.getByRole('button',{name:'取消图片转换',exact:true}).count(),1,'stale success must not clear current job');
       await queueCancel(page,true);await page.getByRole('button',{name:'取消图片转换',exact:true}).click();await page.getByRole('button',{name:'取消图片转换',exact:true}).waitFor({state:'hidden'});
+
+      for(const scenario of [
+        {id:60,mode:'missing',name:'取消通道缺失降级.pdf'},
+        {id:61,mode:'throw',name:'取消通道异常降级.pdf'},
+        {id:62,mode:'retained-throw',name:'取消通道保留异常降级.pdf'},
+      ]){
+        await setCancelChannelMode(page,scenario.mode);
+        await queuePicker(page,{id:scenario.id,names:['first.png','second.tiff','third.jpg']});await queueConvert(page,{pending:true});
+        const convertsBefore=await requestCount(page,'convert_image_import'),cancelsBefore=await requestCount(page,'cancel_image_import');
+        await tool.click();await waitForRequestCount(page,'convert_image_import',convertsBefore+1);
+        assert.equal(await page.evaluate(id=>window.fixture.progress.get(id) instanceof window.fixture.Channel,scenario.id),true,`${scenario.mode} cancel constructor must preserve the working progress Channel`);
+        assert.equal(await page.evaluate(id=>window.fixture.cancelChannels.has(id),scenario.id),false,`${scenario.mode} cancel constructor must not attach a false cancel capability`);
+        await sendProgress(page,scenario.id,{id:scenario.id,current:1,total:3});
+        await page.waitForFunction(()=>[...document.querySelectorAll('[role=status]')].some(e=>e.textContent.includes('正在处理第 1 张图 ，共 3 张...')));
+        if(scenario.mode==='retained-throw')await sendRetainedThrowCancel(page,{id:scenario.id});
+        await page.waitForTimeout(50);
+        assert.equal(await requestCount(page,'cancel_image_import'),cancelsBefore,`${scenario.mode} cancel constructor must not synthesize cancellation`);
+        assert.equal(await requestCount(page,'convert_image_import'),convertsBefore+1,`${scenario.mode} cancel constructor must keep conversion single-invoke`);
+        await releaseConvert(page,scenario.id,{ok:true,document:converted(200+scenario.id,scenario.name)});
+        await page.getByRole('button',{name:`文档标签 ${scenario.name}`,exact:true}).waitFor();await assertNoCard(page);
+        await setCancelChannelMode(page,'normal');tool=await openTools(page);
+      }
 
       await setChannelMode(page,'missing');
       await queuePicker(page,{id:6,names:['first.png','second.tiff','third.jpg']});await queueConvert(page,{document:converted(106,'无通道降级.pdf')});
@@ -297,6 +362,8 @@ async function openTools(page){
       await page.screenshot({path:`/tmp/pdfmaster-image-import-no-card-success-${width}.png`});
       await sendProgress(page,8,{id:8,current:3,total:3});
       assert.equal(await page.getByRole('button',{name:'文档标签 图片合并.pdf',exact:true}).count(),1,'settled current channel callback must be inert');
+      const settledCancel8=await requestCount(page,'cancel_image_import');await sendCancelIntent(page,8,{id:8});await page.waitForTimeout(50);
+      assert.equal(await requestCount(page,'cancel_image_import'),settledCancel8,'settled current cancel callback must be inert');
       await releaseConvert(page,5,{ok:false,error:'late cancelled job rejection'});await page.waitForTimeout(100);
       assert.equal(await page.getByRole('button',{name:'文档标签 图片合并.pdf',exact:true}).count(),1,'late rejection cannot remove the published current result');
       await sendProgress(page,5,{id:5,current:2,total:3});await page.waitForTimeout(50);

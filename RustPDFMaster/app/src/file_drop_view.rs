@@ -229,12 +229,17 @@ impl Model {
                         self.restore_tab(&doc);
                         self.route.set(Route::Document);
                     }
-                    self.page
-                        .set(index.min(doc.info.page_count.saturating_sub(1)));
+                    if !home {
+                        self.page
+                            .set(index.min(doc.info.page_count.saturating_sub(1)));
+                    }
                     self.page_jump
                         .set((self.page.get_untracked() + 1).to_string());
                     self.search_result.set(None);
                     self.replace_document_view(Some(doc));
+                    if home {
+                        self.refresh_recent();
+                    }
                     if overview {
                         self.overview_selection.update(|s| {
                             s.restore(&(index..index + added).collect::<Vec<_>>(), self.count())

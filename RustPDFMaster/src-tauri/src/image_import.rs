@@ -213,9 +213,14 @@ pub(super) struct Selection {
 }
 #[derive(Clone, serde::Serialize)]
 pub(super) struct ProgressNotice {
-    id: u32,
-    current: usize,
-    total: usize,
+    pub(super) id: u32,
+    pub(super) current: usize,
+    pub(super) total: usize,
+}
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, serde::Serialize)]
+pub(super) struct CancelNotice {
+    pub(super) id: u32,
 }
 
 fn read_image_job(
@@ -224,23 +229,30 @@ fn read_image_job(
     layout: pdfmaster_core::ImageImportLayout,
     cancelled: &AtomicBool,
     on_progress: Option<tauri::ipc::Channel<ProgressNotice>>,
+    native_observer: Option<Box<dyn FnMut(ProgressNotice) + Send>>,
 ) -> Reply<Vec<Vec<u8>>> {
-    match on_progress {
-        Some(channel) => file_import::read_images_observed(
+    match (on_progress, native_observer) {
+        (None, None) => file_import::read_images_cancellable(paths, layout, || {
+            cancelled.load(Ordering::Acquire)
+        }),
+        (channel, mut observer) => file_import::read_images_observed(
             paths,
             layout,
             || cancelled.load(Ordering::Acquire),
             |progress| {
-                let _ = channel.send(ProgressNotice {
+                let notice = ProgressNotice {
                     id,
                     current: progress.current,
                     total: progress.total,
-                });
+                };
+                if let Some(observer) = observer.as_mut() {
+                    observer(notice.clone());
+                }
+                if let Some(channel) = channel.as_ref() {
+                    let _ = channel.send(notice);
+                }
             },
         ),
-        None => file_import::read_images_cancellable(paths, layout, || {
-            cancelled.load(Ordering::Acquire)
-        }),
     }
 }
 
@@ -318,10 +330,11 @@ pub(super) async fn convert_image_import(
     order: Vec<usize>,
     layout: pdfmaster_core::ImageImportLayout,
     on_progress: Option<tauri::ipc::JavaScriptChannelId>,
+    on_cancel: Option<tauri::ipc::JavaScriptChannelId>,
     webview: tauri::Webview,
     state: State<'_, Store>,
 ) -> Reply<DocumentView> {
-    let on_progress = on_progress.map(|channel| channel.channel_on(webview));
+    let on_progress = on_progress.map(|channel| channel.channel_on(webview.clone()));
     let (reservation, paths, name, cancel) = state
         .lock()
         .map_err(|_| "文档状态不可用")?
@@ -330,10 +343,32 @@ pub(super) async fn convert_image_import(
         store: state.inner(),
         id: reservation,
     };
+    #[cfg(target_os = "macos")]
+    let native_session = on_cancel.and_then(|channel| {
+        super::image_progress_macos::Session::start(
+            webview.window(),
+            id,
+            channel.channel_on(webview.clone()),
+        )
+    });
+    #[cfg(target_os = "macos")]
+    let native_observer = native_session.as_ref().map(|session| session.observer());
+    #[cfg(not(target_os = "macos"))]
+    let native_observer: Option<Box<dyn FnMut(ProgressNotice) + Send>> = {
+        let _ = on_cancel;
+        None
+    };
     let worker_cancel = cancel.clone();
     let files = tauri::async_runtime::spawn_blocking(move || {
         file_drop::with_read_slot(|| {
-            read_image_job(id, &paths, layout, &worker_cancel, on_progress)
+            read_image_job(
+                id,
+                &paths,
+                layout,
+                &worker_cancel,
+                on_progress,
+                native_observer,
+            )
         })
     })
     .await
@@ -344,14 +379,29 @@ pub(super) async fn convert_image_import(
         .map_err(|_| "文档状态不可用")?
         .finish_image_conversion(id, reservation, name, &refs);
     drop(guard);
+    #[cfg(target_os = "macos")]
+    drop(native_session);
     result
 }
 #[tauri::command]
-pub(super) fn cancel_image_import(id: u32, state: State<'_, Store>) -> Reply<bool> {
-    Ok(state
-        .lock()
-        .map_err(|_| "文档状态不可用")?
-        .cancel_image_tool(id))
+pub(super) fn cancel_image_import(
+    id: u32,
+    webview: tauri::Webview,
+    state: State<'_, Store>,
+) -> Reply<bool> {
+    let acknowledged = {
+        state
+            .lock()
+            .map_err(|_| "文档状态不可用")?
+            .cancel_image_tool(id)
+    };
+    #[cfg(target_os = "macos")]
+    if acknowledged {
+        super::image_progress_macos::hide(webview.window(), id);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = webview;
+    Ok(acknowledged)
 }
 #[cfg(test)]
 mod tests {
@@ -363,16 +413,15 @@ mod tests {
     struct ChannelArgument {
         #[serde(default)]
         on_progress: Option<tauri::ipc::JavaScriptChannelId>,
+        #[serde(default)]
+        on_cancel: Option<tauri::ipc::JavaScriptChannelId>,
     }
 
     #[test]
     fn optional_javascript_channel_id_accepts_omitted_null_and_valid_wire_values() {
-        assert!(
-            serde_json::from_str::<ChannelArgument>("{}")
-                .unwrap()
-                .on_progress
-                .is_none()
-        );
+        let omitted = serde_json::from_str::<ChannelArgument>("{}").unwrap();
+        assert!(omitted.on_progress.is_none());
+        assert!(omitted.on_cancel.is_none());
         assert!(
             serde_json::from_str::<ChannelArgument>(r#"{"on_progress":null}"#)
                 .unwrap()
@@ -386,6 +435,27 @@ mod tests {
                 .is_some()
         );
         assert!(serde_json::from_str::<ChannelArgument>(r#"{"on_progress":"invalid"}"#).is_err());
+        assert!(
+            serde_json::from_str::<ChannelArgument>(r#"{"on_cancel":null}"#)
+                .unwrap()
+                .on_cancel
+                .is_none()
+        );
+        assert!(
+            serde_json::from_str::<ChannelArgument>(r#"{"on_cancel":"__CHANNEL__:18"}"#)
+                .unwrap()
+                .on_cancel
+                .is_some()
+        );
+        assert!(serde_json::from_str::<ChannelArgument>(r#"{"on_cancel":"invalid"}"#).is_err());
+    }
+
+    #[test]
+    fn cancel_notice_serializes_to_exact_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(CancelNotice { id: 41 }).unwrap(),
+            serde_json::json!({"id": 41})
+        );
     }
 
     fn recording_channel(
@@ -418,9 +488,11 @@ mod tests {
             layout,
             &AtomicBool::new(false),
             Some(recording_channel(messages.clone())),
+            None,
         )
         .unwrap();
-        let plain = read_image_job(41, &paths, layout, &AtomicBool::new(false), None).unwrap();
+        let plain =
+            read_image_job(41, &paths, layout, &AtomicBool::new(false), None, None).unwrap();
 
         assert_eq!(observed, plain);
         for pdf in &observed {
@@ -456,6 +528,7 @@ mod tests {
                 layout,
                 &AtomicBool::new(cancelled),
                 Some(recording_channel(messages.clone())),
+                None,
             );
             assert!(result.is_err());
             assert!(messages.lock().unwrap().is_empty());
@@ -487,6 +560,7 @@ mod tests {
             pdfmaster_core::ImageImportLayout::default(),
             cancelled.as_ref(),
             Some(channel),
+            None,
         );
 
         assert!(result.is_err());
@@ -503,10 +577,96 @@ mod tests {
             Err(std::io::Error::other("synthetic channel failure").into())
         });
 
-        let observed =
-            read_image_job(44, &paths, layout, &AtomicBool::new(false), Some(failed)).unwrap();
-        let plain = read_image_job(44, &paths, layout, &AtomicBool::new(false), None).unwrap();
+        let observed = read_image_job(
+            44,
+            &paths,
+            layout,
+            &AtomicBool::new(false),
+            Some(failed),
+            None,
+        )
+        .unwrap();
+        let plain =
+            read_image_job(44, &paths, layout, &AtomicBool::new(false), None, None).unwrap();
         assert_eq!(observed, plain);
+    }
+
+    #[test]
+    fn native_observer_reports_real_sources_without_channel_and_preserves_output() {
+        let (_dir, paths) = files();
+        let layout = pdfmaster_core::ImageImportLayout::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        let observer = Box::new(move |notice: ProgressNotice| {
+            capture
+                .lock()
+                .unwrap()
+                .push((notice.id, notice.current, notice.total));
+        });
+
+        let observed = read_image_job(
+            45,
+            &paths,
+            layout,
+            &AtomicBool::new(false),
+            None,
+            Some(observer),
+        )
+        .unwrap();
+        let plain =
+            read_image_job(45, &paths, layout, &AtomicBool::new(false), None, None).unwrap();
+
+        assert_eq!(*seen.lock().unwrap(), [(45, 1, 2), (45, 2, 2)]);
+        assert_eq!(observed, plain);
+    }
+
+    #[test]
+    fn native_observer_emits_nothing_for_preflight_failure() {
+        let (dir, paths) = files();
+        let invalid = dir.path().join("invalid.png");
+        std::fs::write(&invalid, b"not an image").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        let observer = Box::new(move |notice: ProgressNotice| {
+            capture.lock().unwrap().push(notice.current);
+        });
+
+        let result = read_image_job(
+            46,
+            &[paths[0].clone(), invalid],
+            pdfmaster_core::ImageImportLayout::default(),
+            &AtomicBool::new(false),
+            None,
+            Some(observer),
+        );
+
+        assert!(result.is_err());
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_observer_callback_cancel_stops_after_first_real_source() {
+        let (_dir, paths) = files();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        let callback_cancel = Arc::clone(&cancelled);
+        let observer = Box::new(move |notice: ProgressNotice| {
+            capture.lock().unwrap().push(notice.current);
+            callback_cancel.store(true, Ordering::Release);
+        });
+
+        let result = read_image_job(
+            47,
+            &paths,
+            pdfmaster_core::ImageImportLayout::default(),
+            cancelled.as_ref(),
+            None,
+            Some(observer),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(*seen.lock().unwrap(), [1]);
     }
     #[test]
     fn automatic_source_layout_reaches_real_file_conversion_and_new_tab_geometry() {

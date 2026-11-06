@@ -35,7 +35,7 @@ const server=http.createServer((req,res)=>{
             assertToken(args.token);if(!window.pageClipboard)throw new Error('synthetic external replacement');
             d.info.pages.splice(args.index,0,...structuredClone(window.pageClipboard));d.info.page_count=d.info.pages.length;current=0;return structuredClone(d);
           }
-          if(command==='insert_pdf_document'||command==='insert_pdfs_document')return null;
+          if(command==='insert_pdf_document'||command==='insert_pdfs_document'||command==='extract_pages_document')return null;
           if(command==='cancel_file_drop')return true;
           if(command==='open_file_drop'){
             if(window.holdHome){window.holdHome=false;return new Promise((_,reject)=>{window.releaseHome=()=>reject(new Error('synthetic cancelled home import'));});}
@@ -150,7 +150,10 @@ const server=http.createServer((req,res)=>{
       await grid.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});
       await tile(1).click();await tile(3).click({modifiers:['Control']});
       await page.getByRole('button',{name:'工具 · 摘录',exact:true}).click();
-      assert.equal(await page.getByRole('textbox',{name:'批量页码范围',exact:true}).inputValue(),'2,4');
+      await page.waitForFunction(()=>window.requests.some(r=>r.command==='extract_pages_document'));
+      assert.equal(await page.evaluate(()=>window.requests.find(r=>r.command==='extract_pages_document').args.range),'2,4');
+      await page.getByLabel('更多工具',{exact:true}).click();
+      await page.getByRole('button',{name:'页面操作',exact:true}).click();
       await page.getByRole('button',{name:'在当前页后插入 PDF',exact:true}).click();
       await page.waitForFunction(()=>window.requests.some(r=>r.command==='insert_pdf_document'));
       assert.equal(await page.evaluate(()=>window.requests.find(r=>r.command==='insert_pdf_document').args.index),4,'panel insertion uses the last overview selection, not the hidden reader');

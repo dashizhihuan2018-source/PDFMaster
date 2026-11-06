@@ -1,6 +1,20 @@
 # Candidate source snapshot — not a product release
 
-## Current snapshot: development b33c20c9 (2026-10-28)
+## Current candidate: Windows-only d1c52d77 (2026-11-06)
+
+This snapshot contains **289 Rust/workflow files** from development `d1c52d774ad1efee2d262ac1824b965537083e2c`, plus public-only release records. Product-file bytes are unchanged from that audited source. Apple-native software, downloads and ownership notices are preserved. Rust macOS/iOS delivery is cancelled for this task; no other platform is certified by the Windows candidate.
+
+The current candidate removes generic tool-parameter cards in favor of direct toolbar/menu actions and ordinary native file dialogs. It connects bounded PDF image export, recent/favorite documents, four UTF-8 text/summary formats, and whole-Ink erasing with Undo/Redo. The Windows text-output replacement fix retains source/target identity and byte checks, releasing only the app's captured destination handle immediately before the existing write-through replacement.
+
+Consolidated exact-source Windows x64 MSVC verification passed **1,076 Rust tests, 12 notice tests**, formatting/strict Clippy, release WASM, three core smoke checks, and NSIS packaging. The exact installer was installed and exercised on Windows Server 2025 x64 (10.0.26100): native Open/Save/reopen, render/navigation, native page-range Cancel, shape creation/selection, four real UTF-8 text exports, native text Save Cancel and confirmed existing-output replacement, two-page PNG export, recent/favorite source deduplication, and actual Ink drawing/whole erasing/Undo/Redo. Export bytes and PDF hashes were independently read back; the owned original remained unchanged and WebView errors were empty. Real desktop screenshots were visually inspected; no generic parameter card appeared in the tested workflows.
+
+Installer: `pdfmaster-rust-candidate-windows-x64-nsis.exe`, **33,304,266 bytes**, SHA-256 `f753d646df9a836e620c3ebd8c47b7220a6dbd2206f255d6113cc4d02c3c0332`. Installed executable SHA-256: `d21ea7490e2bef3c8546095221f010eb83014f108738b1a369371f9d762958ba`. The original consolidated run passed build/tests but failed a QA-only native confirmation guard; subsequent runtime-only checks corrected script encoding/control discovery and a UI-mount race, reusing this exact installer without rebuilding or changing product files. Final installed-runtime validation passed with source/hash-bound evidence.
+
+Download: [Windows x64 candidate](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/rust-windows-candidate-2026-11-06). This is an **unsigned development candidate**, not full PDF Expert feature/UI parity: unsupported catalog tools remain unavailable, text-markup selection is not connected, and original-app paired visual acceptance remains incomplete. Hosted Server x64 testing does not certify a clean consumer Windows 10/11 PC or SmartScreen acceptance. Windows signing is not established. Host tests, cross-compilation and compiled-WASM protocol replays are separate evidence, not substitutes for the installed runtime.
+
+Private QA scripts/history, REA material, profiles, user documents, credentials and local evidence are excluded. The following sections are historical checkpoints and do not certify the current candidate.
+
+## Historical snapshot: development b33c20c9 (2026-10-28)
 
 Exactly **198 tracked Rust/workflow files** from development `b33c20c9d7e65ee7c4641a832121cb0c6e676397`, plus this public-only record. Reviewed source sharing only: private history, REA evidence/expression/resources, memory, user files/screenshots, synthetic test outputs and generated packages are excluded. The installed Apple-native app and native Release/tag/site remain unchanged.
 

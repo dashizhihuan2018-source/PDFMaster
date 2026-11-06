@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -25,6 +25,15 @@ const MAX_SOURCE_RESOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_PIXELS: u64 = 40_000_000;
 const MAX_RESOURCE_OBJECTS: usize = 4_096;
 const MAX_RESOURCE_DEPTH: usize = 64;
+
+#[path = "render_cmap.rs"]
+mod cmap;
+#[path = "render_fonts.rs"]
+mod fonts;
+#[path = "render_graphics_state.rs"]
+mod graphics_state;
+#[path = "render_marked_content.rs"]
+mod marked_content;
 
 impl Session {
     pub fn render_png(&self, page: usize, scale: f32) -> Result<Vec<u8>> {
@@ -228,12 +237,14 @@ struct PreflightState {
     validated_xobjects: HashSet<ObjectId>,
     resource_objects: usize,
     source_resource_bytes: u64,
+    font_state: fonts::FontState,
 }
 
 #[derive(Default)]
 struct AuditedResources {
-    fonts: HashSet<Vec<u8>>,
+    fonts: HashMap<Vec<u8>, fonts::AuditedFont>,
     xobjects: HashSet<Vec<u8>>,
+    extgstates: HashSet<Vec<u8>>,
 }
 
 impl PreflightState {
@@ -359,8 +370,8 @@ fn validate_operations(
 ) -> Result<()> {
     let mut graphics_stack = Vec::new();
     let mut in_text = false;
-    let mut text_font_selected = false;
-    let mut marked_content_depth = 0usize;
+    let mut text_font_selected = None;
+    let mut marked_content_frames = Vec::new();
     for operation in operations {
         let operands = operation.operands.as_slice();
         match operation.operator.as_str() {
@@ -387,7 +398,7 @@ fn validate_operations(
                     ));
                 }
                 in_text = true;
-                text_font_selected = false;
+                text_font_selected = None;
             }
             "ET" => {
                 require_operand_count(operation, owner, 0)?;
@@ -395,7 +406,7 @@ fn validate_operations(
                     return Err(operation_error(owner, operation, "text object is not open"));
                 }
                 in_text = false;
-                text_font_selected = false;
+                text_font_selected = None;
             }
             "cm" | "c" => require_numbers(operation, owner, 6)?,
             "Tm" => {
@@ -453,14 +464,14 @@ fn validate_operations(
                         "font size must be positive",
                     ));
                 }
-                if !resources.fonts.contains(font_name) {
+                if !resources.fonts.contains_key(font_name) {
                     return Err(operation_error(
                         owner,
                         operation,
                         "font resource name is not linked",
                     ));
                 }
-                text_font_selected = true;
+                text_font_selected = resources.fonts.get(font_name);
             }
             "Tj" | "'" => {
                 require_text_object(operation, owner, in_text)?;
@@ -472,7 +483,14 @@ fn validate_operations(
                         "operand must be a string",
                     ));
                 }
-                require_text_font(operation, owner, text_font_selected)?;
+                require_text_font(operation, owner, text_font_selected.is_some())?;
+                fonts::validate_text(
+                    text_font_selected.unwrap(),
+                    operands[0].as_str().unwrap(),
+                    operation,
+                    owner,
+                    marked_content_frames.iter().any(|frame| *frame),
+                )?;
             }
             "TJ" => {
                 require_text_object(operation, owner, in_text)?;
@@ -489,7 +507,18 @@ fn validate_operations(
                         ));
                     }
                 }
-                require_text_font(operation, owner, text_font_selected)?;
+                require_text_font(operation, owner, text_font_selected.is_some())?;
+                for value in array {
+                    if let Object::String(bytes, _) = value {
+                        fonts::validate_text(
+                            text_font_selected.unwrap(),
+                            bytes,
+                            operation,
+                            owner,
+                            marked_content_frames.iter().any(|frame| *frame),
+                        )?;
+                    }
+                }
             }
             "\"" => {
                 require_text_object(operation, owner, in_text)?;
@@ -504,7 +533,14 @@ fn validate_operations(
                         "requires two finite numbers followed by a string",
                     ));
                 }
-                require_text_font(operation, owner, text_font_selected)?;
+                require_text_font(operation, owner, text_font_selected.is_some())?;
+                fonts::validate_text(
+                    text_font_selected.unwrap(),
+                    operands[2].as_str().unwrap(),
+                    operation,
+                    owner,
+                    marked_content_frames.iter().any(|frame| *frame),
+                )?;
             }
             "T*" => {
                 require_text_object(operation, owner, in_text)?;
@@ -542,21 +578,23 @@ fn validate_operations(
                     .as_name()
                     .map_err(|_| operation_error(owner, operation, "operand must be a name"))?;
             }
-            "BMC" => {
-                require_operand_count(operation, owner, 1)?;
-                operands[0]
-                    .as_name()
-                    .map_err(|_| operation_error(owner, operation, "operand must be a name"))?;
-                marked_content_depth = marked_content_depth
-                    .checked_add(1)
-                    .ok_or(PdfMasterError::Budget("marked content depth"))?;
-                if marked_content_depth > MAX_RESOURCE_DEPTH {
+            "BMC" | "BDC" => {
+                if operation.operator == "BMC" {
+                    require_operand_count(operation, owner, 1)?;
+                    operands[0]
+                        .as_name()
+                        .map_err(|_| operation_error(owner, operation, "operand must be a name"))?;
+                } else {
+                    marked_content::validate_actual_text(operation, owner)?;
+                }
+                if marked_content_frames.len() >= MAX_RESOURCE_DEPTH {
                     return Err(PdfMasterError::Budget("marked content depth"));
                 }
+                marked_content_frames.push(operation.operator == "BDC");
             }
             "EMC" => {
                 require_operand_count(operation, owner, 0)?;
-                marked_content_depth = marked_content_depth.checked_sub(1).ok_or_else(|| {
+                marked_content_frames.pop().ok_or_else(|| {
                     operation_error(owner, operation, "marked-content sequence is not open")
                 })?;
             }
@@ -568,7 +606,20 @@ fn validate_operations(
                 state.count_resource()?;
                 validate_image_stream(document, image, state, 0)?;
             }
-            "gs" | "sh" | "SC" | "sc" | "SCN" | "scn" | "DP" | "BDC" | "BX" | "EX" => {
+            "gs" => {
+                require_operand_count(operation, owner, 1)?;
+                let name = operands[0].as_name().map_err(|_| {
+                    operation_error(owner, operation, "ExtGState operand must be a name")
+                })?;
+                if !resources.extgstates.contains(name) {
+                    return Err(operation_error(
+                        owner,
+                        operation,
+                        "ExtGState resource name is not linked",
+                    ));
+                }
+            }
+            "sh" | "SC" | "sc" | "SCN" | "scn" | "DP" | "BX" | "EX" => {
                 return Err(operation_error(
                     owner,
                     operation,
@@ -594,7 +645,7 @@ fn validate_operations(
             "content preflight failed for {owner}: unbalanced q operator"
         )));
     }
-    if marked_content_depth != 0 {
+    if !marked_content_frames.is_empty() {
         return Err(PdfMasterError::Render(format!(
             "content preflight failed for {owner}: unbalanced BMC operator"
         )));
@@ -813,7 +864,8 @@ fn preflight_resources(
                 }
             }
             b"ProcSet" => validate_proc_set(document, value)?,
-            b"ColorSpace" | b"Pattern" | b"Shading" | b"ExtGState" | b"Properties" => {
+            b"ExtGState" => graphics_state::audit_resources(document, value, state, &mut audited)?,
+            b"ColorSpace" | b"Pattern" | b"Shading" | b"Properties" => {
                 return Err(PdfMasterError::Render(format!(
                     "resource category {} is unsupported in this foundation",
                     String::from_utf8_lossy(category)
@@ -842,12 +894,24 @@ fn preflight_fonts(
     })?;
     for (name, font) in fonts.iter() {
         state.count_resource()?;
-        let (_, font) = resolve_object(document, font)?;
+        fonts::audit_graph(document, font, state)?;
+        let (font_id, font) = fonts::resolve(document, font)?;
         let font = font
             .as_dict()
             .map_err(|_| PdfMasterError::Render("Font resource must be a dictionary".into()))?;
-        validate_standard_font(document, font)?;
-        audited.fonts.insert(name.clone());
+        let admitted = if font
+            .get(b"Subtype")
+            .ok()
+            .and_then(|v| fonts::resolve(document, v).ok())
+            .and_then(|(_, v)| v.as_name().ok())
+            == Some(b"Type0".as_slice())
+        {
+            fonts::audit_type0_cached(document, font_id, font, state)?
+        } else {
+            validate_standard_font(document, font)?;
+            fonts::AuditedFont::Standard
+        };
+        audited.fonts.insert(name.clone(), admitted);
     }
     Ok(())
 }
@@ -1347,23 +1411,27 @@ fn dict_value<'a>(dictionary: &'a Dictionary, key: &[u8], short_key: &[u8]) -> O
         .ok()
 }
 
-fn resolve_object<'a>(
+pub(crate) fn resolve_object<'a>(
     document: &'a Document,
     object: &'a Object,
 ) -> Result<(Option<ObjectId>, &'a Object)> {
     let mut current = object;
     let mut first_id = None;
     let mut seen = HashSet::new();
-    for _ in 0..MAX_RESOURCE_DEPTH {
+    for hops in 0..=MAX_RESOURCE_DEPTH {
         match current {
             Object::Reference(id) => {
+                if hops == MAX_RESOURCE_DEPTH {
+                    return Err(PdfMasterError::Budget("source reference depth"));
+                }
                 first_id.get_or_insert(*id);
                 if !seen.insert(*id) {
                     return Err(PdfMasterError::Render(
                         "source indirect reference cycle".into(),
                     ));
                 }
-                current = document.get_object(*id).map_err(|error| {
+                current = document.objects.get(id).ok_or_else(|| {
+                    let error = lopdf::Error::ObjectNotFound(*id);
                     PdfMasterError::Render(format!("source object resolution failed: {error}"))
                 })?;
             }

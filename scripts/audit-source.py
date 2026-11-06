@@ -9,6 +9,13 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REVIEWED_UI = json.loads((ROOT / "scripts" / "reviewed-ui-literals.json").read_text())
+# Exact negative-test lines, not a path-wide credential exemption.
+REVIEWED_TESTS = {
+    ("RustPDFMaster/tools/test_candidate_ci.py", "personal_home", "85cb3d5043c20c90da82a8a1c1f4f1751976c61a6c2790ece21821dc7e4eb501"),
+    ("RustPDFMaster/tools/test_third_party_notices.py", "personal_home", "5e158667fa3977447ac8319fe89f2826c5170d23e508ff6e3c8ca95f76b78c40"),
+    ("RustPDFMaster/tools/test_third_party_notices.py", "personal_home", "4999d777817c464a3facd99af7a9b79c866d8c878d00e4b0ad98d8a3382f734d"),
+    ("RustPDFMaster/tools/test_third_party_notices.py", "provider_credential", "4999d777817c464a3facd99af7a9b79c866d8c878d00e4b0ad98d8a3382f734d"),
+}
 EXCLUDED = {"dist", "output", "work", ".git", ".swiftpm", "__pycache__", "node_modules"}
 
 
@@ -47,7 +54,10 @@ def audit():
         for line_number, line in enumerate(content.splitlines(), 1):
             for kind, pattern in patterns.items():
                 if pattern.search(line):
-                    matches.append({"file": relative, "line": line_number, "kind": kind})
+                    if (relative, kind, hashlib.sha256(line.encode()).hexdigest()) in REVIEWED_TESTS:
+                        test_literal_matches += 1
+                    else:
+                        matches.append({"file": relative, "line": line_number, "kind": kind})
             if credential_assignment.search(line):
                 if relative == "Sources/PaperDesk/AccountStore.swift" and "let bootstrapPassword" in line:
                     known_bootstrap += 1

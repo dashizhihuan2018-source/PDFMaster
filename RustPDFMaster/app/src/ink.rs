@@ -322,8 +322,6 @@ mod tests {
             "cancel_ink_document",
             "ink_handoff",
             "on:load",
-            "重试提交手绘",
-            "取消／同步手绘",
             "on:error",
             "InkImageHandoff",
             "ink_image_failed",
@@ -331,6 +329,10 @@ mod tests {
             "call_bounded",
         ] {
             assert!(s.contains(token), "missing {token}");
+        }
+        let recovery = include_str!("workbench_view.rs");
+        for token in ["InkRecovery", "重试提交手绘", "取消／同步手绘"] {
+            assert!(recovery.contains(token), "missing {token}");
         }
         assert!(
             include_str!("../styles.css").contains(".drawing-surface.inking{touch-action:none")

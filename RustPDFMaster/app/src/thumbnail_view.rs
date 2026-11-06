@@ -138,8 +138,12 @@ impl Model {
     fn select_outline_row(self, index: usize) {
         let page = self
             .outline_cache
-            .with_untracked(|cache| cache.page(index, self.count(), self.blocked()));
+            .with_untracked(|cache| cache.page(index, self.count(), self.canvas_intent_disabled()));
         if let Some(page) = page {
+            if self.defer_canvas_edit(Some(super::canvas_intent::Intent::OutlinePage(page, index)))
+            {
+                return;
+            }
             self.outline_selection.set(Some(index));
             self.navigate(page);
         }
@@ -317,7 +321,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
                         <For each={move||window.rows().collect::<Vec<_>>()} key=|page|*page children=move|page|view!{
                             <div class="thumbnail-row">
                                 <button class="thumbnail-select" aria-label=format!("第 {} 页",page+1) aria-current=move||if m.page.get()==page{"page"}else{"false"}
-                                    disabled=move||m.blocked() on:click=move|_|m.navigate(page)>
+                                    disabled=move||m.canvas_intent_disabled() on:click=move|_|m.navigate(page)>
                                     <span class="thumbnail-paper" class:selected=move||m.page.get()==page>
                                         {move||m.thumbnail_cache.with(|cache|match cache.image(page){
                                             Some(Image::Ready(source))=>view!{<img src=source.clone() alt=format!("第 {} 页缩略图",page+1) draggable="false"/>}.into_any(),
@@ -356,7 +360,7 @@ pub(super) fn Sidebar(model: Model) -> impl IntoView {
                         let title=format!("{}{}{}", "  ".repeat(row.depth.min(12)), row.title, row.page_index.map(|page|format!("   · {}", page+1)).unwrap_or_default());
                         let tooltip=row.title.clone();
                         view!{<button class="outline-row" class:selected=move||m.outline_selection.get()==Some(index) aria-current=move||if m.outline_selection.get()==Some(index){"true"}else{"false"}
-                            disabled=move||m.outline_cache.with(|cache|cache.page(index,m.count(),m.blocked()).is_none()) on:click=move|_|m.select_outline_row(index) title=tooltip>
+                            disabled=move||m.outline_cache.with(|cache|cache.page(index,m.count(),m.canvas_intent_disabled()).is_none()) on:click=move|_|m.select_outline_row(index) title=tooltip>
                             <span class="outline-title">{title}</span>
                         </button>}
                     }/>

@@ -160,7 +160,11 @@ impl PreparedImageExport {
     }
 
     pub(crate) fn publish_new(self, target: &Path) -> Result<ImageExportPublication, String> {
-        self.publish_new_with_syncs(target, platform::sync_directory, |parent| parent.sync())
+        self.publish_new_with_syncs(
+            target,
+            platform::prepare_directory_for_publication,
+            |parent| parent.sync(),
+        )
     }
 
     fn publish_new_with_sync<F>(
@@ -171,7 +175,7 @@ impl PreparedImageExport {
     where
         F: FnOnce(&platform::ParentDirectory) -> io::Result<()>,
     {
-        self.publish_new_with_syncs(target, platform::sync_directory, sync)
+        self.publish_new_with_syncs(target, platform::prepare_directory_for_publication, sync)
     }
 
     fn publish_new_with_syncs<P, F>(

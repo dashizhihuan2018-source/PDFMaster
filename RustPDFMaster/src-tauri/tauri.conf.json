@@ -27,7 +27,10 @@
       "../target/third-party-notices/windows-x86_64.html": "third-party-notices/windows-x86_64.html",
       "../target/third-party-notices/ios-simulator-aarch64.html": "third-party-notices/ios-simulator-aarch64.html",
       "../target/third-party-notices/ios-device-aarch64.html": "third-party-notices/ios-device-aarch64.html",
-      "../target/third-party-notices/ui-wasm32.html": "third-party-notices/ui-wasm32.html"
+      "../target/third-party-notices/ui-wasm32.html": "third-party-notices/ui-wasm32.html",
+      "../crates/pdfmaster-core/assets/fonts/OFL-noto-fonts.txt": "third-party-fonts/OFL-noto-fonts.txt",
+      "../crates/pdfmaster-core/assets/fonts/OFL-noto-cjk.txt": "third-party-fonts/OFL-noto-cjk.txt",
+      "../crates/pdfmaster-core/assets/fonts/FONT-NOTICES.md": "third-party-fonts/FONT-NOTICES.md"
     },
     "macOS": {"minimumSystemVersion":"14.0","signingIdentity":"-"},
     "iOS": {"minimumSystemVersion":"16.0"}

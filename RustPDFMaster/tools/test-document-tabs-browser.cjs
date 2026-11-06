@@ -23,7 +23,7 @@ const server=http.createServer((req,res)=>{
       await page.addInitScript(({kind,image})=>{
         window.requests=[];
         const document={id:7,tabs:[{id:7,name:'synthetic.pdf',dirty:true}],name:'synthetic.pdf',restored:false,info:{page_count:3,pages:Array.from({length:3},()=>({width:595,height:842,rotation:0})),dirty:true,can_undo:false,can_redo:false}};
-        if(kind==='note') document.note_editor={id:9,page:2,original:{annotation_index:0,bounds:{x:10,y:10,width:24,height:24},contents:'synthetic note'}};
+        if(kind==='note') document.note_editor={id:9,page:2,request:'synthetic-request',target:{kind:'existing',original:{annotation_index:0,bounds:{x:10,y:10,width:24,height:24},contents:'synthetic note'}}};
         else document.ink_editor={id:10,page:2,request:'synthetic-request'};
         window.__TAURI__={core:{invoke:async(command,args)=>{
           args=args instanceof Map?Object.fromEntries(args):args;
@@ -38,9 +38,9 @@ const server=http.createServer((req,res)=>{
       await page.goto(`http://127.0.0.1:${server.address().port}/`);
       await page.waitForFunction(()=>window.requests.some(r=>r.command==='render_page'));
       const render=await page.evaluate(()=>window.requests.find(r=>r.command==='render_page'));
-      const control=page.getByRole('button',{name:kind==='note'?'取消便笺编辑':'取消／同步手绘',exact:true});
+      const control=page.getByRole('button',{name:kind==='note'?'取消或同步便笺':'取消／同步手绘',exact:true});
       const visible=await control.isVisible();
-      try{assert.equal(render.args.page,2,`${kind}: native editor page must override saved/default tab page`);assert.equal(visible,true,`${kind}: native cancel control must remain visible`);assert.equal(await page.getByRole('textbox',{name:'跳转页码',exact:true}).inputValue(),'3');console.log(JSON.stringify({case:kind,page:render.args.page,cancelVisible:visible,result:'pass'}));}
+      try{assert.equal(render.args.page,2,`${kind}: native editor page must override saved/default tab page`);assert.equal(visible,true,`${kind}: native cancel control must remain visible`);const jump=page.getByRole('textbox',{name:'跳转页码',exact:true});if(kind==='note')assert.equal(await jump.inputValue(),'3');else{assert.equal(await jump.count(),0,'Ink keeps page navigation hidden while the native editor owns the page');assert.equal(await page.locator('#pdf-page-image').getAttribute('alt'),'PDF 第 3 页');}console.log(JSON.stringify({case:kind,page:render.args.page,cancelVisible:visible,result:'pass'}));}
       catch(error){failures.push(error.message);console.log(JSON.stringify({case:kind,page:render.args.page,cancelVisible:visible,result:'fail'}));}
       await page.close();
     }

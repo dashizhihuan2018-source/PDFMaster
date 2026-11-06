@@ -5,12 +5,12 @@ use serde_json::json;
 
 #[component]
 fn ToolCard(model: Model, tool: Tool) -> impl IntoView {
-    let independent = matches!(tool.id, "blank" | "image-to-pdf");
+    let independent = matches!(tool.id, "blank" | "image-to-pdf" | "pdf-to-image");
     let available = independent || tool.workbench_target.is_some();
     view! {
         <button class="home-tool-card" aria-label=tool.title id=if tool.id=="image-to-pdf"{Some("image-tool-entry")}else{None}
-            title=move||if !available { "此功能尚未迁移" } else if tool.id=="blank" { "新建空白 PDF" } else if tool.id=="image-to-pdf" { "选择 PNG/JPEG/TIFF 后直接创建独立 PDF" } else if !model.loaded() { "请先打开 PDF" } else { "进入当前文档的已迁移工具；原版模式工具栏仍待迁移" }
-            disabled=move||!available||model.busy.get()||model.image_import.with(|c|c.is_some())||(!independent&&!model.loaded())
+            title=move||if !available { "此功能尚未迁移" } else if tool.id=="blank" { "新建空白 PDF" } else if tool.id=="image-to-pdf" { "选择 PNG/JPEG/TIFF 后直接创建独立 PDF" } else if tool.id=="pdf-to-image" { "以 PNG 格式导出当前 PDF 的全部页面" } else if !model.loaded() { "请先打开 PDF" } else { "进入当前文档的已迁移工具；原版模式工具栏仍待迁移" }
+            disabled=move||!available||model.busy.get()||model.image_import.with(|c|c.is_some())||model.image_export.with(|c|c.is_some())||(!independent&&!model.loaded())
             on:click=move|_|model.show_tool(tool.id)>
             <svg viewBox="0 0 32 32" class="home-tool-icon" style:color=tool.color aria-hidden="true">
                 <path d=match tool.id {
@@ -32,11 +32,11 @@ fn ToolCard(model: Model, tool: Tool) -> impl IntoView {
 }
 
 #[component]
-fn EmptyCollection(favorite: bool) -> impl IntoView {
+pub(super) fn EmptyCollection(favorite: bool) -> impl IntoView {
     view! {
         <div class="home-empty-collection">
             <svg viewBox="0 0 78 54" aria-hidden="true"><g transform="translate(0 54) scale(1 -1)" fill="none" stroke="#303030" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5 7 44Q7 49 12 49H56Q61 49 61 44V38"/><path d=if favorite {"M61 38V5 M10 5"} else {"M10 5 20 37Q21 40 25 40H72L61 5"}/></g><Show when=move||favorite><path d="m50 14 2 5 6 .5-4 4 1 6-5-3-5 3 1-6-4-4 6-.5z" fill="#303030"/></Show></svg>
-            <p>{if favorite {"收藏记录尚未迁移；不会读取或覆盖原版收藏。"}else{"最近记录尚未迁移；不会读取或覆盖原版记录。"}}</p>
+            <p>{if favorite {"点击任何最近文件的星标，即可将其添加到“收藏”中"}else{"全部打开的文件将显示在此处"}}</p>
         </div>
     }
 }
@@ -70,27 +70,28 @@ pub(super) fn Dashboard(model: Model) -> impl IntoView {
                         </div>
                         <div class="home-heading-row"><h2>"工具专为您"</h2><button class="home-all-tools" on:click=move|_|model.switch_to(Route::Home(HomeSection::Tools))>"查看全部"</button></div>
                         <div class="home-tool-grid">{RECOMMENDED.into_iter().filter_map(tool).map(|tool|view!{<ToolCard model=model tool=tool/>}).collect_view()}</div>
-                        <h2>"最近"</h2><EmptyCollection favorite=false/>
-                        <h2>"收藏"</h2><EmptyCollection favorite=true/>
+                        <h2>"最近"</h2><super::recents_view::Collection model=model favorite=false preview=true/>
+                        <h2>"收藏"</h2><super::recents_view::Collection model=model favorite=true preview=true/>
                     </Show>
                     <Show when=move||section()==HomeSection::Tools>
                         {GROUPS.into_iter().enumerate().map(|(group,title)|view!{<h2>{title}</h2><div class="home-tool-grid">{TOOLS.into_iter().filter(move|t|t.group==group).map(|tool|view!{<ToolCard model=model tool=tool/>}).collect_view()}</div>}).collect_view()}
                         <p class="home-disclosure">"灰色入口尚未迁移，或需要先打开 PDF。可用入口进入当前文档；工具图标和文档模式工具栏仍待原版对齐。"</p>
                     </Show>
-                    <Show when=move||section()==HomeSection::Recent><EmptyCollection favorite=false/></Show>
-                    <Show when=move||section()==HomeSection::Favorites><EmptyCollection favorite=true/></Show>
+                    <Show when=move||section()==HomeSection::Recent><super::recents_view::Collection model=model favorite=false preview=false/></Show>
+                    <Show when=move||section()==HomeSection::Favorites><super::recents_view::Collection model=model favorite=true preview=false/></Show>
                     <Show when=move||!matches!(section(),HomeSection::Home|HomeSection::Tools|HomeSection::Recent|HomeSection::Favorites)><p class="home-disclosure">"此页面仍在迁移中。原版数据保持不变，本候选不会显示虚构的账号、设置或画布。"</p></Show>
                     <p class="home-disclosure">"Rust 迁移候选 · 非正式版 · 多 PDF 标签保留独立修改，画布标签与完整三端 UI 对等仍在迁移。"</p>
                 </div>
             </section>
             <footer class="home-status">
                 <span role="status" aria-live="polite">{move||model.document.with(|d|{
-                    let image_status=model.image_import_status();
+                    let image_status=model.image_import_status().or_else(||model.image_export_status());
                     let message=model.message.get();
                     pdfmaster_ui::visible_status(d.as_ref().and_then(|d|d.warning.as_deref()),image_status.as_deref().unwrap_or(&message),image_status.is_none()&&model.busy.get())
                 })}</span>
                 <Show when=move||model.file_drop_request.get().is_some()&&!matches!(model.route.get(),Route::Home(HomeSection::Home))><button aria-label="取消文件导入" on:click=move|_|model.cancel_file_import()>"取消文件导入"</button></Show>
                 <Show when=move||model.image_import.with(|c|c.is_some())><button aria-label="取消图片转换" disabled=move||model.image_import.with(|c|c.as_ref().is_some_and(|c|c.cancelling())) on:click=move|_|model.cancel_images()>"取消图片转换"</button></Show>
+                <Show when=move||model.image_export.with(|job|job.is_some())><button aria-label="取消图片导出" disabled=move||model.image_export.with(|job|job.as_ref().is_some_and(|job|job.cancelling())) on:click=move|_|model.cancel_image_export()>"取消图片导出"</button></Show>
             </footer>
         </div>
     }

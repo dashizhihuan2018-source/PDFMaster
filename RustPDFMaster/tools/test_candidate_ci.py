@@ -28,6 +28,47 @@ NOTICE_NAMES = {
 }
 
 
+def upload_artifact_paths(workflow):
+    lines = workflow.splitlines()
+    action = f"uses: actions/upload-artifact@{UPLOAD_SHA}"
+    action_lines = [
+        index for index, line in enumerate(lines) if line.strip().startswith(action)
+    ]
+    if len(action_lines) != 1:
+        raise ValueError("expected exactly one pinned upload-artifact action")
+
+    action_index = action_lines[0]
+    action_indent = len(lines[action_index]) - len(lines[action_index].lstrip())
+    action_end = len(lines)
+    for index in range(action_index + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and len(line) - len(line.lstrip()) < action_indent:
+            action_end = index
+            break
+
+    action_block = lines[action_index + 1 : action_end]
+    path_headers = [
+        index for index, line in enumerate(action_block) if line.strip() == "path: |"
+    ]
+    if len(path_headers) != 1:
+        raise ValueError("expected exactly one upload path block")
+
+    path_index = path_headers[0]
+    path_header = action_block[path_index]
+    path_indent = len(path_header) - len(path_header.lstrip())
+    paths = []
+    for line in action_block[path_index + 1 :]:
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= path_indent:
+            break
+        paths.append(line.strip())
+    if not paths:
+        raise ValueError("upload path block must not be empty")
+    return paths
+
+
 def synthetic_pe(machine=0x8664):
     """Parser fixture only; not a runnable Windows application/installer."""
     optional_size = 240 if machine == 0x8664 else 224
@@ -103,6 +144,11 @@ class CandidateCiContract(unittest.TestCase):
             {
                 f"../target/third-party-notices/{name}": f"third-party-notices/{name}"
                 for name in NOTICE_NAMES
+            }
+            | {
+                "../crates/pdfmaster-core/assets/fonts/OFL-noto-fonts.txt": "third-party-fonts/OFL-noto-fonts.txt",
+                "../crates/pdfmaster-core/assets/fonts/OFL-noto-cjk.txt": "third-party-fonts/OFL-noto-cjk.txt",
+                "../crates/pdfmaster-core/assets/fonts/FONT-NOTICES.md": "third-party-fonts/FONT-NOTICES.md",
             },
         )
 
@@ -215,12 +261,10 @@ class CandidateCiContract(unittest.TestCase):
         self.assertNotIn("\n  schedule:", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("concurrency:", workflow)
-        self.assertGreaterEqual(workflow.count("timeout-minutes:"), 2)
+        self.assertEqual(workflow.count("timeout-minutes:"), 1)
         self.assertNotIn("secrets.", workflow)
         self.assertIn(f"actions/checkout@{CHECKOUT_SHA}", workflow)
-        self.assertGreaterEqual(
-            workflow.count(f"actions/upload-artifact@{UPLOAD_SHA}"), 3
-        )
+        self.assertEqual(workflow.count(f"actions/upload-artifact@{UPLOAD_SHA}"), 1)
         for line in workflow.splitlines():
             if "uses:" in line:
                 reference = line.rsplit("@", 1)[-1].split()[0]
@@ -228,33 +272,95 @@ class CandidateCiContract(unittest.TestCase):
 
     def test_workflow_uses_standard_native_runners_and_exact_artifacts(self):
         workflow = self.read_required(WORKFLOW)
-        self.assertIn("runs-on: macos-15", workflow)
-        self.assertIn("runs-on: windows-2025", workflow)
-        expected = [
-            "artifacts/pdfmaster-rust-candidate-macos-arm64.zip",
-            "artifacts/pdfmaster-rust-candidate-macos-arm64.zip.sha256",
-            "artifacts/pdfmaster-rust-candidate-ios-simulator-arm64.xcarchive.zip",
-            "artifacts/pdfmaster-rust-candidate-ios-simulator-arm64.xcarchive.zip.sha256",
-            "artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe",
-            "artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe.sha256",
+        jobs = workflow.split("jobs:\n", 1)[1]
+        job_names = [
+            line.strip()[:-1]
+            for line in jobs.splitlines()
+            if line.startswith("  ")
+            and not line.startswith("   ")
+            and line.strip().endswith(":")
         ]
-        for path in expected:
-            self.assertIn(path, workflow)
+        self.assertEqual(job_names, ["windows-x64"])
+        self.assertIn("jobs:\n  windows-x64:", workflow)
+        self.assertNotIn("macos-arm64:", workflow)
+        self.assertNotIn("ios-simulator-arm64:", workflow)
+        self.assertNotIn("runs-on: macos-", workflow)
+        self.assertIn("runs-on: windows-2025", workflow)
+        self.assertNotIn("bash tools/ci-build-macos.sh", workflow)
+        self.assertNotIn("bash tools/ci-build-ios.sh", workflow)
+        self.assertNotIn("pdfmaster-rust-candidate-macos-arm64.zip", workflow)
+        self.assertNotIn(
+            "pdfmaster-rust-candidate-ios-simulator-arm64.xcarchive.zip", workflow
+        )
+        expected = [
+            "RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe",
+            "RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe.sha256",
+        ]
+        self.assertEqual(upload_artifact_paths(workflow), expected)
         self.assertNotIn("artifacts/**", workflow)
         self.assertNotIn("target/**", workflow)
 
-    def test_build_config_has_real_two_platform_commands(self):
+    def test_upload_artifact_paths_reject_mutated_production_workflow(self):
+        workflow = self.read_required(WORKFLOW)
+        expected = [
+            "RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe",
+            "RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe.sha256",
+        ]
+        mutations = {
+            "extra literal path": workflow.replace(
+                f"            {expected[1]}",
+                f"            {expected[1]}\n"
+                "            RustPDFMaster/artifacts/unexpected-third-payload.zip",
+                1,
+            ),
+            "duplicate required path": workflow.replace(
+                f"            {expected[1]}",
+                f"            {expected[1]}\n            {expected[1]}",
+                1,
+            ),
+            "wrong path": workflow.replace(expected[1], f"{expected[1]}.wrong", 1),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(label):
+                self.assertNotEqual(upload_artifact_paths(mutated), expected)
+
+    def test_upload_artifact_path_block_is_required_once_and_nonempty(self):
+        workflow = self.read_required(WORKFLOW)
+        path_block = (
+            "          path: |\n"
+            "            RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe\n"
+            "            RustPDFMaster/artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe.sha256"
+        )
+        malformed = {
+            "missing": workflow.replace(path_block, "", 1),
+            "empty": workflow.replace(path_block, "          path: |", 1),
+            "multiple": workflow.replace(
+                path_block,
+                f"{path_block}\n{path_block}",
+                1,
+            ),
+        }
+        for label, mutated in malformed.items():
+            with self.subTest(label):
+                with self.assertRaises(ValueError):
+                    upload_artifact_paths(mutated)
+
+    def test_build_config_has_exact_windows_job(self):
         config = json.loads(self.read_required(BUILD_CONFIG))
         self.assertEqual(config["schema_version"], 1)
         self.assertEqual(config["project"], "pdfmaster-rust-candidate")
-        self.assertEqual(set(config["jobs"]), {"macos", "windows"})
-        self.assertEqual(config["jobs"]["macos"]["runner"], "macos-15")
-        self.assertEqual(config["jobs"]["windows"]["runner"], "windows-2025")
-        for platform in ("macos", "windows"):
-            job = config["jobs"][platform]
-            for phase in ("setup", "test", "build", "smoke", "artifact"):
-                self.assertTrue(job[phase].strip())
-            self.assertNotIn("exit 1", "\n".join(job.values()))
+        self.assertEqual(set(config["jobs"]), {"windows"})
+        self.assertEqual(
+            config["jobs"]["windows"],
+            {
+                "runner": "windows-2025",
+                "setup": "bash tools/ci-setup.sh windows",
+                "test": "python -m unittest -v tools/test_candidate_ci.py\nbash tools/ci-check.sh",
+                "build": "bash tools/ci-build-windows.sh",
+                "smoke": "bash tools/ci-core-smoke.sh",
+                "artifact": "artifacts/pdfmaster-rust-candidate-windows-x64-nsis.exe",
+            },
+        )
 
     def test_scripts_pin_tools_check_all_workspaces_and_build_wasm(self):
         scripts = "\n".join(

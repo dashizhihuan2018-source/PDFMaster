@@ -37,6 +37,23 @@ impl Session {
 }
 
 fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Result<ShapeList> {
+    project_shapes(document, pages, page, false)
+}
+
+pub(crate) fn inspect_canvas_shapes(
+    document: &Document,
+    pages: &[PageInfo],
+    page: usize,
+) -> Result<ShapeList> {
+    project_shapes(document, pages, page, true)
+}
+
+fn project_shapes(
+    document: &Document,
+    pages: &[PageInfo],
+    page: usize,
+    strict: bool,
+) -> Result<ShapeList> {
     validate_page_index(page, pages.len())?;
     let page_id = page_object_ids(document)?[page];
     let annots = validated_annots_for_add(document, page_id, &pages[page])?;
@@ -65,7 +82,17 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
         // Non-solid/alpha/special-effect imported styles are not silently
         // normalized into a different shape when applying the numeric editor.
         let style = (|| -> Result<(Color, Option<Color>, f32)> {
-            if a.has(b"BE") || a.has(b"RD") || a.has(b"CA") || a.has(b"Rotate") {
+            if strict {
+                validate_border_structure(document, a, shape)?;
+                validate_known_structure(document, a, shape)?;
+                crate::shape_opacity::validate_known_values(document, a)?;
+                crate::shape_opacity::validate_occurrence(document, entry, a)?;
+            }
+            if a.has(b"BE")
+                || a.has(b"RD")
+                || (!strict && (a.has(b"CA") || a.has(b"PDFMaster_ShapeOpacity")))
+                || a.has(b"Rotate")
+            {
                 return Err(PdfMasterError::InvalidOperation(
                     "extended shape style is not yet editable",
                 ));
@@ -131,7 +158,15 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
                 let line = if shape == ShapeKind::Line {
                     match crate::lines::parse(document, a, bounds) {
                         Ok(line) => Some(line),
-                        Err(_) => {
+                        Err(error) => {
+                            if strict
+                                && matches!(
+                                    error,
+                                    PdfMasterError::Malformed(_) | PdfMasterError::Budget(_)
+                                )
+                            {
+                                return Err(error);
+                            }
                             list.unsupported_count += 1;
                             continue;
                         }
@@ -139,7 +174,7 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
                 } else {
                     None
                 };
-                list.shapes.push(ShapeAnnotation {
+                let model = ShapeAnnotation {
                     annotation_index,
                     shape,
                     bounds,
@@ -147,12 +182,159 @@ fn inspect_shapes(document: &Document, pages: &[PageInfo], page: usize) -> Resul
                     fill,
                     line_width,
                     line,
-                });
+                };
+                if strict {
+                    match crate::shape_opacity::validate(document, a, &model) {
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error,
+                                PdfMasterError::Malformed(_) | PdfMasterError::Budget(_)
+                            ) =>
+                        {
+                            return Err(error);
+                        }
+                        Err(_) => {
+                            list.unsupported_count += 1;
+                            continue;
+                        }
+                    }
+                }
+                list.shapes.push(model);
             }
-            Err(_) => list.unsupported_count += 1,
+            Err(error) => {
+                if strict
+                    && matches!(
+                        error,
+                        PdfMasterError::Malformed(_) | PdfMasterError::Budget(_)
+                    )
+                {
+                    return Err(error);
+                }
+                list.unsupported_count += 1;
+            }
         }
     }
     Ok(list)
+}
+
+// Check known structure without classifying supported visual semantics. A
+// valid-but-unsupported color must not hide another malformed known field.
+fn validate_known_structure(document: &Document, a: &Dictionary, shape: ShapeKind) -> Result<()> {
+    for key in [b"C".as_slice(), b"IC"] {
+        if let Ok(color) = a.get(key) {
+            let values = resolve(document, color)?
+                .as_array()
+                .map_err(|_| PdfMasterError::Malformed("shape color must be an array".into()))?;
+            if values.len() != 3 {
+                return Err(PdfMasterError::Malformed(
+                    "shape color requires three RGB components".into(),
+                ));
+            }
+            for value in values {
+                resolve(document, value)?.as_float().map_err(|_| {
+                    PdfMasterError::Malformed("shape color components must be numbers".into())
+                })?;
+            }
+        }
+    }
+    if shape == ShapeKind::Line {
+        let coordinates = resolve(
+            document,
+            a.get(b"L")
+                .map_err(|e| PdfMasterError::Malformed(e.to_string()))?,
+        )?
+        .as_array()
+        .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+        if coordinates.len() != 4 {
+            return Err(PdfMasterError::Malformed(
+                "line L requires four coordinates".into(),
+            ));
+        }
+        for value in coordinates {
+            let value = resolve(document, value)?
+                .as_float()
+                .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+            if !value.is_finite() {
+                return Err(PdfMasterError::Malformed(
+                    "line L coordinates must be finite".into(),
+                ));
+            }
+        }
+        if let Ok(endings) = a.get(b"LE") {
+            let endings = resolve(document, endings)?
+                .as_array()
+                .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+            if endings.len() != 2 {
+                return Err(PdfMasterError::Malformed(
+                    "line LE requires two names".into(),
+                ));
+            }
+            // Resolve/type-check both names before the semantic parser may
+            // refuse an unknown, but structurally valid, ending enum.
+            for ending in endings {
+                resolve(document, ending)?
+                    .as_name()
+                    .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// Structural admission must precede valid unsupported visual-style exits.
+// The nonstrict projector retains its original ordering and classifications.
+fn validate_border_structure(document: &Document, a: &Dictionary, shape: ShapeKind) -> Result<()> {
+    let number = |value: &Object| {
+        resolve(document, value)?
+            .as_float()
+            .map_err(|e| PdfMasterError::Malformed(e.to_string()))
+    };
+    let dash = |value: &Object| -> Result<()> {
+        let values = resolve(document, value)?
+            .as_array()
+            .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+        // Keep the existing Line parser budget ahead of entry traversal.
+        if shape == ShapeKind::Line && values.len() > 32 {
+            return Err(PdfMasterError::Budget("line dash pattern"));
+        }
+        for value in values {
+            number(value)?;
+        }
+        Ok(())
+    };
+    if let Ok(bs) = a.get(b"BS") {
+        let bs = resolve(document, bs)?
+            .as_dict()
+            .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+        if let Ok(style) = bs.get(b"S") {
+            resolve(document, style)?
+                .as_name()
+                .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+        }
+        if let Ok(width) = bs.get(b"W") {
+            number(width)?;
+        }
+        if let Ok(values) = bs.get(b"D") {
+            dash(values)?;
+        }
+    } else if let Ok(border) = a.get(b"Border") {
+        let border = resolve(document, border)?
+            .as_array()
+            .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+        if !matches!(border.len(), 3 | 4) {
+            return Err(PdfMasterError::Malformed(
+                "shape Border requires three numbers and an optional dash array".into(),
+            ));
+        }
+        for value in &border[..3] {
+            number(value)?;
+        }
+        if let Some(values) = border.get(3) {
+            dash(values)?;
+        }
+    }
+    Ok(())
 }
 
 fn verify_selected(
@@ -161,7 +343,20 @@ fn verify_selected(
     page: usize,
     expected: &ShapeAnnotation,
 ) -> Result<()> {
-    let current = inspect_shapes(document, pages, page)?
+    verify_projected(inspect_shapes(document, pages, page)?, expected)
+}
+
+fn verify_canvas_selected(
+    document: &Document,
+    pages: &[PageInfo],
+    page: usize,
+    expected: &ShapeAnnotation,
+) -> Result<()> {
+    verify_projected(inspect_canvas_shapes(document, pages, page)?, expected)
+}
+
+fn verify_projected(list: ShapeList, expected: &ShapeAnnotation) -> Result<()> {
+    let current = list
         .shapes
         .into_iter()
         .find(|s| s.annotation_index == expected.annotation_index)
@@ -183,6 +378,25 @@ pub(crate) fn delete_shape(
     expected: &ShapeAnnotation,
 ) -> Result<()> {
     verify_selected(document, pages, page, expected)?;
+    delete_verified_shape(document, pages, page, expected)
+}
+
+pub(crate) fn delete_canvas_shape(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    expected: &ShapeAnnotation,
+) -> Result<()> {
+    verify_canvas_selected(document, pages, page, expected)?;
+    delete_verified_shape(document, pages, page, expected)
+}
+
+fn delete_verified_shape(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    expected: &ShapeAnnotation,
+) -> Result<()> {
     let remaining = annots_without_annotation(document, pages, page, expected.annotation_index)?;
     let page_id = page_object_ids(document)?[page];
     document
@@ -205,6 +419,68 @@ pub(crate) fn update_shape(
     line_width: f32,
 ) -> Result<()> {
     verify_selected(document, pages, page, expected)?;
+    update_verified_shape_with_line(
+        document,
+        pages,
+        page,
+        expected,
+        bounds,
+        stroke,
+        fill,
+        line_width,
+        None,
+        LineBoundsPolicy::Expanded,
+    )
+}
+
+pub(crate) enum LineBoundsPolicy {
+    Expanded,
+    Exact,
+}
+
+/// Canvas endpoints are independent, while the legacy numeric editor retains
+/// its bbox-resize behavior. Both paths share the same appearance/COW lifecycle.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_canvas_shape_with_line(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    expected: &ShapeAnnotation,
+    bounds: Rect,
+    stroke: Color,
+    fill: Option<Color>,
+    line_width: f32,
+    explicit_line: Option<&crate::lines::LineGeometry>,
+    line_bounds_policy: LineBoundsPolicy,
+) -> Result<()> {
+    verify_canvas_selected(document, pages, page, expected)?;
+    update_verified_shape_with_line(
+        document,
+        pages,
+        page,
+        expected,
+        bounds,
+        stroke,
+        fill,
+        line_width,
+        explicit_line,
+        line_bounds_policy,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_verified_shape_with_line(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    expected: &ShapeAnnotation,
+    bounds: Rect,
+    stroke: Color,
+    fill: Option<Color>,
+    line_width: f32,
+    explicit_line: Option<&crate::lines::LineGeometry>,
+    line_bounds_policy: LineBoundsPolicy,
+) -> Result<()> {
     validate_rect(bounds, &pages[page])?;
     validate_color(stroke)?;
     if let Some(c) = fill {
@@ -228,13 +504,24 @@ pub(crate) fn update_shape(
         .as_dict()
         .map_err(|e| PdfMasterError::Malformed(e.to_string()))?
         .clone();
-    let resized_line = expected
-        .line
-        .as_ref()
-        .map(|line| crate::lines::resized(line, expected.bounds, bounds))
-        .transpose()?;
+    let resized_line = match explicit_line {
+        Some(line) => Some(line.clone()),
+        None => expected
+            .line
+            .as_ref()
+            .map(|line| crate::lines::resized(line, expected.bounds, bounds))
+            .transpose()?,
+    };
     let bounds = if let Some(line) = &resized_line {
-        crate::lines::expanded_bounds(line, &pages[page], line_width, Some(bounds))
+        match line_bounds_policy {
+            LineBoundsPolicy::Expanded => {
+                crate::lines::expanded_bounds(line, &pages[page], line_width, Some(bounds))
+            }
+            LineBoundsPolicy::Exact => {
+                crate::lines::validate_geometry(line, bounds)?;
+                bounds
+            }
+        }
     } else {
         bounds
     };
@@ -409,7 +696,7 @@ pub(crate) fn add_shape(
     validate_notes_page(document, page_id, &pages[page])
 }
 
-fn appearance(
+pub(crate) fn appearance(
     width: f32,
     height: f32,
     shape: ShapeKind,

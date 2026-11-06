@@ -29,6 +29,7 @@ pub(super) struct Broker {
     next: u32,
     pub(super) pending: Option<Pending>,
     pub(super) running: Option<(u32, u32)>,
+    home_source: Option<PathBuf>,
     next_listener: u32,
     channel: Option<(u32, tauri::ipc::Channel<Notice>)>,
 }
@@ -45,9 +46,6 @@ impl Workspace {
         self.ensure_editor_idle()?;
         if self.recovery_fault && self.session.is_none() {
             return Err("原草稿未能恢复，请先安全处理原草稿。".into());
-        }
-        if self.inactive_documents.len() + usize::from(self.session.is_some()) >= 16 {
-            return Err("最多同时打开16份PDF，请先保存并关闭部分标签。".into());
         }
         let p = self
             .file_drop
@@ -69,6 +67,19 @@ impl Workspace {
             self.file_drop.pending = None;
             return Err("拖放期间会话已改变或超时，请重新拖入；未创建文档。".into());
         }
+        let source = if p.paths.len() == 1
+            && p.paths[0]
+                .extension()
+                .is_some_and(|s| s.eq_ignore_ascii_case("pdf"))
+        {
+            Some(
+                p.paths[0]
+                    .canonicalize()
+                    .map_err(|_| "无法访问拖入文件；未创建文档。")?,
+            )
+        } else {
+            None
+        };
         let r = self
             .next_export_id
             .checked_add(1)
@@ -76,6 +87,7 @@ impl Workspace {
         self.next_export_id = r;
         self.export_reservation = Some(r);
         let p = self.file_drop.pending.take().ok_or("拖放已失效。")?;
+        self.file_drop.home_source = source;
         self.file_drop.running = Some((drop, r));
         Ok((r, p.paths))
     }
@@ -100,7 +112,20 @@ impl Workspace {
         .map_err(|e| e.to_string())?;
         self.file_drop.running = None;
         self.release_export(reservation);
-        self.replace_document(session, name)
+        let source = self.file_drop.home_source.take().filter(|_| single_pdf);
+        if let Some(path) = source {
+            if let Some(id) = self.source_document(&path) {
+                self.activate_document(id)?;
+            } else {
+                self.replace_document(session, name)?;
+                self.source_documents
+                    .insert(self.active_document_id, path.clone());
+            }
+            self.record_source(&path);
+            self.view()
+        } else {
+            self.replace_document(session, name)
+        }
     }
     fn offer_file_drop(&mut self, paths: Vec<PathBuf>) -> Reply<u32> {
         self.file_drop.pending = None;
@@ -195,6 +220,7 @@ impl Workspace {
         }
         if let Some((_, reservation)) = self.file_drop.running.filter(|(id, _)| *id == drop) {
             self.file_drop.running = None;
+            self.file_drop.home_source = None;
             self.release_export(reservation);
             return true;
         }
@@ -369,6 +395,66 @@ pub(super) async fn open_file_drop(
 mod tests {
     use super::*;
     #[test]
+    fn recents_home_missing_source_does_not_leave_an_export_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = Workspace::default();
+        let id = w
+            .offer_file_drop(vec![dir.path().join("missing.pdf")])
+            .unwrap();
+        assert!(w.begin_home_file_drop(id).is_err());
+        assert!(w.export_reservation.is_none());
+        assert!(w.source_documents.is_empty());
+    }
+    #[test]
+    fn recents_home_pdf_drop_records_only_admitted_source_and_reuses_dirty_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.pdf");
+        let bytes = Session::blank(100., 200., 2).unwrap().bytes().unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut w = Workspace {
+            recents: Some(recents::RecentStore::load(dir.path().join("recent.json"))),
+            journal: Some(recovery::Journal::new(dir.path().join("draft.json"))),
+            ..Default::default()
+        };
+        let id = w.offer_file_drop(vec![path.clone()]).unwrap();
+        let (r, _) = w.begin_home_file_drop(id).unwrap();
+        assert!(
+            w.finish_home_file_drop(id, r, "bad.pdf".into(), &[b"bad"], true)
+                .is_err()
+        );
+        assert!(w.recents.as_ref().unwrap().view().entries.is_empty());
+        w.cancel_file_drop(id);
+        let id = w.offer_file_drop(vec![path.clone()]).unwrap();
+        let (r, _) = w.begin_home_file_drop(id).unwrap();
+        let first = w
+            .finish_home_file_drop(id, r, "synthetic.pdf".into(), &[&bytes], true)
+            .unwrap()
+            .id;
+        w.session
+            .as_mut()
+            .unwrap()
+            .apply(Edit::Rotate {
+                page: 0,
+                degrees: 90,
+            })
+            .unwrap();
+        let dirty = w.session.as_ref().unwrap().bytes().unwrap();
+        w.replace_document(
+            Session::blank(50., 50., 1).unwrap(),
+            "independent.pdf".into(),
+        )
+        .unwrap();
+        let id = w.offer_file_drop(vec![path]).unwrap();
+        let (r, _) = w.begin_home_file_drop(id).unwrap();
+        let view = w
+            .finish_home_file_drop(id, r, "synthetic.pdf".into(), &[&bytes], true)
+            .unwrap();
+        assert_eq!(view.id, first);
+        assert_eq!(view.tabs.len(), 2);
+        assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), dirty);
+        assert_eq!(w.recents.as_ref().unwrap().view().entries.len(), 1);
+    }
+    #[test]
     fn home_merge_creates_an_independent_unsaved_tab_and_never_appends_to_hidden_document() {
         let mut w = workspace();
         let old = w.session.as_ref().unwrap().bytes().unwrap();
@@ -385,7 +471,7 @@ mod tests {
         assert_eq!(w.inactive_documents.len(), 1);
         assert_eq!(w.inactive_documents[0].session.bytes().unwrap(), old);
         let id = w
-            .offer_file_drop(vec![_dir.path().join("synthetic.pdf")])
+            .offer_file_drop(vec![_dir.path().join("first.pdf")])
             .unwrap();
         let (r, _) = w.begin_home_file_drop(id).unwrap();
         assert!(w.cancel_file_drop(id));

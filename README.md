@@ -1,5 +1,11 @@
 # PDF Master
 
+## Windows Rust 候选版（2026-11-06）
+
+[下载 Windows x64 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/rust-windows-candidate-2026-11-06) · [源码与验收范围](RustPDFMaster/CANDIDATE-SNAPSHOT.md)
+
+已修复 Windows 文本导出覆盖已有文件的阻断；同一源码通过 1,076 项 Rust 测试、NSIS 打包及 Windows Server 2025 x64 安装后真实导出/保存验证。安装包未签名，属于功能仍在迁移的候选版，**不是完整功能/UI 复刻完成版**。本次仅发布 Windows Rust；下述苹果原生版及其下载保持不变。
+
 > **© 2026 Nankong 版权所有。仅供非商业技术交流；未经书面许可，不得将 Nankong 未另行授权的原创内容用于商业用途。** 第三方内容权利归原权利人所有。详见 [版权与使用条件](COPYRIGHT.md)。
 
 **自由创作，灵感无界。**

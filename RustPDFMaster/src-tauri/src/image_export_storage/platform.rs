@@ -163,7 +163,11 @@ pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
+// Unix flushes the directory before publication. Windows has no equivalent here:
+// every image was already flushed and read back, and rename_exclusive uses a
+// same-volume MOVEFILE_WRITE_THROUGH move. Validate the payload handle instead;
+// ParentDirectory::sync still reports the post-publication durability limitation.
+pub(super) fn prepare_directory_for_publication(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -178,7 +182,19 @@ pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
         }
         directory.sync_all()
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let directory = open_windows_directory(path)?;
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() || is_reparse(&metadata) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "payload is not a plain directory",
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         Err(io::Error::new(
@@ -278,5 +294,55 @@ fn windows_file_identity(file: &fs::File) -> io::Result<(u32, u32, u32)> {
             information.nFileIndexHigh,
             information.nFileIndexLow,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_directory_can_be_prepared_and_published_without_overwrite() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = ParentDirectory::capture(root.path()).unwrap();
+        let payload = parent.canonical().join("payload");
+        create_private_directory(&payload).unwrap();
+        let mut file = create_private_file(&payload.join("page-0001.png")).unwrap();
+        std::io::Write::write_all(&mut file, b"owned-image-fixture").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        prepare_directory_for_publication(&payload)
+            .expect("valid staged images must not be disabled on Windows");
+        parent
+            .rename_exclusive(&payload, OsStr::new("图片"))
+            .unwrap();
+        assert_eq!(
+            fs::read(parent.canonical().join("图片/page-0001.png")).unwrap(),
+            b"owned-image-fixture"
+        );
+
+        let second = parent.canonical().join("second");
+        create_private_directory(&second).unwrap();
+        assert!(
+            parent
+                .rename_exclusive(&second, OsStr::new("图片"))
+                .is_err()
+        );
+        assert!(second.is_dir());
+        assert_eq!(
+            fs::read(parent.canonical().join("图片/page-0001.png")).unwrap(),
+            b"owned-image-fixture"
+        );
+    }
+
+    #[test]
+    fn directory_preparation_rejects_regular_files_and_missing_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        fs::write(&file, b"keep").unwrap();
+        assert!(prepare_directory_for_publication(&file).is_err());
+        assert!(prepare_directory_for_publication(&root.path().join("missing")).is_err());
+        assert_eq!(fs::read(file).unwrap(), b"keep");
     }
 }

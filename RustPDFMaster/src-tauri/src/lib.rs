@@ -2,18 +2,46 @@ mod clipboard;
 mod export_staging;
 mod file_drop;
 mod file_import;
+mod free_text_editor;
+#[cfg(test)]
+mod free_text_editor_tests;
+#[cfg(test)]
+mod free_text_preview_tests;
+mod image_export;
 #[allow(dead_code)]
 mod image_export_storage;
+#[cfg(test)]
+mod image_export_tests;
 mod image_import;
+#[cfg(target_os = "macos")]
+mod image_progress_macos;
+mod ink_eraser;
+#[cfg(test)]
+mod ink_eraser_tests;
 #[cfg(target_os = "ios")]
 mod ios_export;
 #[cfg(target_os = "macos")]
 mod macos_termination;
+mod note_editor;
 mod overview;
+mod page_actions;
+mod page_input_windows;
+mod recents;
+#[cfg(test)]
+mod recents_tests;
 mod recovery;
 mod search;
+mod shape_editor;
+#[cfg(test)]
+mod shape_editor_tests;
+#[cfg(test)]
+mod shape_preview_tests;
 mod storage;
 mod tabs;
+#[cfg_attr(not(windows), allow(dead_code, unused_imports))]
+mod text_export;
+#[cfg(test)]
+mod text_export_tests;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use pdfmaster_core::{DocumentInfo, Edit, PageRange, Session};
 use serde::{Deserialize, Serialize};
@@ -23,6 +51,10 @@ use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
 struct Workspace {
+    ink_eraser: ink_eraser::EraserState,
+    recents: Option<recents::RecentStore>,
+    source_documents: std::collections::BTreeMap<u32, std::path::PathBuf>,
+    image_export: image_export::ImageExportState,
     image_import: image_import::ImportState,
     file_drop: file_drop::Broker,
     active_document_id: u32,
@@ -36,7 +68,16 @@ struct Workspace {
     restored: bool,
     recovery_fault: bool,
     recovery_warning: Option<String>,
-    note_editor: Option<NoteEditor>,
+    note_editor: Option<note_editor::NoteEditor>,
+    finished_note: Option<note_editor::FinishedNote>,
+    seen_note_requests: std::collections::BTreeSet<String>,
+    free_text_editor: Option<free_text_editor::FreeTextEditor>,
+    finished_free_text: Option<free_text_editor::FinishedFreeText>,
+    seen_free_text_requests: std::collections::BTreeSet<String>,
+    shape_editor: Option<shape_editor::ShapeEditor>,
+    finished_shape: Option<shape_editor::FinishedShape>,
+    prebegin_shape: Option<shape_editor::PrebeginShapeReceipt>,
+    seen_shape_requests: std::collections::BTreeSet<String>,
     ink_editor: Option<InkEditor>,
     next_ink_id: u32,
     finished_ink: Option<(u32, u64, bool)>,
@@ -46,12 +87,6 @@ struct Workspace {
     next_export_id: u32,
     overview_snapshot: Option<overview::Snapshot>,
     next_overview_id: u32,
-}
-#[derive(Clone, Serialize)]
-struct NoteEditor {
-    id: u32,
-    page: usize,
-    original: pdfmaster_core::TextNote,
 }
 struct InkEditor {
     id: u32,
@@ -89,7 +124,9 @@ struct DocumentView {
     info: DocumentInfo,
     restored: bool,
     warning: Option<String>,
-    note_editor: Option<NoteEditor>,
+    note_editor: Option<note_editor::NoteEditor>,
+    free_text_editor: Option<free_text_editor::FreeTextEditor>,
+    shape_editor: Option<shape_editor::ShapeEditor>,
     ink_editor: Option<InkEditorView>,
 }
 
@@ -1001,7 +1038,11 @@ mod workspace_tests {
         let reply = serde_json::to_value(w.view().unwrap()).unwrap();
         let id = reply["note_editor"]["id"].as_u64().unwrap() as u32;
         assert_eq!(reply["note_editor"]["page"], 0);
-        assert_eq!(reply["note_editor"]["original"]["contents"], "原便笺 🦀");
+        assert_eq!(reply["note_editor"]["target"]["kind"], "existing");
+        assert_eq!(
+            reply["note_editor"]["target"]["original"]["contents"],
+            "原便笺 🦀"
+        );
         assert_eq!(w.session.as_ref().unwrap().bytes().unwrap(), bytes);
         assert_eq!(w.session.as_ref().unwrap().info(), info);
         assert!(w.has_unsaved_work());
@@ -1038,15 +1079,8 @@ mod workspace_tests {
         let before = w.session.as_ref().unwrap().bytes().unwrap();
         let info = w.session.as_ref().unwrap().info();
         let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
-        for contents in [
-            String::new(),
-            " \n\t".into(),
-            "原便笺 🦀".into(),
-            "x".repeat(65537),
-        ] {
-            assert!(w.commit_note_editor(editor.id, contents).is_err());
-            assert!(w.has_unsaved_work());
-        }
+        assert!(w.commit_note_editor(editor.id, "x".repeat(65537)).is_err());
+        assert!(w.has_unsaved_work());
         assert!(
             apply_single_edit(
                 &mut w,
@@ -1109,11 +1143,11 @@ mod workspace_tests {
     }
 
     #[test]
-    fn core_rejection_keeps_the_same_editor_and_current_bytes() {
+    fn snapshot_conflict_keeps_the_same_editor_and_current_bytes() {
         let (mut w, _directory) = note_workspace();
         let editor = w.begin_note_editor(0, 0, "原便笺 🦀").unwrap();
-        // Simulate an internal mutation outside guarded IPC. The core expected
-        // contents binding must still reject this now-stale editor atomically.
+        // Simulate an internal mutation outside guarded IPC. The editor's exact
+        // byte snapshot rejects the stale commit before core.apply is reached.
         w.session
             .as_mut()
             .unwrap()
@@ -1740,6 +1774,8 @@ impl Workspace {
                 .iter()
                 .any(|d| d.restored || d.session.is_dirty())
             || self.note_editor.is_some()
+            || self.free_text_editor.is_some()
+            || self.shape_editor.is_some()
             || self.ink_editor.is_some()
             || self.export_reservation.is_some()
     }
@@ -1748,6 +1784,10 @@ impl Workspace {
             Err("正在处理 PDF 文件，请等待文件面板和读写完成或取消操作。".into())
         } else if self.note_editor.is_some() {
             Err("请先保存或取消便笺编辑；编辑框内容尚未写入 PDF。".into())
+        } else if self.free_text_editor.is_some() {
+            Err("请先保存或取消 FreeText 编辑；页内正文尚未写入 PDF。".into())
+        } else if self.shape_editor.is_some() {
+            Err("请先提交或取消 Shapes 页内编辑。".into())
         } else if self.ink_editor.is_some() {
             Err("手绘笔画尚未结束，请抬笔提交或取消手绘。".into())
         } else {
@@ -1771,6 +1811,7 @@ impl Workspace {
         Ok((id, self.name.clone(), bytes))
     }
     fn release_export(&mut self, id: u32) {
+        image_export::released(self, id);
         image_import::released(self, id);
         if self.export_reservation == Some(id) {
             self.export_reservation = None;
@@ -1860,70 +1901,6 @@ impl Workspace {
         // releasing this token and acknowledging the exact exported snapshot.
         self.finish_verified_export(bytes)
     }
-    fn begin_note_editor(
-        &mut self,
-        page: usize,
-        annotation_index: usize,
-        expected: &str,
-    ) -> Reply<NoteEditor> {
-        self.ensure_editor_idle()?;
-        if expected.len() > 1024 * 1024 {
-            return Err("便笺原始内容超出预算。".into());
-        }
-        let original = workspace_notes(self, page)?
-            .notes
-            .into_iter()
-            .find(|note| note.annotation_index == annotation_index && note.contents == expected)
-            .ok_or("便笺已改变，请重新选择。")?;
-        let id = self
-            .next_editor_id
-            .checked_add(1)
-            .ok_or("编辑会话编号已耗尽，请先安全保存并重启应用。")?;
-        let editor = NoteEditor { id, page, original };
-        self.next_editor_id = id;
-        self.note_editor = Some(editor.clone());
-        Ok(editor)
-    }
-    fn active_editor(&self, id: u32) -> Reply<NoteEditor> {
-        self.note_editor
-            .as_ref()
-            .filter(|editor| editor.id == id)
-            .cloned()
-            .ok_or_else(|| "便笺编辑会话已改变，请刷新当前文档。".into())
-    }
-    fn cancel_note_editor(&mut self, id: u32) -> Reply<DocumentView> {
-        // An acknowledgement can be lost after commit/cancel. Releasing the
-        // same finished ID is safe, but can never release a later editor.
-        if self.note_editor.is_none() && id != 0 && id == self.next_editor_id {
-            return self.view();
-        }
-        self.active_editor(id)?;
-        self.note_editor = None;
-        self.view()
-    }
-    fn commit_note_editor(&mut self, id: u32, contents: String) -> Reply<DocumentView> {
-        let editor = self.active_editor(id)?;
-        if contents.trim().is_empty()
-            || contents.len() > 64 * 1024
-            || contents == editor.original.contents
-        {
-            return Err("便笺修改不能为空、超过64KiB或与原内容相同。".into());
-        }
-        self.session
-            .as_mut()
-            .ok_or("请先打开 PDF")?
-            .apply(Edit::UpdateNote {
-                page: editor.page,
-                annotation_index: editor.original.annotation_index,
-                expected_contents: editor.original.contents,
-                contents,
-            })
-            .map_err(|error| error.to_string())?;
-        // The PDF is already dirty if the subsequent journal write fails.
-        // Clear the editor only after the atomic core mutation succeeded.
-        self.note_editor = None;
-        self.checkpoint()
-    }
     fn view(&self) -> Reply<DocumentView> {
         let mut info = self.session.as_ref().ok_or("请先打开 PDF")?.info();
         info.dirty = self.dirty();
@@ -1933,8 +1910,14 @@ impl Workspace {
             name: self.name.clone(),
             info,
             restored: self.restored,
-            warning: self.recovery_warning.clone(),
+            warning: match (&self.recovery_warning, self.recent_warning()) {
+                (Some(recovery), Some(recent)) => Some(format!("{recovery}；{recent}")),
+                (Some(recovery), None) => Some(recovery.clone()),
+                (None, recent) => recent,
+            },
             note_editor: self.note_editor.clone(),
+            free_text_editor: self.free_text_editor.clone(),
+            shape_editor: self.shape_editor.clone(),
             ink_editor: self.ink_editor.as_ref().map(InkEditor::view),
         })
     }
@@ -1992,6 +1975,9 @@ impl Workspace {
         result
     }
     fn checkpoint(&mut self) -> Reply<DocumentView> {
+        self.ink_eraser.prepared = None;
+        self.finished_shape = None;
+        self.prebegin_shape = None;
         // Even undo back to identical PDF bytes invalidates an old drag's
         // presentation generation. Never allow that snapshot to revive.
         self.overview_snapshot = None;
@@ -2414,20 +2400,8 @@ async fn open_document(
         return Ok(None);
     };
     let path = file.into_path().map_err(|_| "不能访问所选文件")?;
-    let mut bytes = Vec::new();
-    File::open(&path)
-        .map_err(|e| e.to_string())?
-        .take(32 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    let session = Session::open(&bytes).map_err(|e| e.to_string())?;
     let mut w = state.lock().map_err(|_| "文档状态不可用")?;
-    let name = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into();
-    w.replace_document(session, name).map(Some)
+    w.open_source(&path).map(Some)
 }
 
 #[tauri::command]
@@ -2519,11 +2493,36 @@ async fn begin_note_editor(
     annotation_index: usize,
     expected_contents: String,
     state: State<'_, Store>,
-) -> Reply<NoteEditor> {
+) -> Reply<note_editor::NoteEditor> {
     state
         .lock()
         .map_err(|_| "文档状态不可用")?
         .begin_note_editor(page, annotation_index, &expected_contents)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn begin_canvas_note_editor(
+    request: String,
+    document_id: u32,
+    page: usize,
+    target: note_editor::CanvasNoteTarget,
+    state: State<'_, Store>,
+) -> Reply<note_editor::NoteEditor> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .begin_canvas_note_editor(&request, document_id, page, target)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn cancel_canvas_note_request(
+    request: String,
+    state: State<'_, Store>,
+) -> Reply<DocumentView> {
+    state
+        .lock()
+        .map_err(|_| "文档状态不可用")?
+        .cancel_canvas_note_request(&request)
 }
 
 #[tauri::command]
@@ -2836,6 +2835,7 @@ pub fn run() {
             }
             w.journal = Some(journal);
             w._journal_lock = Some(journal_lock);
+            w.recents = Some(recents::RecentStore::load(dir.join("recent-documents-v1.json")));
             drop(w);
             #[cfg(target_os = "macos")]
             macos_termination::install(app.handle())?;
@@ -2852,7 +2852,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![image_import::prepare_image_import,image_import::convert_image_import,image_import::cancel_image_import,file_drop::register_file_drop_channel,file_drop::unregister_file_drop_channel,file_drop::import_file_drop,file_drop::open_file_drop,file_drop::cancel_file_drop,open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,overview::prepare_page_overview,overview::move_overview_pages,overview::render_overview_page,clipboard::copy_pages_document,clipboard::paste_pages_document,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,cancel_note_editor,commit_note_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
+        .invoke_handler(tauri::generate_handler![ink_eraser::prepare_ink_eraser,ink_eraser::erase_ink_document,text_export::export_text_document,recents::recent_documents,recents::open_recent_document,recents::toggle_recent_favorite,recents::remove_recent_document,recents::clear_recent_documents,image_export::prepare_image_export,image_export::export_images_document,image_export::cancel_image_export,page_actions::prompt_page_action,image_import::prepare_image_import,image_import::convert_image_import,image_import::cancel_image_import,file_drop::register_file_drop_channel,file_drop::unregister_file_drop_channel,file_drop::import_file_drop,file_drop::open_file_drop,file_drop::cancel_file_drop,open_document,new_document,tabs::activate_document,tabs::close_document,document_info,render_page,overview::prepare_page_overview,overview::move_overview_pages,overview::render_overview_page,clipboard::copy_pages_document,clipboard::paste_pages_document,notes_document,outline_document,annotations_document,shapes_document,begin_ink_document,commit_ink_document,cancel_ink_document,cancel_ink_request_document,begin_note_editor,begin_canvas_note_editor,cancel_canvas_note_request,cancel_note_editor,commit_note_editor,free_text_editor::free_texts_document,free_text_editor::begin_canvas_free_text_editor,free_text_editor::cancel_canvas_free_text_request,free_text_editor::cancel_free_text_editor,free_text_editor::commit_free_text_editor,free_text_editor::render_free_text_editor_background,shape_editor::canvas_shapes_document,shape_editor::begin_canvas_shape_editor,shape_editor::cancel_canvas_shape_request,shape_editor::cancel_shape_editor,shape_editor::commit_shape_editor,shape_editor::render_shape_editor_background,shape_editor::delete_shape_editor,delete_note_document,delete_shape_document,delete_annotation_document,search_document,edit_document,batch_pages,undo_document,redo_document,export_document,extract_pages_document,insert_pdf_document,insert_pdfs_document])
         .on_window_event(|window,event|{
             if let tauri::WindowEvent::DragDrop(event) = event {
                 file_drop::event(window, event);

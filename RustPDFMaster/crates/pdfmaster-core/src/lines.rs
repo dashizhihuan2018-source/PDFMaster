@@ -76,7 +76,7 @@ pub(crate) fn validate_width(width: f32) -> Result<()> {
     }
 }
 
-fn validate_geometry(line: &LineGeometry, bounds: Rect) -> Result<()> {
+pub(crate) fn validate_geometry(line: &LineGeometry, bounds: Rect) -> Result<()> {
     let inside = |p: Point| {
         p.x.is_finite()
             && p.y.is_finite()
@@ -310,6 +310,62 @@ pub(crate) fn add_line(
     fill: Option<Color>,
     width: f32,
 ) -> Result<()> {
+    let line = LineGeometry {
+        start,
+        end,
+        endings,
+        dash_pattern: Vec::new(),
+    };
+    add_line_geometry(document, pages, page, &line, stroke, fill, width)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_line_geometry(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    line: &LineGeometry,
+    stroke: Color,
+    fill: Option<Color>,
+    width: f32,
+) -> Result<()> {
+    add_line_geometry_internal(document, pages, page, line, None, stroke, fill, width)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_line_geometry_with_bounds(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    line: &LineGeometry,
+    bounds: Rect,
+    stroke: Color,
+    fill: Option<Color>,
+    width: f32,
+) -> Result<()> {
+    add_line_geometry_internal(
+        document,
+        pages,
+        page,
+        line,
+        Some(bounds),
+        stroke,
+        fill,
+        width,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_line_geometry_internal(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    line: &LineGeometry,
+    exact_bounds: Option<Rect>,
+    stroke: Color,
+    fill: Option<Color>,
+    width: f32,
+) -> Result<()> {
     validate_page_index(page, pages.len())?;
     validate_width(width)?;
     validate_color(stroke)?;
@@ -322,22 +378,17 @@ pub(crate) fn add_line(
         width: pages[page].width,
         height: pages[page].height,
     };
-    let line = LineGeometry {
-        start,
-        end,
-        endings,
-        dash_pattern: Vec::new(),
-    };
-    validate_geometry(&line, page_rect)?;
-    // Include arrow wings and stroke extents, clipped only to the visible page.
-    let bounds = expanded_bounds(&line, &pages[page], width, None);
+    validate_geometry(line, page_rect)?;
+    // Omitted frames retain historical wing/stroke padding; explicit frames clip exactly.
+    let bounds = exact_bounds.unwrap_or_else(|| expanded_bounds(line, &pages[page], width, None));
     let (x, y) = (bounds.x, bounds.y);
     validate_rect(bounds, &pages[page])?;
+    validate_geometry(line, bounds)?;
     let page_id = page_object_ids(document)?[page];
     let mut annots = validated_annots_for_add(document, page_id, &pages[page])?;
-    let ap=document.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Form","FormType"=>1,"BBox"=>vec![0.into(),0.into(),bounds.width.into(),bounds.height.into()],"Resources"=>Dictionary::new()},appearance(&line,bounds,stroke,fill,width)?));
+    let ap=document.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Form","FormType"=>1,"BBox"=>vec![0.into(),0.into(),bounds.width.into(),bounds.height.into()],"Resources"=>Dictionary::new()},appearance(line,bounds,stroke,fill,width)?));
     let mut a = dictionary! {"Type"=>"Annot","Subtype"=>"Line","Rect"=>vec![x.into(),y.into(),(x+bounds.width).into(),(y+bounds.height).into()],"P"=>page_id,"F"=>4,"C"=>vec![stroke.r.into(),stroke.g.into(),stroke.b.into()],"Border"=>vec![0.into(),0.into(),width.into()],"AP"=>dictionary!{"N"=>ap}};
-    write_geometry(&mut a, &line, width);
+    write_geometry(&mut a, line, width);
     a.set("M", crate::annotations::modified_now()?);
     if let Some(c) = fill {
         a.set("IC", vec![c.r.into(), c.g.into(), c.b.into()]);

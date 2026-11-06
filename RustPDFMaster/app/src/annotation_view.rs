@@ -5,7 +5,7 @@ use pdfmaster_ui::annotations::{Identity, Row, Sort, copy_status_is_current, sor
 use pdfmaster_ui::{
     outline::Mode,
     shell::Route,
-    workbench::{Mode as ToolMode, Panel},
+    workbench::{ActiveTool, Mode as ToolMode, Panel},
 };
 use serde_json::json;
 use wasm_bindgen::{JsCast, JsValue};
@@ -218,9 +218,6 @@ impl Model {
         });
     }
     fn select_annotation(self, identity: Identity) {
-        if self.blocked() {
-            return;
-        }
         let Some(row) = self
             .annotation_rows()
             .into_iter()
@@ -228,10 +225,6 @@ impl Model {
         else {
             return;
         };
-        self.annotation_selection.set(Some(identity));
-        // Navigation makes row buttons transiently disabled. Keep focus on the
-        // stable list so the next Delete/Backspace still reaches this sidebar.
-        focus_annotation_list();
         let target = self.document.with_untracked(|d| {
             let page = d.as_ref()?.info.pages.get(row.page_index)?;
             Target::new(
@@ -244,6 +237,19 @@ impl Model {
                 },
             )
         });
+        if self.defer_canvas_edit(Some(super::canvas_intent::Intent::AnnotationPage(
+            row.page_index,
+            identity,
+            target,
+        ))) {
+            return;
+        }
+        if self.blocked() {
+            return;
+        }
+        self.annotation_selection.set(Some(identity));
+        // Preserve keyboard focus for the ordinary non-text navigation path.
+        focus_annotation_list();
         self.navigate_with_annotation(row.page_index, target);
     }
     fn sort_annotations(self, sort: Sort) {
@@ -310,11 +316,15 @@ impl Model {
         });
     }
     fn annotation_tool(self, panel: Panel) {
-        self.select_mode(if panel == Panel::Ink {
-            ToolMode::Drawing
-        } else {
-            ToolMode::Annotation
-        });
+        if panel == Panel::Ink {
+            self.activate_tool(ActiveTool::Ink);
+            return;
+        }
+        if panel == Panel::Notes {
+            self.activate_tool(ActiveTool::Note);
+            return;
+        }
+        self.select_mode(ToolMode::Annotation);
         self.select_panel(Some(panel));
     }
 }
@@ -356,9 +366,9 @@ pub(super) fn AnnotationSidebar(model: Model) -> impl IntoView {
                     <p>"使用批注和绘画工具标记PDF"</p>
                     <div class="annotation-empty-tools" role="group" aria-label="批注工具">
                         <button aria-label="批注工具 · 高亮" title="高亮尚未迁移" disabled>"▰"</button>
-                        <button aria-label="批注工具 · 画笔" title="画笔" disabled=move||m.blocked() on:click=move|_|m.annotation_tool(Panel::Ink)>"✎"</button>
-                        <button aria-label="批注工具 · 文字" title="文字" disabled=move||m.blocked() on:click=move|_|m.annotation_tool(Panel::Text)>"T"</button>
-                        <button aria-label="批注工具 · 便笺" title="便笺" disabled=move||m.blocked() on:click=move|_|m.annotation_tool(Panel::Notes)>"▱"</button>
+                        <button aria-label="批注工具 · 画笔" title="画笔" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.annotation_tool(Panel::Ink)>"✎"</button>
+                        <button aria-label="批注工具 · 文字" title="文字" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.activate_tool(ActiveTool::Text)>"T"</button>
+                        <button aria-label="批注工具 · 便笺" title="便笺" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.annotation_tool(Panel::Notes)>"▱"</button>
                     </div>
                 </div>
             </Show>
@@ -374,7 +384,7 @@ pub(super) fn AnnotationSidebar(model: Model) -> impl IntoView {
                     let tooltip=format!("{heading}\n{detail}\n{time}");let color=row.color_css();let height=row.height();
                     view! {<button class="annotation-row" role="listitem" style=format!("height:{height}px") title=tooltip
                         class:selected=move||m.annotation_selection.get()==Some(identity) aria-current=move||(m.annotation_selection.get()==Some(identity)).to_string()
-                        disabled=move||{m.blocked()||row.page_index>=m.count()} on:click=move|_|m.select_annotation(identity)>
+                        disabled=move||{m.canvas_intent_disabled()||row.page_index>=m.count()} on:click=move|_|m.select_annotation(identity)>
                         <span class="annotation-dot" style=format!("background:{color}") aria-hidden="true"></span>
                         <span class="annotation-heading">{heading}</span>
                         {(!detail.is_empty()).then(||view!{<span class="annotation-detail">{detail}</span>})}

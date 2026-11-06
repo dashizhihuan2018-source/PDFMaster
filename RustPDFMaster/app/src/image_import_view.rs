@@ -131,15 +131,24 @@ impl Model {
         });
         self.busy.set(true);
         spawn_local(async move {
-            let result =
-                super::image_progress_channel::convert(id, c.order, layout, move |notice| {
+            let result = super::image_progress_channel::convert(
+                id,
+                c.order,
+                layout,
+                move |notice| {
                     let _ = self.image_import.try_update(|job| {
                         if let Some(Job::Configuration(configuration)) = job {
                             let _ = configuration.accept_progress(notice);
                         }
                     });
-                })
-                .await;
+                },
+                move |cancel_id| {
+                    if self.image_current(cancel_id) {
+                        self.cancel_images();
+                    }
+                },
+            )
+            .await;
             if !self.image_current(id) {
                 return;
             }

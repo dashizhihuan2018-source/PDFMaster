@@ -61,7 +61,7 @@ fn mobile_sidebar_anchors_to_the_reader_grid_area_not_a_second_toolbar_offset() 
         .split_once('}')
         .unwrap()
         .0;
-    assert!(sidebar.contains("grid-area:3/1/4/-1"));
+    assert!(sidebar.contains("grid-area:4/1/5/-1"));
     assert!(sidebar.contains("top:0;bottom:0"));
     assert!(!sidebar.contains("top:calc("));
     assert!(!sidebar.contains("bottom:68px"));

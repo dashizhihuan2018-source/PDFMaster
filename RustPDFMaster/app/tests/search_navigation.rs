@@ -84,10 +84,11 @@ fn selected_result_is_visible_in_its_own_scroll_region() {
 }
 
 #[test]
-fn nested_inspector_scrolling_is_explicit_not_a_whole_page_scroll() {
+fn live_search_result_scrolling_is_local_not_a_whole_page_scroll() {
     let source = include_str!("../src/workspace.rs");
-    assert!(source.contains("container.closest(\".inspector\")"));
-    assert!(source.contains("inspector.set_scroll_top"));
+    assert!(source.contains("get_element_by_id(\"search-results\")"));
+    assert!(source.contains("container.set_scroll_top(pdfmaster_ui::reveal_scroll("));
+    assert!(!source.contains("container.closest(\".inspector\")"));
     assert!(include_str!("../src/lib.rs").contains("pub fn reveal_scroll("));
     assert!(!source.contains("scroll_into_view"));
 }

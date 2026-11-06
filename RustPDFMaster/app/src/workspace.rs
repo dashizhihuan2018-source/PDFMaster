@@ -2,24 +2,47 @@
 mod annotation_view;
 #[path = "bridge.rs"]
 mod bridge;
+#[path = "canvas_intent.rs"]
+mod canvas_intent;
+#[path = "canvas_notes_view.rs"]
+mod canvas_notes_view;
+#[path = "canvas_shapes_controller.rs"]
+mod canvas_shapes_controller;
+#[path = "canvas_shapes_view.rs"]
+mod canvas_shapes_view;
+#[path = "canvas_text_controller.rs"]
+mod canvas_text_controller;
+#[path = "canvas_text_view.rs"]
+mod canvas_text_view;
 #[path = "file_drop_view.rs"]
 mod file_drop_view;
 #[path = "home.rs"]
 mod home;
+#[path = "image_export_view.rs"]
+mod image_export_view;
 #[path = "image_import_view.rs"]
 mod image_import_view;
 #[path = "image_progress_channel.rs"]
 mod image_progress_channel;
+#[path = "ink_eraser_view.rs"]
+mod ink_eraser_view;
 #[path = "overview_view.rs"]
 mod overview_view;
+#[path = "page_file_controller.rs"]
+mod page_file_controller;
+#[path = "recents_view.rs"]
+mod recents_view;
+#[path = "text_export_view.rs"]
+mod text_export_view;
 #[path = "thumbnail_view.rs"]
 mod thumbnail_view;
 #[path = "workbench_view.rs"]
 mod workbench;
+use canvas_intent::Intent as TextIntent;
 use leptos::{prelude::*, task::spawn_local};
 use pdfmaster_ui::ink::{Frame, InkAction, InkGesture, InkImageHandoff};
 use pdfmaster_ui::shell::{HomeSection, Route, document_reply_route, switch_route};
-use pdfmaster_ui::workbench::{Action, Chrome, Mode, Panel, fit_page_zoom};
+use pdfmaster_ui::workbench::{Action, ActiveTool, Chrome, Mode, PageAction, Panel, fit_page_zoom};
 use wasm_bindgen::JsCast;
 fn image_event_source(event: &web_sys::Event) -> Option<String> {
     event
@@ -69,28 +92,12 @@ fn reveal_search_hit(index: usize) {
         top + f64::from(row.offset_height()),
         f64::from(height),
     ) as i32);
-    // Mobile inspectors can clip the inner results scroller. Reveal the same
-    // row inside that one ancestor too, without scrolling the app/body.
-    if let Ok(Some(inspector)) = container.closest(".inspector") {
-        let scroll = f64::from(inspector.scroll_top());
-        let row_rect = row.get_bounding_client_rect();
-        let top = scroll + row_rect.top()
-            - inspector.get_bounding_client_rect().top()
-            - f64::from(inspector.client_top());
-        inspector.set_scroll_top(pdfmaster_ui::reveal_scroll(
-            scroll,
-            top,
-            top + row_rect.height(),
-            f64::from(inspector.client_height()),
-        ) as i32);
-    }
 }
 use pdfmaster_ui::{
     RasterPlan, adjacent_page, adjacent_search_hit, command_status_message, fit_width_zoom,
-    line_edit, note_edit, page_batch_args, page_jump_index, page_jump_success_message,
-    page_move_edit, raster_plan, search_conditions_message, search_response_is_current,
-    search_status_message, shape_color_hex, shape_edit, step_zoom, update_note_edit,
-    update_shape_edit, visible_status,
+    page_batch_args, page_jump_index, page_jump_success_message, page_move_edit, raster_plan,
+    search_conditions_message, search_response_is_current, search_status_message, step_zoom,
+    visible_status,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -124,6 +131,10 @@ struct Document {
     note_editor: Option<NoteDraft>,
     #[serde(default)]
     ink_editor: Option<InkDraft>,
+    #[serde(default)]
+    free_text_editor: Option<pdfmaster_ui::canvas_text::Owner>,
+    #[serde(default)]
+    shape_editor: Option<pdfmaster_ui::canvas_shapes::Owner>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -146,15 +157,9 @@ struct TabPresentation {
     annotation_sort: pdfmaster_ui::annotations::Sort,
     search_query: String,
     search_case_sensitive: bool,
-    text: String,
-    note_text: String,
-    page_range: String,
-    shape_bounds: String,
+    shapes_settings: canvas_shapes_controller::Settings,
     shape_stroke: String,
-    shape_fill: String,
     shape_line: String,
-    line_points: String,
-    ink_enabled: bool,
     overview_visible: bool,
     overview_scale: f64,
 }
@@ -184,20 +189,49 @@ struct TextNote {
 #[derive(Clone, Debug, Deserialize)]
 struct NoteList {
     notes: Vec<TextNote>,
-    unsupported_count: usize,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct ShapeList {
-    shapes: Vec<Value>,
-    unsupported_count: usize,
+    #[serde(rename = "unsupported_count")]
+    _unsupported_count: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct NoteDraft {
     id: u32,
     page: usize,
-    original: TextNote,
+    request: String,
+    target: NoteDraftTarget,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum NoteDraftTarget {
+    Existing {
+        original: TextNote,
+    },
+    New {
+        bounds: NoteBounds,
+        #[serde(rename = "color")]
+        _color: Value,
+    },
+}
+
+impl NoteDraft {
+    fn initial_contents(&self) -> String {
+        match &self.target {
+            NoteDraftTarget::Existing { original } => original.contents.clone(),
+            NoteDraftTarget::New { .. } => String::new(),
+        }
+    }
+
+    fn anchor(&self) -> pdfmaster_drawing::Point {
+        let bounds = match &self.target {
+            NoteDraftTarget::Existing { original } => &original.bounds,
+            NoteDraftTarget::New { bounds, .. } => bounds,
+        };
+        pdfmaster_drawing::Point {
+            x: bounds.x + bounds.width * 0.5,
+            y: bounds.y + bounds.height * 0.5,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
@@ -270,6 +304,8 @@ mod batch_reply_contract {
 
 #[derive(Clone, Copy)]
 struct Model {
+    recents: RwSignal<pdfmaster_ui::recents::History>,
+    recent_mutating: RwSignal<bool>,
     route: RwSignal<Route>,
     chrome: RwSignal<Chrome>,
     document: RwSignal<Option<Document>>,
@@ -288,6 +324,8 @@ struct Model {
     file_drop_request: RwSignal<Option<u32>>,
     home_drop_active: RwSignal<bool>,
     image_import: RwSignal<Option<pdfmaster_ui::image_import::Job>>,
+    image_export: RwSignal<Option<pdfmaster_ui::image_export::Job>>,
+    pending_image_export: RwSignal<Option<bool>>,
     sidebar_mode: RwSignal<pdfmaster_ui::outline::Mode>,
     sidebar_width: RwSignal<pdfmaster_ui::sidebar_width::Width>,
     sidebar_viewport: RwSignal<f64>,
@@ -305,11 +343,16 @@ struct Model {
     image: RwSignal<String>,
     message: RwSignal<String>,
     busy: RwSignal<bool>,
-    text: RwSignal<String>,
-    note_text: RwSignal<String>,
     notes: RwSignal<Option<Result<NoteList, String>>>,
     note_draft: RwSignal<Option<NoteDraft>>,
     note_edit_text: RwSignal<String>,
+    note_pointer: RwSignal<Option<canvas_notes_view::NotePointer>>,
+    eraser_pointer: RwSignal<Option<pdfmaster_ui::ink_eraser::Pointer>>,
+    eraser_sequence: RwSignal<u64>,
+    eraser_preparing: RwSignal<Option<u64>>,
+    note_request: RwSignal<Option<canvas_notes_view::NoteRequest>>,
+    note_commit: RwSignal<Option<canvas_notes_view::NoteCommitAttempt>>,
+    note_anchor: RwSignal<Option<pdfmaster_drawing::Point>>,
     search_query: RwSignal<String>,
     search_case_sensitive: RwSignal<bool>,
     search_result: RwSignal<Option<SearchResponse>>,
@@ -318,20 +361,24 @@ struct Model {
     search_timer: RwSignal<Option<leptos::leptos_dom::helpers::TimeoutHandle>>,
     search_status: RwSignal<String>,
     page_jump: RwSignal<String>,
-    page_range: RwSignal<String>,
-    shape_bounds: RwSignal<String>,
     shape_stroke: RwSignal<String>,
-    shape_fill: RwSignal<String>,
     shape_line: RwSignal<String>,
-    line_points: RwSignal<String>,
-    shapes: RwSignal<Option<Result<ShapeList, String>>>,
-    selected_shape: RwSignal<Option<Value>>,
     ink_enabled: RwSignal<bool>,
     ink_gesture: RwSignal<Option<InkGesture>>,
     ink_handoff: RwSignal<bool>,
     ink_image: RwSignal<Option<InkImageHandoff>>,
     ink_image_revision: RwSignal<u32>,
     image_ready: RwSignal<bool>,
+    free_text: RwSignal<pdfmaster_ui::canvas_text::Session<canvas_intent::Intent>>,
+    free_text_list: RwSignal<Option<canvas_text_controller::PageTexts>>,
+    free_text_pointer: RwSignal<Option<canvas_text_controller::Pointer>>,
+    free_text_preview: RwSignal<Option<canvas_text_controller::Preview>>,
+    free_text_fonts: RwSignal<bool>,
+    free_text_frame: RwSignal<Option<pdfmaster_ui::canvas_notes::Frame>>,
+    free_text_sync: RwSignal<Option<pdfmaster_ui::canvas_text::Ticket>>,
+    free_text_completion: RwSignal<Option<pdfmaster_ui::canvas_text::Ticket>>,
+    free_text_attempt: RwSignal<u64>,
+    shape_ui: RwSignal<canvas_shapes_controller::Ui>,
 }
 
 impl Model {
@@ -345,15 +392,9 @@ impl Model {
                 annotation_sort: self.annotation_sort.get_untracked(),
                 search_query: self.search_query.get_untracked(),
                 search_case_sensitive: self.search_case_sensitive.get_untracked(),
-                text: self.text.get_untracked(),
-                note_text: self.note_text.get_untracked(),
-                page_range: self.page_range.get_untracked(),
-                shape_bounds: self.shape_bounds.get_untracked(),
+                shapes_settings: self.shape_ui.with_untracked(|u| u.settings.clone()),
                 shape_stroke: self.shape_stroke.get_untracked(),
-                shape_fill: self.shape_fill.get_untracked(),
                 shape_line: self.shape_line.get_untracked(),
-                line_points: self.line_points.get_untracked(),
-                ink_enabled: self.ink_enabled.get_untracked(),
                 overview_visible: self.overview_visible.get_untracked(),
                 overview_scale: self.overview_scale.get_untracked(),
             };
@@ -389,15 +430,9 @@ impl Model {
             annotation_sort: Default::default(),
             search_query: String::new(),
             search_case_sensitive: false,
-            text: String::new(),
-            note_text: String::new(),
-            page_range: String::new(),
-            shape_bounds: "36,36,120,80".into(),
+            shapes_settings: Default::default(),
             shape_stroke: "#4F46E5".into(),
-            shape_fill: String::new(),
             shape_line: "2".into(),
-            line_points: "72,200,300,300".into(),
-            ink_enabled: false,
             overview_visible: false,
             overview_scale: 1.,
         });
@@ -409,19 +444,22 @@ impl Model {
         self.annotation_sort.set(state.annotation_sort);
         self.search_query.set(state.search_query);
         self.search_case_sensitive.set(state.search_case_sensitive);
-        self.text.set(state.text);
-        self.note_text.set(state.note_text);
-        self.page_range.set(state.page_range);
-        self.shape_bounds.set(state.shape_bounds);
+        self.shape_ui.update(|u| {
+            u.settings = state.shapes_settings;
+            u.selected = None;
+            u.list = None;
+        });
         self.shape_stroke.set(state.shape_stroke);
-        self.shape_fill.set(state.shape_fill);
         self.shape_line.set(state.shape_line);
-        self.line_points.set(state.line_points);
-        self.ink_enabled.set(state.ink_enabled);
+        self.ink_enabled
+            .set(state.chrome.active_tool == Some(ActiveTool::Ink));
         self.overview_visible.set(state.overview_visible);
         self.overview_scale.set(state.overview_scale);
     }
     fn close_tab(self, id: u32) {
+        if self.defer_canvas_edit(Some(TextIntent::Close(id))) {
+            return;
+        }
         if self.blocked() {
             return;
         }
@@ -486,9 +524,9 @@ impl Model {
     }
     fn close_chrome_popups(self) {
         if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-            // There are exactly two local menus. Bound the DOM work even if a
+            // Bound the DOM work even if a
             // future markup change introduces an unexpected open element.
-            for _ in 0..2 {
+            for _ in 0..4 {
                 let Ok(Some(menu)) = document.query_selector(".workbench-toolbar details[open]")
                 else {
                     break;
@@ -498,11 +536,16 @@ impl Model {
         }
     }
     fn select_mode(self, mode: Mode) {
+        if self.defer_canvas_edit(Some(TextIntent::Mode(mode))) {
+            return;
+        }
         let blocked = self.blocked();
         if blocked {
             return;
         }
         self.close_chrome_popups();
+        self.note_pointer.set(None);
+        self.eraser_pointer.set(None);
         self.ink_enabled.set(false);
         self.chrome
             .update(|chrome| *chrome = chrome.select_mode(mode, blocked));
@@ -517,34 +560,87 @@ impl Model {
         self.message
             .set("选择二级工具后才会修改文档；灰色工具尚未迁移。".into());
     }
+    fn activate_tool(self, tool: ActiveTool) {
+        if self.defer_canvas_edit(Some(TextIntent::Tool(tool))) {
+            return;
+        }
+        if self.blocked() {
+            return;
+        }
+        self.close_chrome_popups();
+        self.eraser_pointer.set(None);
+        if self.chrome.get_untracked().active_tool != Some(tool) {
+            self.note_pointer.set(None);
+        }
+        self.overview_visible.set(false);
+        let next = self.chrome.get_untracked().activate_tool(tool, false);
+        self.ink_enabled
+            .set(next.active_tool == Some(ActiveTool::Ink));
+        self.chrome.set(next);
+        if next.active_tool == Some(ActiveTool::Eraser) {
+            self.message
+                .set("橡皮：点击删除整条手绘笔迹，可撤销；暂不支持局部擦除".into());
+        }
+        if next.active_tool == Some(ActiveTool::Shapes) {
+            spawn_local(async move {
+                if let Err(e) = self.refresh_canvas_shapes().await {
+                    self.shape_error(e);
+                }
+            });
+        } else if next.active_tool == Some(ActiveTool::Text) {
+            spawn_local(async move {
+                if let Err(e) = self.refresh_free_texts().await {
+                    self.message.set(e);
+                }
+            });
+        }
+    }
     fn select_panel(self, panel: Option<Panel>) {
+        if self.defer_canvas_edit(Some(TextIntent::Panel(panel))) {
+            return;
+        }
+        if panel == Some(Panel::Ink) {
+            self.activate_tool(ActiveTool::Ink);
+            return;
+        }
         if panel == Some(Panel::Search) {
             self.show_search_sidebar();
+            return;
+        }
+        if panel == Some(Panel::Pages) {
+            self.set_overview(true);
+            return;
+        }
+        if panel == Some(Panel::Batch) {
+            self.prompt_page_action(PageAction::Extract);
             return;
         }
         let blocked = self.blocked();
         if blocked {
             return;
         }
-        if matches!(
-            panel,
-            Some(Panel::Pages | Panel::Text | Panel::Notes | Panel::Ink | Panel::Shapes)
-        ) {
+        if matches!(panel, Some(Panel::Pages | Panel::Notes)) {
             self.overview_visible.set(false);
         }
         self.close_chrome_popups();
-        if panel != Some(Panel::Ink) {
-            self.ink_enabled.set(false);
-        }
+        self.note_pointer.set(None);
+        self.eraser_pointer.set(None);
+        self.ink_enabled.set(false);
         self.chrome
             .update(|chrome| *chrome = chrome.select_panel(panel, blocked));
     }
     fn toggle_sidebar(self) {
+        if self.defer_canvas_edit(Some(TextIntent::Sidebar)) {
+            return;
+        }
         let blocked = self.blocked();
         self.chrome
             .update(|chrome| *chrome = chrome.toggle_sidebar(blocked));
     }
     fn choose_zoom(self, value: &str) {
+        if self.defer_canvas_edit(Some(TextIntent::ChooseZoom(value.into()))) {
+            return;
+        }
         if self.blocked() || self.overview_visible.get_untracked() {
             return;
         }
@@ -559,6 +655,9 @@ impl Model {
         }
     }
     fn fit_page(self) {
+        if self.defer_canvas_edit(Some(TextIntent::FitPage)) {
+            return;
+        }
         if self.blocked() {
             return;
         }
@@ -593,10 +692,14 @@ impl Model {
         }
     }
     fn run_strip_action(self, action: Action) {
+        if self.defer_canvas_edit(Some(TextIntent::Strip(action))) {
+            return;
+        }
         if self.blocked() {
             return;
         }
         match action {
+            Action::Activate(tool) => self.activate_tool(tool),
             Action::Panel(panel) => self.select_panel(Some(panel)),
             Action::CopyPages => self.copy_selected_pages(false),
             Action::PastePages => self.paste_selected_pages(),
@@ -624,19 +727,18 @@ impl Model {
                 }
             }
             Action::Extract => {
-                let range = if self.overview_visible.get_untracked() {
-                    self.overview_selection.with_untracked(|s| {
+                if self.overview_visible.get_untracked() {
+                    let range=self.overview_selection.with_untracked(|s| {
                         s.pages()
                             .iter()
                             .map(|p| (p + 1).to_string())
                             .collect::<Vec<_>>()
                             .join(",")
-                    })
+                    });
+                    self.command("extract_pages_document",json!({"range":range}));
                 } else {
-                    (self.page.get_untracked() + 1).to_string()
-                };
-                self.select_panel(Some(Panel::Batch));
-                self.page_range.set(range);
+                    self.prompt_page_action(PageAction::Extract);
+                }
             }
             Action::DeleteCurrent => {
                 if self.overview_visible.get_untracked() {
@@ -646,6 +748,12 @@ impl Model {
                 }
             }
             Action::Export => self.command("export_document", json!({})),
+            Action::ExportImages(jpeg) => self.export_images(jpeg),
+            Action::ExportText(format) => self.export_text(format),
+            Action::Prompt(operation)=>self.prompt_page_action(operation),
+            Action::Duplicate=>self.edit(json!({"kind":"duplicate_page","page":self.page.get_untracked(),"index":self.page.get_untracked()+1})),
+            Action::MoveBy(delta)=>self.move_page(delta),
+            Action::InsertPdfs=>{if let Some(index)=self.page_insertion_index(){self.command_at_page("insert_pdfs_document",json!({"index":index}),Some(index));}},
         }
     }
     fn page_insertion_index(self) -> Option<usize> {
@@ -657,6 +765,9 @@ impl Model {
         }
     }
     fn switch_to(self, target: Route) {
+        if self.defer_canvas_edit(Some(TextIntent::Route(target))) {
+            return;
+        }
         let current = self.route.get_untracked();
         let next = switch_route(
             current,
@@ -672,6 +783,12 @@ impl Model {
                 .set("请先结束当前操作，保存或取消便笺／手绘编辑，再切换界面。".into());
         }
         self.route.set(next);
+        if matches!(
+            next,
+            Route::Home(HomeSection::Home | HomeSection::Recent | HomeSection::Favorites)
+        ) {
+            self.refresh_recent();
+        }
         if next != current && matches!(next, Route::Home(_)) {
             leptos::leptos_dom::helpers::request_animation_frame(move || {
                 if let Some(scroll) = web_sys::window()
@@ -692,22 +809,40 @@ impl Model {
             self.command("new_document", json!({}));
             return;
         }
+        if id == "pdf-to-image" {
+            self.export_images(false);
+            return;
+        }
         let Some(target) = pdfmaster_ui::shell::tool(id).and_then(|t| t.workbench_target) else {
             return;
         };
         self.switch_to(Route::Document);
         if self.route.get_untracked() == Route::Document {
+            if id == "draw" {
+                self.activate_tool(ActiveTool::Ink);
+                return;
+            }
+            if id == "comments" {
+                self.activate_tool(ActiveTool::Note);
+                return;
+            }
             let mode = match id {
                 "pages" | "merge" => Mode::Pages,
-                "draw" => Mode::Drawing,
                 _ => Mode::Annotation,
             };
             self.select_mode(mode);
+            if id == "extract" {
+                self.prompt_page_action(PageAction::Extract);
+                return;
+            }
+            if id == "merge" {
+                self.run_strip_action(Action::InsertPdfs);
+                return;
+            }
             let panel = match target {
                 "tool-notes" => Some(Panel::Notes),
                 "tool-pages" => Some(Panel::Pages),
                 "tool-batch" => Some(Panel::Batch),
-                "tool-ink" => Some(Panel::Ink),
                 _ => None,
             };
             self.select_panel(panel);
@@ -728,6 +863,9 @@ impl Model {
             return;
         }
         self.image_ready.set(true);
+        self.free_text_image_loaded(source.as_deref());
+        self.shape_image_loaded();
+        self.refresh_note_anchor();
         if self.ink_handoff.get_untracked() {
             let ready = self.ink_image.with_untracked(|h| {
                 h.as_ref()
@@ -747,6 +885,7 @@ impl Model {
             && self.image.with_untracked(|current| current == source)
         {
             self.image_ready.set(false);
+            self.shape_image_failed(owner, source);
             if let Some(h) = self.ink_image.get_untracked() {
                 self.ink_image_failed(h.revision);
             }
@@ -791,6 +930,18 @@ impl Model {
         }
     }
     fn pointer_down(self, event: web_sys::PointerEvent, surface: NodeRef<leptos::html::Div>) {
+        if self.eraser_pointer_down(&event, surface) {
+            return;
+        }
+        if self.shape_pointer_down(&event, surface) {
+            return;
+        }
+        if self.free_text_pointer_down(&event, surface) {
+            return;
+        }
+        if self.note_pointer_down(&event, surface) {
+            return;
+        }
         if !self.ink_enabled.get_untracked()
             || self.blocked()
             || !self.image_ready.get_untracked()
@@ -889,6 +1040,18 @@ impl Model {
         event: &web_sys::PointerEvent,
         surface: NodeRef<leptos::html::Div>,
     ) -> bool {
+        if self.eraser_pointer_move(event) {
+            return true;
+        }
+        if self.shape_pointer_move(event) {
+            return true;
+        }
+        if self.free_text_pointer_move(event) {
+            return true;
+        }
+        if self.note_pointer_move(event) {
+            return true;
+        }
         if !self.ink_gesture.with_untracked(|s| {
             s.as_ref()
                 .is_some_and(|s| s.pointer == event.pointer_id() && !s.ended && !s.committing)
@@ -927,6 +1090,18 @@ impl Model {
         true
     }
     fn pointer_up(self, event: web_sys::PointerEvent, surface: NodeRef<leptos::html::Div>) {
+        if self.eraser_pointer_up(&event, surface) {
+            return;
+        }
+        if self.shape_pointer_up(&event, surface) {
+            return;
+        }
+        if self.free_text_pointer_up(&event, surface) {
+            return;
+        }
+        if self.note_pointer_up(&event, surface) {
+            return;
+        }
         if !self.pointer_sample(&event, surface) {
             return;
         }
@@ -942,6 +1117,18 @@ impl Model {
         self.ink_action(action);
     }
     fn pointer_cancel(self, event: web_sys::PointerEvent) {
+        if self.eraser_pointer_cancel(event.pointer_id()) {
+            return;
+        }
+        if self.shape_pointer_cancel(event.pointer_id()) {
+            return;
+        }
+        if self.free_text_pointer_cancel(event.pointer_id()) {
+            return;
+        }
+        if self.note_pointer_cancel(event.pointer_id()) {
+            return;
+        }
         if self.ink_gesture.with_untracked(|s| {
             s.as_ref()
                 .is_some_and(|s| s.pointer == event.pointer_id() && !s.ended && !s.committing)
@@ -1073,7 +1260,10 @@ impl Model {
             || !self.loaded()
             || self.has_note_draft()
             || self.has_ink()
+            || self.has_free_text_draft()
+            || self.has_shape_draft()
             || self.image_import.with(|c| c.is_some())
+            || self.image_export.with(|c| c.is_some())
     }
     fn has_ink(self) -> bool {
         self.ink_gesture.with(|s| s.is_some())
@@ -1083,6 +1273,7 @@ impl Model {
     }
     fn has_note_draft(self) -> bool {
         self.note_draft.with(|draft| draft.is_some())
+            || self.note_request.with(|request| request.is_some())
     }
     fn raster(self) -> Option<RasterPlan> {
         let density = web_sys::window().map_or(1., |w| w.device_pixel_ratio() as f32);
@@ -1096,6 +1287,21 @@ impl Model {
         self.command_at_page(command, args, None);
     }
     fn command_at_page(self, command: &'static str, args: Value, selected_page: Option<usize>) {
+        if command == "document_info" && self.has_shape_draft() {
+            self.sync_canvas_shape();
+            return;
+        }
+        if command == "document_info" && self.has_free_text_draft() {
+            self.sync_free_text();
+            return;
+        }
+        if self.defer_canvas_edit(Some(TextIntent::Command(
+            command,
+            args.clone(),
+            selected_page,
+        ))) {
+            return;
+        }
         if self.busy.get_untracked() || self.image_import.get_untracked().is_some() {
             return;
         }
@@ -1118,11 +1324,15 @@ impl Model {
         self.busy.set(true);
         spawn_local(async move {
             let result: Result<Option<Document>, _> = bridge::call(command, &args).await;
+            let mut opened_for_image_export = false;
             match result {
                 Ok(Some(doc)) => {
                     // Restore tab-local presentation first. Native unfinished
                     // editors are authoritative and must then reveal their own
                     // page and Save/Cancel panel after a frontend reload.
+                    let known_tab = self
+                        .tab_presentations
+                        .with_untracked(|tabs| tabs.contains_key(&doc.id));
                     self.restore_tab(&doc);
                     self.page.update(|p| {
                         *p = selected_page
@@ -1133,10 +1343,22 @@ impl Model {
                         command_status_message(command, doc.restored, doc.warning.as_deref());
                     if let Some(editor) = &doc.note_editor {
                         self.page.set(editor.page);
-                        self.note_edit_text.set(editor.original.contents.clone());
+                        let preserve_local = self.note_draft.with_untracked(|draft| {
+                            draft.as_ref().is_some_and(|draft| {
+                                draft.id == editor.id && draft.request == editor.request
+                            })
+                        });
+                        if !preserve_local {
+                            self.note_edit_text.set(editor.initial_contents());
+                            self.note_commit.set(None);
+                        }
+                        self.note_anchor.set(None);
                         if doc.warning.is_none() {
                             status = "便笺编辑尚未结束；当前显示原始内容。编辑框输入未持久化，请核对后保存或取消。".into();
                         }
+                    }
+                    if doc.note_editor.is_none() {
+                        self.note_commit.set(None);
                     }
                     self.note_draft.set(doc.note_editor.clone());
                     if doc.note_editor.is_some() || doc.ink_editor.is_some() {
@@ -1151,9 +1373,28 @@ impl Model {
                         *chrome = chrome.document_opened(
                             doc.note_editor.is_some(),
                             doc.ink_editor.is_some(),
-                            matches!(command, "open_document" | "new_document"),
+                            !known_tab
+                                && matches!(
+                                    command,
+                                    "open_document" | "open_recent_document" | "new_document"
+                                ),
                         )
                     });
+                    self.ink_enabled
+                        .set(self.chrome.get_untracked().active_tool == Some(ActiveTool::Ink));
+                    let canvas_conflict =
+                        doc.shape_editor.is_some() && doc.free_text_editor.is_some();
+                    if !canvas_conflict && self.recover_free_text(&doc) {
+                        status="文字编辑尚未结束；当前恢复原始内容，未提交输入没有持久化，请核对后继续或取消。".into();
+                    }
+                    if self.recover_canvas_shape(&doc) {
+                        status = if canvas_conflict {
+                            "文字与形状原生所有者冲突；禁止编辑。"
+                        } else {
+                            "形状编辑尚未结束；恢复原生目标，未提交指针／样式输入没有持久化。"
+                        }
+                        .into();
+                    }
                     self.replace_document_view(Some(doc));
                     if overview_insert && let Some(start) = selected_page {
                         let end = start.saturating_add(page_count.saturating_sub(old_count));
@@ -1168,11 +1409,13 @@ impl Model {
                     if matches!(
                         command,
                         "open_document"
+                            | "open_recent_document"
                             | "new_document"
                             | "edit_document"
                             | "delete_note_document"
                             | "delete_shape_document"
                             | "delete_annotation_document"
+                            | "erase_ink_document"
                             | "insert_pdf_document"
                             | "insert_pdfs_document"
                             | "paste_pages_document"
@@ -1185,7 +1428,14 @@ impl Model {
                         self.page_jump
                             .set((self.page.get_untracked() + 1).to_string());
                     }
-                    if matches!(command, "open_document" | "new_document" | "document_info")
+                    if !known_tab
+                        && matches!(
+                            command,
+                            "open_document"
+                                | "open_recent_document"
+                                | "new_document"
+                                | "document_info"
+                        )
                         && web_sys::window()
                             .and_then(|w| w.inner_width().ok())
                             .and_then(|v| v.as_f64())
@@ -1195,15 +1445,33 @@ impl Model {
                     }
                     self.message.set(status);
                     self.render().await;
+                    if !canvas_conflict {
+                        self.resume_free_text();
+                        self.resume_canvas_shape();
+                    }
+                    self.refresh_note_anchor();
+                    opened_for_image_export = command == "open_document";
+                    if matches!(command, "open_document" | "open_recent_document") {
+                        self.refresh_recent();
+                    }
                 }
                 Ok(None) => self.message.set(if command == "document_info" {
                     String::new()
+                } else if command == "erase_ink_document" {
+                    "橡皮仅处理手绘笔迹；本次未擦除。".into()
                 } else {
                     "已取消，文档保持不变。".into()
                 }),
                 Err(e) => self.message.set(e),
             }
             self.busy.set(false);
+            if command == "open_document" {
+                let pending = self.pending_image_export.get_untracked();
+                self.pending_image_export.set(None);
+                if opened_for_image_export && let Some(jpeg) = pending {
+                    self.export_images(jpeg);
+                }
+            }
         });
     }
     fn edit(self, edit: Value) {
@@ -1211,8 +1479,13 @@ impl Model {
     }
     async fn render(self) -> bool {
         self.notes.set(None);
-        self.shapes.set(None);
-        self.selected_shape.set(None);
+        self.free_text_list.set(None);
+        self.shape_ui.update(|u| {
+            u.list = None;
+            if !u.session.active() {
+                u.selected = None;
+            }
+        });
         if !self.loaded() {
             return false;
         }
@@ -1281,13 +1554,8 @@ impl Model {
             self.queue_annotation_reveal();
         }
         self.refresh_notes().await;
-        self.shapes.set(Some(
-            bridge::call_bounded::<ShapeList>(
-                "shapes_document",
-                &json!({"page":self.page.get_untracked()}),
-            )
-            .await,
-        ));
+        let _ = self.refresh_free_texts().await;
+        let _ = self.refresh_canvas_shapes().await;
         true
     }
     async fn refresh_notes(self) {
@@ -1307,6 +1575,9 @@ impl Model {
         page: usize,
         target: Option<pdfmaster_ui::annotation_navigation::Target>,
     ) {
+        if self.defer_canvas_edit(Some(TextIntent::Navigate(page, target))) {
+            return;
+        }
         if self.busy.get_untracked() || !self.loaded() {
             return;
         }
@@ -1328,7 +1599,7 @@ impl Model {
         self.refresh_with_annotation(target);
     }
     fn jump_to_page(self) {
-        if self.blocked() {
+        if self.canvas_intent_disabled() {
             return;
         }
         match page_jump_index(&self.page_jump.get_untracked(), self.count()) {
@@ -1339,9 +1610,6 @@ impl Model {
             }
             Err(error) => self.message.set(error),
         }
-    }
-    fn batch_pages(self, operation: &'static str) {
-        self.batch_range(self.page_range.get_untracked(), operation);
     }
     fn delete_current_page(self) {
         self.batch_range((self.page.get_untracked() + 1).to_string(), "delete");
@@ -1446,7 +1714,7 @@ impl Model {
             flow.input_blocked(
                 self.loaded(),
                 self.busy.get(),
-                self.has_note_draft() || self.has_ink(),
+                self.has_note_draft() || self.has_ink() || self.has_free_text_draft(),
             )
         })
     }
@@ -1460,6 +1728,7 @@ impl Model {
         self.chrome.update(|chrome| {
             chrome.sidebar = true;
             chrome.panel = None;
+            chrome.active_tool = None;
         });
         self.sidebar_mode.set(pdfmaster_ui::outline::Mode::Search);
     }
@@ -1644,6 +1913,9 @@ impl Model {
         });
     }
     fn zoom_by(self, factor: f32) {
+        if self.defer_canvas_edit(Some(TextIntent::Zoom(factor))) {
+            return;
+        }
         if self.busy.get_untracked() {
             return;
         }
@@ -1683,6 +1955,9 @@ impl Model {
         }
     }
     fn fit_width(self) {
+        if self.defer_canvas_edit(Some(TextIntent::FitWidth)) {
+            return;
+        }
         if self.blocked() {
             return;
         }
@@ -1690,257 +1965,13 @@ impl Model {
         self.set_fit_width();
         self.refresh();
     }
-    fn add_text(self) {
-        let text = self.text.get_untracked();
-        if text.trim().is_empty() {
-            self.message.set("请先输入文字。".into());
-            return;
-        }
-        let (width, height) = self
-            .document
-            .with_untracked(|d| {
-                d.as_ref()
-                    .and_then(|d| d.info.pages.get(self.page.get_untracked()))
-                    .map(|p| (p.width, p.height))
-            })
-            .unwrap_or((595., 842.));
-        self.edit(json!({"kind":"add_text","page":self.page.get_untracked(),"bounds":{"x":36.,"y":height*0.5,"width":(width-72.).max(20.),"height":60.},"text":text,"font_size":18.,"color":{"r":0.1,"g":0.1,"b":0.1}}));
-    }
-    fn select_shape(self, shape: Value) {
-        if self.blocked() {
-            return;
-        }
-        let b = &shape["bounds"];
-        self.shape_bounds.set(format!(
-            "{},{},{},{}",
-            b["x"], b["y"], b["width"], b["height"]
-        ));
-        self.shape_stroke
-            .set(shape_color_hex(&shape["stroke"]).unwrap_or_default());
-        self.shape_fill
-            .set(shape_color_hex(&shape["fill"]).unwrap_or_default());
-        self.shape_line.set(shape["line_width"].to_string());
-        self.selected_shape.set(Some(shape));
-        self.message
-            .set("已选择图形；参数未应用前不会保存。应用后仍需导出 PDF。".into());
-    }
-    fn update_shape(self) {
-        if self.blocked() {
-            return;
-        }
-        let Some(expected) = self.selected_shape.get_untracked() else {
-            return;
-        };
-        let page = self.page.get_untracked();
-        let edit = self.document.with_untracked(|d| {
-            d.as_ref().and_then(|d| d.info.pages.get(page)).map(|p| {
-                update_shape_edit(
-                    page,
-                    p.width,
-                    p.height,
-                    &expected,
-                    &self.shape_bounds.get_untracked(),
-                    &self.shape_stroke.get_untracked(),
-                    &self.shape_fill.get_untracked(),
-                    &self.shape_line.get_untracked(),
-                )
-            })
-        });
-        match edit {
-            Some(Ok(edit)) => self.edit(edit),
-            Some(Err(e)) => self.message.set(e),
-            None => self.message.set("请先打开 PDF。".into()),
-        }
-    }
-    fn delete_shape(self, expected: Value) {
-        if self.blocked() {
-            return;
-        }
-        self.command(
-            "delete_shape_document",
-            json!({"page":self.page.get_untracked(),"expected":expected}),
-        );
-    }
-    fn add_shape(self, shape: &'static str) {
-        if self.blocked() {
-            return;
-        }
-        let page = self.page.get_untracked();
-        let edit = self.document.with_untracked(|document| {
-            document
-                .as_ref()
-                .and_then(|d| d.info.pages.get(page))
-                .map(|info| {
-                    shape_edit(
-                        page,
-                        info.width,
-                        info.height,
-                        shape,
-                        &self.shape_bounds.get_untracked(),
-                        &self.shape_stroke.get_untracked(),
-                        &self.shape_fill.get_untracked(),
-                        &self.shape_line.get_untracked(),
-                    )
-                })
-        });
-        match edit {
-            Some(Ok(edit)) => self.edit(edit),
-            Some(Err(error)) => self.message.set(error),
-            None => self.message.set("请先打开 PDF。".into()),
-        }
-    }
-    fn add_line(self, mode: &'static str) {
-        if self.blocked() {
-            return;
-        }
-        let page = self.page.get_untracked();
-        let edit = self.document.with_untracked(|d| {
-            d.as_ref().and_then(|d| d.info.pages.get(page)).map(|p| {
-                line_edit(
-                    page,
-                    p.width,
-                    p.height,
-                    &self.line_points.get_untracked(),
-                    &self.shape_stroke.get_untracked(),
-                    &self.shape_fill.get_untracked(),
-                    &self.shape_line.get_untracked(),
-                    mode,
-                )
-            })
-        });
-        match edit {
-            Some(Ok(edit)) => self.edit(edit),
-            Some(Err(e)) => self.message.set(e),
-            None => self.message.set("请先打开 PDF。".into()),
-        }
-    }
-    fn add_note(self) {
-        if self.blocked() {
-            return;
-        }
-        let page = self.page.get_untracked();
-        let edit = self.document.with_untracked(|document| {
-            document
-                .as_ref()
-                .and_then(|document| document.info.pages.get(page))
-                .map(|info| {
-                    note_edit(
-                        page,
-                        info.width,
-                        info.height,
-                        info.rotation,
-                        &self.note_text.get_untracked(),
-                    )
-                })
-        });
-        match edit {
-            Some(Ok(edit)) => self.edit(edit),
-            Some(Err(error)) => self.message.set(error),
-            None => self.message.set("请先打开 PDF。".into()),
-        }
-    }
-    fn delete_note(self, note: TextNote) {
-        if self.blocked() {
-            return;
-        }
-        self.command("delete_note_document", json!({"page":self.page.get_untracked(),"annotation_index":note.annotation_index,"expected_contents":note.contents}));
-    }
-    fn begin_note_edit(self, note: TextNote) {
-        if self.blocked() {
-            return;
-        }
-        self.busy.set(true);
-        let args = json!({"page":self.page.get_untracked(),"annotation_index":note.annotation_index,"expected_contents":note.contents});
-        spawn_local(async move {
-            // Expose input only after the native guard acknowledges this snapshot.
-            match bridge::call::<NoteDraft>("begin_note_editor", &args).await {
-                Ok(editor) => {
-                    self.note_edit_text.set(editor.original.contents.clone());
-                    self.note_draft.set(Some(editor));
-                    self.message
-                        .set("编辑便笺中；保存修改后仍需导出 PDF。".into());
-                }
-                Err(error) => self.message.set(error),
-            }
-            self.busy.set(false);
-        });
-    }
-    fn cancel_note_edit(self) {
-        if self.busy.get_untracked() {
-            return;
-        }
-        let Some(draft) = self.note_draft.get_untracked() else {
-            return;
-        };
-        self.busy.set(true);
-        spawn_local(async move {
-            match bridge::call::<Document>("cancel_note_editor", &json!({"id":draft.id})).await {
-                Ok(document) => {
-                    self.replace_document_view(Some(document));
-                    self.note_draft.set(None);
-                    self.note_edit_text.set(String::new());
-                    self.message
-                        .set("已取消便笺编辑；当前 PDF 会话已刷新。".into());
-                    self.render().await;
-                }
-                Err(error) => self.message.set(error),
-            }
-            self.busy.set(false);
-        });
-    }
-    fn save_note(self) {
-        if self.busy.get_untracked() || !self.loaded() {
-            return;
-        }
-        let Some(draft) = self.note_draft.get_untracked() else {
-            return;
-        };
-        if draft.page != self.page.get_untracked() {
-            self.message
-                .set("页面已改变；请取消后重新选择便笺。".into());
-            return;
-        }
-        let contents = self.note_edit_text.get_untracked();
-        if let Err(error) = update_note_edit(
-            draft.page,
-            draft.original.annotation_index,
-            &draft.original.contents,
-            &contents,
-        ) {
-            self.message.set(error);
-            return;
-        }
-        self.busy.set(true);
-        spawn_local(async move {
-            match bridge::call::<Document>(
-                "commit_note_editor",
-                &json!({"id":draft.id,"contents":contents}),
-            )
-            .await
-            {
-                Ok(document) => {
-                    self.message.set(
-                        document
-                            .warning
-                            .clone()
-                            .unwrap_or_else(|| "便笺已修改；请导出副本保存。".into()),
-                    );
-                    self.replace_document_view(Some(document));
-                    self.note_draft.set(None);
-                    self.note_edit_text.set(String::new());
-                    self.search_result.set(None);
-                    self.render().await;
-                }
-                Err(error) => self.message.set(error),
-            }
-            self.busy.set(false);
-        });
-    }
 }
 
 #[component]
 pub fn Workspace() -> impl IntoView {
     let m = Model {
+        recents: RwSignal::new(Default::default()),
+        recent_mutating: RwSignal::new(false),
         route: RwSignal::new(Route::Home(HomeSection::Home)),
         chrome: RwSignal::new(Chrome {
             sidebar: !web_sys::window()
@@ -1965,6 +1996,8 @@ pub fn Workspace() -> impl IntoView {
         file_drop_request: RwSignal::new(None),
         home_drop_active: RwSignal::new(false),
         image_import: RwSignal::new(None),
+        image_export: RwSignal::new(None),
+        pending_image_export: RwSignal::new(None),
         sidebar_mode: RwSignal::new(pdfmaster_ui::outline::Mode::default()),
         sidebar_width: RwSignal::new(thumbnail_view::restored_sidebar_width()),
         sidebar_viewport: RwSignal::new(thumbnail_view::reader_viewport()),
@@ -1983,11 +2016,16 @@ pub fn Workspace() -> impl IntoView {
         image: RwSignal::new(String::new()),
         message: RwSignal::new(String::new()),
         busy: RwSignal::new(false),
-        text: RwSignal::new(String::new()),
-        note_text: RwSignal::new(String::new()),
         notes: RwSignal::new(None),
         note_draft: RwSignal::new(None),
         note_edit_text: RwSignal::new(String::new()),
+        note_pointer: RwSignal::new(None),
+        eraser_pointer: RwSignal::new(None),
+        eraser_sequence: RwSignal::new(0),
+        eraser_preparing: RwSignal::new(None),
+        note_request: RwSignal::new(None),
+        note_commit: RwSignal::new(None),
+        note_anchor: RwSignal::new(None),
         search_query: RwSignal::new(String::new()),
         search_case_sensitive: RwSignal::new(false),
         search_result: RwSignal::new(None),
@@ -1996,20 +2034,24 @@ pub fn Workspace() -> impl IntoView {
         search_timer: RwSignal::new(None),
         search_status: RwSignal::new("输入关键词搜索".into()),
         page_jump: RwSignal::new(String::new()),
-        page_range: RwSignal::new(String::new()),
-        shape_bounds: RwSignal::new("36,36,120,80".into()),
         shape_stroke: RwSignal::new("#4F46E5".into()),
-        shape_fill: RwSignal::new(String::new()),
         shape_line: RwSignal::new("2".into()),
-        line_points: RwSignal::new("72,200,300,300".into()),
-        shapes: RwSignal::new(None),
-        selected_shape: RwSignal::new(None),
         ink_enabled: RwSignal::new(false),
         ink_gesture: RwSignal::new(None),
         ink_handoff: RwSignal::new(false),
         ink_image: RwSignal::new(None),
         ink_image_revision: RwSignal::new(0),
         image_ready: RwSignal::new(false),
+        free_text: RwSignal::new(Default::default()),
+        free_text_list: RwSignal::new(None),
+        free_text_pointer: RwSignal::new(None),
+        free_text_preview: RwSignal::new(None),
+        free_text_fonts: RwSignal::new(false),
+        free_text_frame: RwSignal::new(None),
+        free_text_sync: RwSignal::new(None),
+        free_text_completion: RwSignal::new(None),
+        free_text_attempt: RwSignal::new(0),
+        shape_ui: RwSignal::new(Default::default()),
     };
     on_cleanup(move || m.stop_search_timer());
     file_drop_view::listen(m);
@@ -2021,10 +2063,11 @@ pub fn Workspace() -> impl IntoView {
     });
     let surface = NodeRef::<leptos::html::Div>::new();
     m.command("document_info", json!({}));
+    m.refresh_recent();
     view! {
         <div class="application-shell">
             <nav class="shell-tabs" id="shell-tabs" aria-label="首页和文档标签">
-                <button class="shell-home-tab" class:active=move||matches!(m.route.get(),Route::Home(_)) aria-label="主界面标签" title="主界面" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))><img src="32x32.png" alt=""/></button>
+                <button class="shell-home-tab" class:active=move||matches!(m.route.get(),Route::Home(_)) aria-label="主界面标签" title="主界面" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink()||m.canvas_intent_disabled() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))><img src="32x32.png" alt=""/></button>
                 <For each=move||m.document.with(|document|document.as_ref().map(|d|if d.tabs.is_empty(){vec![DocumentTab{id:d.id,name:d.name.clone(),dirty:d.info.dirty}]}else{d.tabs.clone()}).unwrap_or_default()) key=|tab|(tab.id,tab.name.clone(),tab.dirty) children=move|tab|{
                     let id=tab.id;
                     let label=format!("{}{}",tab.name,if tab.dirty{" •"}else{""});
@@ -2033,16 +2076,17 @@ pub fn Workspace() -> impl IntoView {
                     let prefix:String=chars[..split].iter().collect();
                     let suffix:String=chars[split..].iter().collect();
                     view!{<div class="shell-document-box" class:active=move||m.route.get()==Route::Document&&m.document.with(|d|d.as_ref().is_some_and(|d|d.id==id))>
-                        <button class="shell-document-tab" aria-label=format!("文档标签 {}",tab.name) aria-pressed=move||(m.route.get()==Route::Document&&m.document.with(|d|d.as_ref().is_some_and(|d|d.id==id))).to_string() title=label disabled=move||m.blocked() on:click=move|_|m.command("activate_document",json!({"id":id}))><span class="tab-title-prefix">{prefix}</span><span class="tab-title-suffix">{suffix}</span></button>
-                        <button class="shell-tab-close" aria-label=format!("关闭 {}",tab.name) title="关闭文档" disabled=move||m.blocked() on:click=move|_|m.close_tab(id)>"×"</button>
+                        <button class="shell-document-tab" aria-label=format!("文档标签 {}",tab.name) aria-pressed=move||(m.route.get()==Route::Document&&m.document.with(|d|d.as_ref().is_some_and(|d|d.id==id))).to_string() title=label disabled=move||m.canvas_intent_disabled() on:click=move|_|m.command("activate_document",json!({"id":id}))><span class="tab-title-prefix">{prefix}</span><span class="tab-title-suffix">{suffix}</span></button>
+                        <button class="shell-tab-close" aria-label=format!("关闭 {}",tab.name) title="关闭文档" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.close_tab(id)>"×"</button>
                     </div>}
                 }/>
-                <button class="shell-plus" aria-label="新标签" title="新标签" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
+                <button class="shell-plus" aria-label="新标签" title="新标签" disabled=move||m.busy.get()||m.has_note_draft()||m.has_ink()||m.canvas_intent_disabled() on:click=move|_|m.switch_to(Route::Home(HomeSection::Home))>"+"</button>
             </nav>
             <div class="home-host" hidden=move||m.route.get()==Route::Document><home::Dashboard model=m/></div>
-        <main class="workspace" id="reader-workspace" style=move||format!("--reader-sidebar-width:{}px",m.sidebar_width.with(|w|w.effective(m.sidebar_viewport.get()))) class:reader-sidebar-hidden=move||!m.chrome.get().sidebar||m.overview_visible.get() class:has-secondary=move||m.chrome.get().mode.is_some() hidden=move||m.route.get()!=Route::Document>
+        <main class="workspace" id="reader-workspace" style=move||format!("--reader-sidebar-width:{}px",m.sidebar_width.with(|w|w.effective(m.sidebar_viewport.get()))) class:reader-sidebar-hidden=move||!m.chrome.get().sidebar||m.overview_visible.get() class:has-secondary=move||m.chrome.get().mode.is_some() class:has-shapes=move||m.chrome.get().active_tool==Some(ActiveTool::Shapes)&&!m.overview_visible.get() hidden=move||m.route.get()!=Route::Document>
             <workbench::Toolbar model=m/>
             <workbench::SecondaryTools model=m/>
+            <canvas_shapes_view::Formatting model=m/>
             <thumbnail_view::Sidebar model=m/>
             <thumbnail_view::SidebarResizer model=m/>
             <overview_view::Overview model=m/>
@@ -2051,7 +2095,7 @@ pub fn Workspace() -> impl IntoView {
                     <div class="empty-state"><div class="paper-emblem">"PDF"</div><h1>"让文档回到工作中心。"</h1><p>"打开一份 PDF，或从空白页开始。"</p><button class="primary" disabled=move||m.busy.get() on:click=move|_|m.command("open_document",json!({}))>"选择 PDF 文件"</button><div class="safety-note">"仅在会话副本中编辑，原文件不会自动覆盖。"</div></div>
                 }>
                     <div class="paper-frame"><Show when=move||!m.image.get().is_empty() fallback=move||view!{<p class="render-placeholder">"等待页面渲染"</p>}>
-                        <div class="drawing-surface" class:inking=move||m.ink_enabled.get() node_ref=surface
+                        <div class="drawing-surface" class:inking=move||m.ink_enabled.get() node_ref=surface tabindex="-1"
                             on:pointerdown=move|e|m.pointer_down(e,surface)
                             on:pointermove=move|e|{m.pointer_sample(&e,surface);}
                             on:pointerup=move|e|m.pointer_up(e,surface)
@@ -2059,8 +2103,11 @@ pub fn Workspace() -> impl IntoView {
                             on:lostpointercapture=move|e|m.pointer_cancel(e)>
                             <For each=move||vec![(m.image.get(),m.annotation_image_ticket.get())] key=|(source,owner)|(source.clone(),*owner) children=move|(source,owner)|{
                                 let failed_source=source.clone();
-                                view!{<img id="pdf-page-image" class="pdf-page" src=source data-annotation-owner=owner.map(|t|t.to_string()).unwrap_or_default() style=move||m.raster().map(|p|p.image_style()).unwrap_or_default() alt=move||format!("PDF 第 {} 页",m.page.get()+1) draggable="false" on:load=move|e|{if image_event_is_current(&e){m.image_loaded(image_event_source(&e),owner);}} on:error=move|e|{if image_event_is_current(&e){m.page_image_failed(owner, &failed_source);}}/>}
+                                let shape_attempt=m.shape_ui.with_untracked(|u|u.attempt);
+                                view!{<img id="pdf-page-image" class="pdf-page" src=source data-annotation-owner=owner.map(|t|t.to_string()).unwrap_or_default() style=move||m.raster().map(|p|p.image_style()).unwrap_or_default() alt=move||format!("PDF 第 {} 页",m.page.get()+1) draggable="false" on:load=move|e|{if image_event_is_current(&e)&&m.shape_primary_event_current(shape_attempt){m.image_loaded(image_event_source(&e),owner);}} on:error=move|e|{if image_event_is_current(&e)&&m.shape_primary_event_current(shape_attempt){m.page_image_failed(owner, &failed_source);}}/>}
                             }/>
+                            <canvas_text_view::Editor model=m/>
+                            <canvas_shapes_view::Editor model=m/>
                             {move||m.ink_image.get().filter(|h|!h.decoded).map(|h|{let revision=h.revision;view!{<img class="ink-staged-image" src=h.next alt="" aria-hidden="true" on:load=move|_|m.ink_image_decoded(revision) on:error=move|_|m.ink_image_failed(revision)/>}})}
                             {move||m.ink_gesture.with(|s|s.as_ref().filter(|s|s.guard.is_some()&&!s.cancelled).map(|s|{
                                 let(w,h)=if s.rotation.rem_euclid(180)==0{(s.page_width,s.page_height)}else{(s.page_height,s.page_width)};
@@ -2068,105 +2115,23 @@ pub fn Workspace() -> impl IntoView {
                             }))}
                         </div>
                     </Show></div>
+                    <canvas_notes_view::Editor model=m/>
                 </Show>
             </section>
-            <aside class="inspector" aria-label="当前工具参数" hidden=move||m.chrome.get().panel.is_none()>
-                <div class="inspector-heading"><h2>"工具参数"</h2><button aria-label="关闭工具参数" disabled=move||m.blocked() on:click=move|_|m.select_panel(None)>"×"</button></div>
-                <workbench::FileActions model=m/>
-                <div class="tool-group" id="tool-pages" hidden=move||m.chrome.get().panel!=Some(Panel::Pages)><h3>"当前页操作"</h3>
-                    <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"rotate","page":m.page.get_untracked(),"degrees":90}))>"顺时针旋转 90°"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.edit(json!({"kind":"duplicate_page","page":m.page.get_untracked(),"index":m.page.get_untracked()+1}))>"复制当前页"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.run_strip_action(Action::InsertBlank)>"在后方插入空白页"</button>
-                    <button disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.move_page(-1)>"当前页前移"</button>
-                    <button disabled={move||m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.move_page(1)>"当前页后移"</button>
-                    <button class="danger" disabled={move || m.blocked()||m.count()<=1} on:click=move|_|m.delete_current_page()>"删除当前页"</button>
-                </div>
-                <div class="tool-group" id="tool-batch" hidden=move||m.chrome.get().panel!=Some(Panel::Batch)><h3>"批量页面"</h3>
-                    <input aria-label="批量页码范围" disabled=move||m.busy.get() placeholder="例如 1-3,5" prop:value=move||m.page_range.get() on:input=move|e|m.page_range.set(event_target_value(&e))/>
-                    <button disabled=move||m.blocked() on:click=move|_|m.batch_pages("rotate_90")>"批量顺时针旋转 90°"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.command("extract_pages_document",json!({"range":m.page_range.get_untracked()}))>"提取页面到新 PDF"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.run_strip_action(Action::InsertPdf)>"在当前页后插入 PDF"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|{if let Some(index)=m.page_insertion_index(){m.command_at_page("insert_pdfs_document",json!({"index":index}),Some(index));}}>"批量插入 PDF（整批可撤销）"</button>
-                    <button class="danger" disabled=move||m.blocked()||m.count()<=1 on:click=move|_|m.batch_pages("delete")>"批量删除"</button>
-                    <p class="muted">"页码从 1 开始；删除会先显示选中页数并要求确认。"</p>
-                </div>
-                <div class="tool-group" id="tool-text" hidden=move||m.chrome.get().panel!=Some(Panel::Text)><h3>"文字批注"</h3><textarea aria-label="文字批注内容" placeholder="输入要添加的文字" prop:value=move||m.text.get() on:input=move|e|m.text.set(event_target_value(&e))></textarea><button disabled=move||m.blocked() on:click=move|_|m.add_text()>"添加到页面中部"</button><p class="muted">"字体与复杂 PDF 兼容性仍在迁移验证中。"</p></div>
-                <div class="tool-group notes-panel" id="tool-notes" hidden=move||m.chrome.get().panel!=Some(Panel::Notes)><h3>"便笺与评论"</h3>
-                    <textarea aria-label="便笺内容" disabled=move||m.busy.get() placeholder="支持中文和 emoji；保存为 PDF 便笺" prop:value=move||m.note_text.get() on:input=move|event|m.note_text.set(event_target_value(&event))></textarea>
-                    <button disabled=move||m.blocked() on:click=move|_|m.add_note()>"添加便笺到左上方"</button>
-                    <div class="note-list" aria-label="当前页便笺">
-                        {move||match m.notes.get() {
-                            None => view!{<p class="note-meta">{if m.loaded(){"正在读取当前页便笺…"}else{"打开 PDF 后显示当前页便笺。"}}</p>}.into_any(),
-                            Some(Err(error)) => view!{<p class="note-error">{format!("无法读取批注：{error}")}</p>}.into_any(),
-                            Some(Ok(list)) => view!{
-                                <p class="note-meta">{format!("当前页 {} 条便笺",list.notes.len())}</p>
-                                <p class="note-meta">{if list.unsupported_count>0{format!("另有 {} 条其他类型批注未列入便笺列表；页面外观取决于渲染兼容性。",list.unsupported_count)}else{String::new()}}</p>
-                                {list.notes.into_iter().map(|note| {let edit_note=note.clone();view!{
-                                    <article class="note-item"><strong>{format!("便笺 {}",note.annotation_index+1)}</strong><p>{note.contents.clone()}</p><small>{format!("PDF 坐标 {:.0}, {:.0} · {:.0} × {:.0} pt",note.bounds.x,note.bounds.y,note.bounds.width,note.bounds.height)}</small><button disabled=move||m.blocked() on:click=move|_|m.begin_note_edit(edit_note.clone())>"编辑便笺"</button><button class="danger" disabled=move||m.blocked() on:click=move|_|m.delete_note(note.clone())>"删除便笺…"</button></article>
-                                }}).collect_view()}
-                            }.into_any(),
-                        }}
-                    </div>
-                    <Show when=move||m.has_note_draft()>
-                        <div class="note-editor" aria-label="便笺编辑">
-                            <textarea aria-label="编辑便笺内容" disabled=move||m.busy.get() prop:value=move||m.note_edit_text.get() on:input=move|event|m.note_edit_text.set(event_target_value(&event))></textarea>
-                            <button disabled=move||m.busy.get() on:click=move|_|m.save_note()>"保存便笺修改"</button>
-                            <button disabled=move||m.busy.get() on:click=move|_|m.cancel_note_edit()>"取消便笺编辑"</button>
-                            <p class="note-meta">"编辑期间阻止正常关闭；输入未自动持久化，崩溃或强制退出仍可能丢失。保存后需导出 PDF。"</p>
-                        </div>
-                    </Show>
-                    <Show when=move||m.loaded()&&!m.has_note_draft()>
-                        <button disabled=move||m.busy.get() on:click=move|_|m.command("document_info",json!({}))>"同步便笺编辑状态"</button>
-                        <p class="note-meta">"编辑确认未返回时，可恢复当前进程的编辑入口；不会恢复未持久化的输入。"</p>
-                    </Show>
-                    <p class="muted">"便笺文字保存为 Unicode 元数据；图标不是正文文字。仅支持受限 Text 便笺；标签、回复线程及歧义弹窗关系暂不编辑或删除。关系检查最多 16384 条。定位和弹窗显示仍在迁移；修改和删除均不是安全擦除。"</p>
-                </div>
-                <div class="tool-group ink-panel" id="tool-ink" hidden=move||m.chrome.get().panel!=Some(Panel::Ink)><h3>"手绘"</h3>
-                    <label class="shape-label">"笔迹颜色 #RRGGBB"<input aria-label="笔迹颜色" disabled=move||m.blocked() prop:value=move||m.shape_stroke.get() on:input=move|e|m.shape_stroke.set(event_target_value(&e))/></label>
-                    <label class="shape-label">"笔迹线宽 (pt)"<input aria-label="笔迹线宽" inputmode="decimal" disabled=move||m.blocked() prop:value=move||m.shape_line.get() on:input=move|e|m.shape_line.set(event_target_value(&e))/></label>
-                    <button disabled=move||m.blocked() aria-pressed=move||m.ink_enabled.get().to_string() on:click=move|_|m.ink_enabled.update(|v|*v = !*v)>{move||if m.ink_enabled.get(){"退出手绘模式"}else{"进入手绘模式"}}</button>
-                    <p class="note-meta">{move||if m.ink_enabled.get(){"在页面上拖动绘制；抬笔后提交一笔。阅读滚动请先退出手绘模式。"}else{"可使用鼠标、触控或笔绘制。上方笔迹颜色与线宽在落笔时固定；当前仍与图形默认参数共享，独立样式待迁移。"}}</p>
-                    <Show when=move||m.has_ink()>
-                        <button disabled=move||m.busy.get()||!m.ink_gesture.with(|s|s.as_ref().is_some_and(|s|s.ended&&s.guard.is_some()&&!s.committing&&!s.cancelled)) on:click=move|_|m.retry_ink()>"重试提交手绘"</button>
-                    </Show>
-                    <button disabled=move||m.busy.get()||!m.loaded() on:click=move|_|m.cancel_ink()>"取消／同步手绘"</button>
-                    <p class="muted">"手绘中阻止正常关闭及冲突操作；采样点在提交前未持久化，崩溃或强制退出仍可能丢失。当前仅迁移添加与整笔撤销，选取、改样式与橡皮擦仍待迁移。"</p>
-                </div>
-                <div class="tool-group shape-panel" hidden=move||m.chrome.get().panel!=Some(Panel::Shapes)><h3>"图形批注"</h3>
-                    <div class="note-list" aria-label="当前页图形批注">{move||match m.shapes.get() {
-                        None=>view!{<p class="note-meta">"打开 PDF 后显示当前页受支持样式的图形。"</p>}.into_any(),
-                        Some(Err(e))=>view!{<p class="note-error">{format!("无法读取图形：{e}")}</p>}.into_any(),
-                        Some(Ok(list))=>view!{
-                            <p class="note-meta">{format!("当前页 {} 个受支持样式的图形；{} 条其他或暂不支持样式的批注未列入。标签、回复和弹窗关系仍需操作时检查。",list.shapes.len(),list.unsupported_count)}</p>
-                            {list.shapes.into_iter().map(|shape|{let selected=shape.clone();view!{
-                                <article class="note-item"><strong>{format!("{} · 批注 {}",match shape["shape"].as_str(){Some("line")=>"直线／箭头",Some("ellipse")=>"椭圆",_=>"矩形"},shape["annotation_index"].as_u64().unwrap_or(0)+1)}</strong>
-                                <button disabled=move||m.blocked() on:click=move|_|m.select_shape(selected.clone())>"选择图形参数"</button>
-                                <button class="danger" disabled=move||m.blocked() on:click=move|_|m.delete_shape(shape.clone())>"删除图形…"</button></article>
-                            }}).collect_view()}
-                        }.into_any(),
-                    }}</div>
-                    <label class="shape-label">"范围 x,y,宽,高 (pt)"<input aria-label="图形范围 x,y,宽,高" disabled=move||m.blocked() prop:value=move||m.shape_bounds.get() on:input=move|e|m.shape_bounds.set(event_target_value(&e))/></label>
-                    <label class="shape-label">"描边 #RRGGBB"<input aria-label="图形描边颜色" disabled=move||m.blocked() prop:value=move||m.shape_stroke.get() on:input=move|e|m.shape_stroke.set(event_target_value(&e))/></label>
-                    <label class="shape-label">"填充（留空透明）"<input aria-label="图形填充颜色" disabled=move||m.blocked() prop:value=move||m.shape_fill.get() on:input=move|e|m.shape_fill.set(event_target_value(&e))/></label>
-                    <label class="shape-label">"线宽 (pt)"<input aria-label="图形线宽" inputmode="decimal" disabled=move||m.blocked() prop:value=move||m.shape_line.get() on:input=move|e|m.shape_line.set(event_target_value(&e))/></label>
-                    <button disabled=move||m.blocked() on:click=move|_|m.add_shape("rectangle")>"添加矩形批注"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.add_shape("ellipse")>"添加椭圆批注"</button>
-                    <label class="shape-label">"直线端点 x1,y1,x2,y2 (pt)"<input aria-label="直线端点 x1,y1,x2,y2" disabled=move||m.blocked() prop:value=move||m.line_points.get() on:input=move|e|m.line_points.set(event_target_value(&e))/></label>
-                    <button disabled=move||m.blocked() on:click=move|_|m.add_line("line")>"添加直线批注"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.add_line("arrow")>"添加单箭头批注"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.add_line("double_arrow")>"添加双箭头批注"</button>
-                    <p class="note-meta">"新线使用独立端点和上方颜色／线宽（0.25–32 pt）。选中已有线后修改范围会按比例移动／缩放原端点，保留端点样式与虚线；外观范围必要时自动扩展以容纳粗线／箭头，页边仍按页面裁切。新线端点输入不用于修改已有线。"</p>
-                    <button disabled=move||m.blocked()||m.selected_shape.get().is_none() on:click=move|_|m.update_shape()>"应用图形修改"</button>
-                    <button disabled=move||m.blocked()||m.selected_shape.get().is_none() on:click=move|_|m.selected_shape.set(None)>"取消图形选择"</button>
-                    <p class="shape-label">"原始页面坐标，左下角为原点；旋转页也使用未旋转坐标。参数未应用前不保存，切页或重新渲染后需重新选择。独立批注可撤销；修改和删除不是安全擦除。标签、回复、特殊样式暂不修改；画布拖拽和手绘仍在迁移。"</p>
-                </div>
-                <div class="migration-note"><h3>"完整迁移进行中"</h3><p>"本候选用于验证 Rust 文档核心。画布、AI、OCR 和完整编辑工具尚未迁移，不会显示为已完成。"</p></div>
-            </aside>
             <footer class="statusbar">
-                <span role="status" aria-live="polite">{move||m.document.with(|d|visible_status(d.as_ref().and_then(|d|d.warning.as_deref()), &m.message.get(), m.busy.get()))}</span>
+                <span role="status" aria-live="polite">{move||m.document.with(|d|{
+                    let image_status=m.image_export_status();
+                    let message=m.message.get();
+                    visible_status(d.as_ref().and_then(|d|d.warning.as_deref()),image_status.as_deref().unwrap_or(&message),image_status.is_none()&&m.busy.get())
+                })}</span>
+                <workbench::InkRecovery model=m/>
+                <canvas_notes_view::Recovery model=m/>
+                <canvas_text_view::Recovery model=m/>
+                <canvas_shapes_view::Recovery model=m/>
                 <span class="flex"></span>
                 <Show when=move||m.file_drop_request.get().is_some()><button aria-label="取消文件导入" on:click=move|_|m.cancel_file_import()>"取消文件导入"</button></Show>
-                <Show when=move||m.loaded()><button aria-label="上一页" disabled=move||m.blocked()||m.page.get()==0 on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),-1,m.count()))>"‹"</button><span>{move||format!("{} / {}",m.page.get()+1,m.count())}</span><button aria-label="下一页" disabled={move || m.blocked()||m.page.get()+1>=m.count()} on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),1,m.count()))>"›"</button><label class="page-jump-label"><span>"页码"</span><input aria-label="跳转页码" inputmode="numeric" prop:value=move||m.page_jump.get() on:input=move|e|m.page_jump.set(event_target_value(&e))/></label><button class="page-jump-button" disabled=move||m.blocked() on:click=move|_|m.jump_to_page()>"转到"</button><span class="page-dimensions">{move||m.document.with(|d|d.as_ref().and_then(|d|d.info.pages.get(m.page.get())).map(|p|format!("{:.0} × {:.0} pt · {}°",p.width,p.height,p.rotation)).unwrap_or_default())}</span></Show>
+                <Show when=move||m.image_export.with(|job|job.is_some())><button aria-label="取消图片导出" disabled=move||m.image_export.with(|job|job.as_ref().is_some_and(|job|job.cancelling())) on:click=move|_|m.cancel_image_export()>"取消图片导出"</button></Show>
+                <Show when=move||m.loaded()&&!m.has_ink()><button aria-label="上一页" disabled=move||m.canvas_intent_disabled()||m.page.get()==0 on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),-1,m.count()))>"‹"</button><span>{move||format!("{} / {}",m.page.get()+1,m.count())}</span><button aria-label="下一页" disabled={move || m.canvas_intent_disabled()||m.page.get()+1>=m.count()} on:click=move|_|m.navigate(adjacent_page(m.page.get_untracked(),1,m.count()))>"›"</button><label class="page-jump-label"><span>"页码"</span><input aria-label="跳转页码" inputmode="numeric" prop:value=move||m.page_jump.get() on:input=move|e|m.page_jump.set(event_target_value(&e))/></label><button class="page-jump-button" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.jump_to_page()>"转到"</button><span class="page-dimensions">{move||m.document.with(|d|d.as_ref().and_then(|d|d.info.pages.get(m.page.get())).map(|p|format!("{:.0} × {:.0} pt · {}°",p.width,p.height,p.rotation)).unwrap_or_default())}</span></Show>
             </footer>
         </main>
         </div>

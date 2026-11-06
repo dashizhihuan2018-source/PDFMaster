@@ -15,13 +15,22 @@ pub fn adjacent_page(current: usize, delta: i32, count: usize) -> usize {
 }
 pub mod annotation_navigation;
 pub mod annotations;
+pub mod canvas_notes;
+pub mod canvas_shape_paths;
+pub mod canvas_shapes;
+pub mod canvas_shapes_state;
+pub mod canvas_text;
+pub mod image_export;
 pub mod image_import;
 pub mod ink;
+pub mod ink_eraser;
 pub mod outline;
 pub mod overview;
+pub mod recents;
 pub mod search_flow;
 pub mod shell;
 pub mod sidebar_width;
+pub mod text_export;
 pub mod thumbnails;
 pub mod workbench;
 
@@ -312,6 +321,8 @@ pub fn valid_zoom(zoom: f32) -> f32 {
 pub fn command_status_message(command: &str, restored: bool, warning: Option<&str>) -> String {
     if let Some(warning) = warning {
         warning.to_owned()
+    } else if command == "erase_ink_document" {
+        "已擦除整条手绘笔迹，可撤销。".into()
     } else if command == "extract_pages_document" {
         if restored {
             "页面已提取并回读验证；恢复的原文草稿仍未保存，请另行导出完整副本。".into()
@@ -578,15 +589,24 @@ mod tests {
     }
 
     #[test]
-    fn line_workspace_exposes_separate_endpoints_and_three_creation_modes() {
+    fn line_workspace_exposes_direct_three_creation_modes_and_pointer_flow() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains("line_edit("));
-        assert!(source.contains("直线端点 x1,y1,x2,y2"));
-        for mode in ["line", "arrow", "double_arrow"] {
-            assert!(source.contains(&format!("m.add_line(\"{mode}\")")));
+        let view = include_str!("canvas_shapes_view.rs");
+        let controller = include_str!("canvas_shapes_controller.rs");
+        for kind in ["Kind::Line", "Kind::Arrow", "Kind::DoubleArrow"] {
+            assert!(view.contains(kind), "missing direct kind {kind}");
         }
-        assert!(source.contains("端点样式与虚线"));
-        assert!(!source.contains("拖拽和线条／手绘仍在迁移"));
+        assert!(view.contains("m.select_shape_kind(kind)"));
+        for hook in [
+            "shape_pointer_down",
+            "shape_pointer_move",
+            "shape_pointer_up",
+        ] {
+            assert!(source.contains(hook), "missing actual pointer hook {hook}");
+        }
+        assert!(controller.contains("shapes::new_draft("));
+        assert!(!source.contains("fn add_line("));
+        assert!(!source.contains("直线端点 x1,y1,x2,y2"));
     }
     #[test]
     fn shape_update_preserves_unmodified_imported_colors_and_snapshot() {
@@ -615,12 +635,29 @@ mod tests {
     #[test]
     fn shape_lifecycle_workspace_wires_list_update_and_native_delete_and_clears_selection() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains("\"shapes_document\""));
-        assert!(source.contains("\"delete_shape_document\""));
-        assert!(source.contains("update_shape_edit("));
-        assert!(source.contains("self.selected_shape.set(None)"));
-        assert!(source.contains("当前页图形批注"));
-        assert!(source.contains("应用图形修改"));
+        let controller = include_str!("canvas_shapes_controller.rs");
+        assert!(controller.contains("\"canvas_shapes_document\""));
+        assert!(controller.contains("hit_rows: Vec<pdfmaster_ui::annotations::Row>"));
+        for command in [
+            "begin_canvas_shape_editor",
+            "render_shape_editor_background",
+            "commit_shape_editor",
+            "delete_shape_editor",
+            "cancel_shape_editor",
+            "cancel_canvas_shape_request",
+        ] {
+            assert!(
+                controller.contains(command),
+                "missing protected lifecycle {command}"
+            );
+        }
+        assert!(controller.contains("Ok(None) =>"));
+        assert!(controller.contains("u.session.delete_cancelled(&t)"));
+        assert!(controller.contains("shapes::reconcile("));
+        assert!(!source.contains("self.selected_shape"));
+        assert!(!source.contains("update_shape_edit("));
+        assert!(!source.contains("当前页图形批注"));
+        assert!(!source.contains("应用图形修改"));
     }
 
     #[test]
@@ -736,30 +773,47 @@ mod tests {
         );
     }
     #[test]
-    fn workspace_exposes_explicit_shape_inputs_and_both_shapes() {
+    fn workspace_exposes_direct_shape_style_row_without_numeric_card() {
         let source = include_str!("workspace.rs");
+        let view = include_str!("canvas_shapes_view.rs");
         for label in [
+            "形状样式",
+            "形状描边颜色",
+            "启用形状填充",
+            "形状填充颜色",
+            "形状线宽滑块",
+            "形状线宽预设",
+            "形状透明度",
+            "形状样式预览",
+        ] {
+            assert!(view.contains(label), "missing actual style control {label}");
+        }
+        assert!(view.contains("Kind::Rectangle"));
+        assert!(view.contains("Kind::Ellipse"));
+        assert!(source.contains("<canvas_shapes_view::Formatting model=m/>"));
+        assert!(source.contains("<canvas_shapes_view::Editor model=m/>"));
+        for obsolete in [
             "图形范围 x,y,宽,高",
-            "图形描边颜色",
-            "图形填充颜色",
-            "图形线宽",
             "添加矩形批注",
             "添加椭圆批注",
+            "fn add_shape(",
+            "shape_bounds",
+            "Panel::Shapes",
         ] {
-            assert!(source.contains(label), "missing {label}");
+            assert!(
+                !source.contains(obsolete),
+                "obsolete card/handler remains: {obsolete}"
+            );
         }
-        assert!(source.contains("m.add_shape(\"rectangle\")"));
-        assert!(source.contains("m.add_shape(\"ellipse\")"));
-        assert!(source.contains("其他类型批注未列入便笺列表"));
-        assert!(!source.contains("其他类型批注尚不支持显示"));
     }
     #[test]
     fn batch_insertion_ui_preserves_single_entry_and_exposes_one_transaction_status() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains(
-            "m.command_at_page(\"insert_pdfs_document\",json!({\"index\":index}),Some(index))"
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains(
+            "self.command_at_page(\"insert_pdfs_document\",json!({\"index\":index}),Some(index))"
         ));
-        assert!(source.contains("批量插入 PDF"));
+        assert!(include_str!("workbench_view.rs").contains("批量插入 PDF"));
         assert!(source.contains("| \"insert_pdfs_document\""));
         assert_eq!(
             super::command_status_message("insert_pdfs_document", false, None),
@@ -769,19 +823,19 @@ mod tests {
             super::command_status_message("insert_pdfs_document", true, Some("草稿故障")),
             "草稿故障"
         );
-        assert!(source.contains("在当前页后插入 PDF"));
+        assert!(include_str!("workbench_view.rs").contains("在当前页后插入 PDF"));
     }
     #[test]
     fn insertion_ui_uses_current_page_native_picker_and_marks_unsaved() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains("m.run_strip_action(Action::InsertPdf)"));
+        assert!(include_str!("workbench_view.rs").contains("Action::InsertPdf"));
         assert!(source.contains("Some(self.page.get_untracked() + 1)"));
         assert!(source.contains("s.pages().last().map(|p| p + 1)"));
         let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(compact.contains(
             "self.command_at_page(\"insert_pdf_document\",json!({\"index\":index}),Some(index),)"
         ));
-        assert!(source.contains("在当前页后插入 PDF"));
+        assert!(include_str!("workbench_view.rs").contains("在当前页后插入 PDF"));
         assert_eq!(
             super::command_status_message("insert_pdf_document", false, None),
             "PDF 页面已插入，可一次撤销；请导出完整副本保存修改。"
@@ -795,10 +849,11 @@ mod tests {
     #[test]
     fn extraction_ui_uses_native_range_command_and_never_claims_source_saved() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains(
-            "m.command(\"extract_pages_document\",json!({\"range\":m.page_range.get_untracked()}))"
-        ));
-        assert!(source.contains("提取页面到新 PDF"));
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains("self.command(\"extract_pages_document\",json!({\"range\":range}))")
+        );
+        assert!(source.contains("self.prompt_page_action(PageAction::Extract)"));
         assert_eq!(
             super::command_status_message("extract_pages_document", false, None),
             "页面已提取并回读验证；原文与未保存状态保持不变。"
@@ -837,21 +892,23 @@ mod tests {
     #[test]
     fn note_editor_exposes_explicit_save_cancel_and_blocks_conflicting_commands() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains("m.save_note()"));
-        assert!(source.contains("m.cancel_note_edit()"));
-        assert!(source.contains("m.begin_note_edit(edit_note.clone())"));
+        let canvas = include_str!("canvas_notes_view.rs");
+        assert!(canvas.contains("m.finish_note(false)"));
+        assert!(canvas.contains("m.cancel_canvas_note()"));
+        assert!(canvas.contains("aria-label=\"便笺正文\""));
         assert!(source.contains("self.has_note_draft()"));
-        assert!(source.contains("aria-label=\"编辑便笺内容\""));
+        assert!(!source.contains("id=\"tool-notes\""));
         assert!(!source.contains("inner_html"));
     }
     #[test]
     fn note_editor_acquires_native_guard_before_exposing_input_and_releases_by_id() {
         // Source-wiring regression only; native unit and GUI tests verify behavior.
         let source = include_str!("workspace.rs");
-        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(compact.contains("bridge::call::<NoteDraft>(\"begin_note_editor\""));
-        assert!(compact.contains("bridge::call::<Document>(\"cancel_note_editor\""));
-        assert!(compact.contains("bridge::call::<Document>(\"commit_note_editor\""));
+        let canvas = include_str!("canvas_notes_view.rs");
+        let compact: String = canvas.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("bridge::call_bounded::<NoteDraft>(\"begin_canvas_note_editor\""));
+        assert!(compact.contains("bridge::call_bounded::<Document>(\"cancel_note_editor\""));
+        assert!(compact.contains("bridge::call_bounded::<Document>(\"commit_note_editor\""));
         assert!(compact.contains("\"id\":draft.id"));
         assert!(source.contains("note_editor: Option<NoteDraft>"));
         assert!(source.contains("self.note_draft.set(doc.note_editor.clone())"));
@@ -860,17 +917,29 @@ mod tests {
     fn lost_editor_ack_has_an_explicit_sync_route_without_replacing_local_input() {
         // UI wiring only: the native view carries the active editor and its ID.
         // Hide this route while local input exists so syncing cannot discard it.
-        let source = include_str!("workspace.rs");
-        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(compact.contains("<Showwhen=move||m.loaded()&&!m.has_note_draft()>"));
-        assert!(compact.contains("on:click=move|_|m.command(\"document_info\",json!({}))"));
-        assert!(source.contains("同步便笺编辑状态"));
+        let canvas = include_str!("canvas_notes_view.rs");
+        let compact: String = canvas.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("m.note_draft.get().is_some()||m.note_request.get().is_some()"));
+        assert!(compact.contains("\"cancel_canvas_note_request\""));
+        assert!(canvas.contains("取消／同步"));
+    }
+    #[test]
+    fn bounded_bridge_timeout_copy_routes_to_the_current_operation_recovery() {
+        // Source-wiring regression only; browser/native timeout behavior is a separate gate.
+        let bridge = include_str!("bridge.rs");
+        assert!(
+            bridge.contains("原生响应超时；结果未知，请使用当前操作的恢复入口重试或取消／同步。")
+        );
+        assert!(!bridge.contains("请重试或取消／同步手绘"));
+        assert!(bridge.contains("15_000"));
+        assert!(bridge.contains("js_sys::Promise::race"));
     }
     #[test]
     fn note_delete_uses_the_native_confirmed_route_not_a_generic_edit_or_js_confirm() {
-        let source = include_str!("workspace.rs");
-        assert!(source.contains("m.delete_note(note.clone())"));
-        assert!(source.contains("\"delete_note_document\""));
+        let source = include_str!("canvas_notes_view.rs");
+        assert!(source.contains("m.finish_note(true)"));
+        assert!(source.contains("\"commit_note_editor\""));
+        assert!(source.contains("String::new()"));
         assert!(!source.contains("confirm_with_message"));
         assert!(source.contains("删除便笺"));
     }
@@ -896,9 +965,12 @@ mod tests {
     #[test]
     fn note_sidebar_is_rust_rendered_text_and_refreshes_from_current_session() {
         let source = include_str!("workspace.rs");
+        let canvas = include_str!("canvas_notes_view.rs");
         assert!(source.contains("\"notes_document\""));
         assert!(source.contains("self.notes.set(Some("));
-        assert!(source.contains("m.add_note()"));
+        assert!(canvas.contains("note_contains"));
+        assert!(canvas.contains("begin_canvas_note_editor"));
+        assert!(!source.contains("id=\"tool-notes\""));
         assert!(!source.contains("inner_html"));
     }
     #[test]
@@ -926,7 +998,7 @@ mod tests {
     #[test]
     fn current_page_delete_uses_the_same_native_confirmation_as_batch_delete() {
         let source = include_str!("workspace.rs");
-        assert!(source.contains("m.delete_current_page()"));
+        assert!(source.contains("self.delete_current_page()"));
         assert!(
             source.contains(
                 "self.batch_range((self.page.get_untracked() + 1).to_string(), \"delete\")"
@@ -1062,30 +1134,16 @@ mod tests {
     }
     #[test]
     fn mobile_tools_use_a_single_vertical_flow_without_clipped_groups() {
-        // Source contract only. Real WebKit scrolling and hit targets need simulator QA.
-        let css = include_str!("../styles.css");
-        let mobile = css
-            .split("/* Mobile tools: one vertical scroll region. */")
-            .nth(1)
-            .expect("mobile tools must not remain a clipped horizontal strip");
-        assert!(mobile.contains(".workspace .inspector{display:block;"));
-        assert!(
-            mobile.contains("max-height:36dvh;min-height:0;overflow-x:hidden;overflow-y:auto;")
-        );
-        assert!(mobile.contains(".workspace .tool-group{min-width:0;"));
-        assert!(mobile.contains(".workspace .inspector h2,.workspace .tool-group h3,.workspace .tool-group .muted{display:block;"));
-        assert!(mobile.contains(".workspace .note-list{max-height:none;overflow:visible}"));
-        assert!(
-            mobile.contains(
-                ".workspace .tool-group button{white-space:normal;overflow-wrap:anywhere}"
-            )
-        );
+        let css = include_str!("../workbench.css");
+        assert!(!css.contains(".inspector"));
+        assert!(css.contains(".command-menu>div{display:flex;flex-direction:column;"));
+        assert!(css.contains("max-height:40dvh;overflow:auto;min-width:0"));
+        assert!(css.contains("white-space:normal;overflow-wrap:anywhere"));
     }
     #[test]
     fn mobile_editable_fields_do_not_trigger_small_font_focus_zoom() {
         let css = include_str!("../styles.css");
-        assert!(css.contains(".tool-group>input{width:100%"));
-        assert!(css.contains(".workspace .tool-group>input,.workspace .page-jump-label input{font-size:16px;min-height:44px}"));
+        assert!(css.contains(".workspace .page-jump-label input{font-size:16px;min-height:44px}"));
     }
     #[test]
     fn bounded_search_status_discloses_truncation() {
@@ -1122,9 +1180,11 @@ mod tests {
         let source = include_str!("workspace.rs");
         assert!(source.contains("batch_pages"));
         assert!(!source.contains("confirm_with_message"));
-        assert!(source.contains("aria-label=\"批量页码范围\" disabled=move||m.busy.get()"));
-        assert!(source.contains("批量顺时针旋转 90°"));
-        assert!(source.contains("批量删除"));
+        assert!(!source.contains("aria-label=\"批量页码范围\""));
+        let commands = include_str!("workbench_view.rs");
+        assert!(commands.contains("Action::Prompt(PageAction::RotateRange)"));
+        assert!(commands.contains("Action::Prompt(PageAction::DeleteRange)"));
+        assert!(include_str!("page_file_controller.rs").contains("self.busy.set(true)"));
         assert_eq!(
             page_batch_args("1-3", "delete"),
             serde_json::json!({

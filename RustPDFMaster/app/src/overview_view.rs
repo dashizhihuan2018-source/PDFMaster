@@ -169,6 +169,9 @@ impl Model {
         })
     }
     pub(super) fn set_overview(self, visible: bool) {
+        if self.defer_canvas_edit(Some(super::canvas_intent::Intent::Overview(visible))) {
+            return;
+        }
         if self.blocked() {
             return;
         }
@@ -179,6 +182,7 @@ impl Model {
         self.close_chrome_popups();
         self.chrome.update(|c| {
             c.panel = None;
+            c.active_tool = None;
             c.mode = visible.then_some(Mode::Pages);
         });
         if visible {

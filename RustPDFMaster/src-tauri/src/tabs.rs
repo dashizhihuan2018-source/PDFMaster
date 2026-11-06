@@ -92,6 +92,7 @@ impl Workspace {
             self.inactive_documents.retain(|d| d.id != snapshot.id);
         }
         self.document_epoch = epoch;
+        self.source_documents.remove(&snapshot.id);
         Ok(CloseReply {
             closed: true,
             document: self.session.as_ref().map(|_| self.view()).transpose()?,

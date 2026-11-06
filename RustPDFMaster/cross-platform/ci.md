@@ -6,7 +6,13 @@ This is a manually dispatched **candidate-build** workflow. It does not publish 
 
 The workflow is `.github/workflows/pdfmaster-rust-candidate.yml` and has only `workflow_dispatch`, `contents: read`, bounded concurrency and per-job timeouts. Checkout credentials are not persisted. No workflow secret is referenced.
 
-## Locked tools and native runners
+## Current Windows-only delivery scope
+
+The active workflow now has exactly one `windows-x64` job and uploads only the exact unsigned Windows NSIS candidate and its SHA-256 file. Mac/iOS Rust delivery is not requested; the installed Apple-native application remains preserved. A source/configuration check or successful candidate build is not Windows runtime, full functionality, UI-parity or publication acceptance. Full Windows functionality and UI must be verified before any public Git upload.
+
+The remaining macOS/iOS and multi-platform descriptions in this document are historical implementation notes for dormant scripts and earlier evidence. They do not describe active workflow jobs or current delivery targets.
+
+## Historical multi-platform tool and runner notes
 
 - Rust `1.96.0`, with committed lock files used by core, UI and shell checks.
 - Trunk `0.21.14`; the WASM build uses `--locked`, and Tauri builds set `TRUNK_BUILD_LOCKED=true`.

@@ -14,15 +14,23 @@ pub enum Panel {
     Search,
     Pages,
     Batch,
-    Text,
     Notes,
     Ink,
-    Shapes,
     File,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActiveTool {
+    Ink,
+    Eraser,
+    Note,
+    Text,
+    Shapes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    Activate(ActiveTool),
     Panel(Panel),
     InsertBlank,
     InsertPdf,
@@ -32,12 +40,28 @@ pub enum Action {
     Extract,
     DeleteCurrent,
     Export,
+    ExportImages(bool),
+    ExportText(crate::text_export::TextExportFormat),
+    Prompt(PageAction),
+    Duplicate,
+    MoveBy(i32),
+    InsertPdfs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageAction {
+    Extract,
+    RotateRange,
+    DeleteRange,
+    Move,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chrome {
     pub mode: Option<Mode>,
     pub panel: Option<Panel>,
+    pub active_tool: Option<ActiveTool>,
     pub sidebar: bool,
 }
 
@@ -46,6 +70,7 @@ impl Default for Chrome {
         Self {
             mode: None,
             panel: None,
+            active_tool: None,
             sidebar: true,
         }
     }
@@ -56,13 +81,15 @@ impl Chrome {
         if note {
             Self {
                 mode: Some(Mode::Annotation),
-                panel: Some(Panel::Notes),
+                panel: None,
+                active_tool: Some(ActiveTool::Note),
                 ..self
             }
         } else if ink {
             Self {
                 mode: Some(Mode::Drawing),
-                panel: Some(Panel::Ink),
+                panel: None,
+                active_tool: Some(ActiveTool::Ink),
                 ..self
             }
         } else if replacement {
@@ -81,15 +108,48 @@ impl Chrome {
             Self {
                 mode: Some(mode),
                 panel: None,
+                active_tool: None,
                 ..self
             }
         }
     }
     pub fn select_panel(self, panel: Option<Panel>, blocked: bool) -> Self {
+        if panel == Some(Panel::Ink) {
+            return self.activate_tool(ActiveTool::Ink, blocked);
+        }
+        if panel == Some(Panel::Notes) {
+            return self.activate_tool(ActiveTool::Note, blocked);
+        }
         if blocked {
             self
         } else {
-            Self { panel, ..self }
+            Self {
+                panel,
+                active_tool: None,
+                ..self
+            }
+        }
+    }
+    pub fn activate_tool(self, tool: ActiveTool, blocked: bool) -> Self {
+        if blocked {
+            return self;
+        }
+        Self {
+            mode: Some(match tool {
+                ActiveTool::Note => Mode::Annotation,
+                ActiveTool::Text | ActiveTool::Shapes => match self.mode {
+                    Some(Mode::Signature) => Mode::Signature,
+                    Some(Mode::Drawing) => Mode::Drawing,
+                    _ => Mode::Annotation,
+                },
+                ActiveTool::Ink | ActiveTool::Eraser => match self.mode {
+                    Some(Mode::Annotation) => Mode::Annotation,
+                    _ => Mode::Drawing,
+                },
+            }),
+            panel: None,
+            active_tool: (self.active_tool != Some(tool)).then_some(tool),
+            ..self
         }
     }
     pub fn toggle_sidebar(self, blocked: bool) -> Self {
@@ -148,26 +208,31 @@ pub fn tools(mode: Mode) -> &'static [Tool] {
                         "pen",
                         "手绘",
                         false,
-                        Some(Panel(crate::workbench::Panel::Ink)),
+                        Some(Activate(crate::workbench::ActiveTool::Ink)),
                     ),
-                    tool("eraser", "橡皮（整条笔迹）", false, None),
+                    tool(
+                        "eraser",
+                        "橡皮（整条笔迹）",
+                        false,
+                        Some(Activate(crate::workbench::ActiveTool::Eraser)),
+                    ),
                     tool(
                         "text",
                         "文字批注",
                         false,
-                        Some(Panel(crate::workbench::Panel::Text)),
+                        Some(Activate(crate::workbench::ActiveTool::Text)),
                     ),
                     tool(
                         "shapes",
                         "形状",
                         false,
-                        Some(Panel(crate::workbench::Panel::Shapes)),
+                        Some(Activate(crate::workbench::ActiveTool::Shapes)),
                     ),
                     tool(
                         "note",
                         "便笺",
                         false,
-                        Some(Panel(crate::workbench::Panel::Notes)),
+                        Some(Activate(crate::workbench::ActiveTool::Note)),
                     ),
                     tool("stamp", "印章", false, None),
                     tool("signature", "签名", false, None),
@@ -206,7 +271,7 @@ pub fn tools(mode: Mode) -> &'static [Tool] {
                         "text",
                         "文字",
                         true,
-                        Some(Panel(crate::workbench::Panel::Text)),
+                        Some(Activate(crate::workbench::ActiveTool::Text)),
                     ),
                 ]
             }
@@ -215,8 +280,14 @@ pub fn tools(mode: Mode) -> &'static [Tool] {
             const {
                 &[
                     tool("save", "存储副本", true, Some(Export)),
+                    tool("export-image", "PNG 图片", true, Some(ExportImages(false))),
                     tool("password", "密码保护", true, None),
-                    tool("export-text", "纯文本", true, None),
+                    tool(
+                        "export-text",
+                        "纯文本",
+                        true,
+                        Some(ExportText(crate::text_export::TextExportFormat::PlainText)),
+                    ),
                 ]
             }
         }

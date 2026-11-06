@@ -28,6 +28,102 @@ fn annotation(kind: &str) -> Object {
 }
 
 #[test]
+fn hit_projection_retains_every_original_slot_without_metadata_or_writes() {
+    let bytes = fixture(|doc, pages| {
+        let rows = ["Square", "Widget", "Popup", "Link"]
+            .into_iter()
+            .map(|kind| {
+                let mut row = annotation(kind).as_dict().unwrap().clone();
+                row.set("Contents", text_string("not needed for hits"));
+                doc.add_object(row).into()
+            })
+            .collect();
+        set_annots(doc, pages[0], rows);
+    });
+    let mut session = Session::open(&bytes).unwrap();
+    session
+        .apply(Edit::Rotate {
+            page: 1,
+            degrees: 90,
+        })
+        .unwrap();
+    session
+        .apply(Edit::Rotate {
+            page: 1,
+            degrees: 90,
+        })
+        .unwrap();
+    session.undo().unwrap();
+    let before = session.bytes().unwrap();
+    let info = session.info();
+    assert!(info.can_undo && info.can_redo);
+    let render = session.render_png(0, 1.).unwrap();
+    let rows = session.annotation_hit_rows(0).unwrap();
+    assert_eq!(
+        rows.len(),
+        4,
+        "hit projection must not filter Widget/Popup/Link"
+    );
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row.annotation_index, index);
+        assert!(row.object_id.is_some());
+        assert!(row.contents.is_empty());
+        assert!(row.modified.is_none() && row.color.is_none());
+    }
+    assert_eq!(session.annotations().unwrap().len(), 1);
+    assert_eq!(session.info(), info);
+    assert_eq!(session.bytes().unwrap(), before);
+    assert_eq!(session.render_png(0, 1.).unwrap(), render);
+    assert!(session.annotation_hit_rows(99).is_err());
+    session.redo().unwrap();
+}
+
+#[test]
+fn hit_projection_rejects_structural_uncertainty_but_never_follows_metadata_actions_or_appearances()
+{
+    for case in 0..9 {
+        let bytes = fixture(|doc, pages| {
+            let mut d = annotation("Widget").as_dict().unwrap().clone();
+            let cyclic = doc.new_object_id();
+            doc.set_object(cyclic, Object::Reference(cyclic));
+            match case {
+                0 => {
+                    d.remove(b"Rect");
+                }
+                1 => d.set("Rect", vec![0.into(), 0.into(), 0.into(), 1.into()]),
+                2 => {
+                    d.remove(b"Subtype");
+                }
+                3 => d.set("Subtype", 42),
+                4 => d.set("Subtype", Object::Reference(cyclic)),
+                5 => d.set("Subtype", Object::Name(vec![b'x'; 129])),
+                _ => {
+                    d.set("Contents", Object::Reference(cyclic));
+                    d.set("AP", Object::Reference(cyclic));
+                    d.set("A", Object::Reference(cyclic));
+                }
+            }
+            let rows = match case {
+                6 => vec![Object::Reference(cyclic)],
+                7 => vec![d.into(); 4097],
+                _ => vec![d.into()],
+            };
+            set_annots(doc, pages[0], rows);
+        });
+        let session = Session::open(&bytes).unwrap();
+        let before = session.info();
+        let result = session.annotation_hit_rows(0);
+        match case {
+            0 | 1 => assert!(result.unwrap()[0].bounds.is_none()),
+            8 => assert_eq!(result.unwrap().len(), 1),
+            _ => assert!(result.is_err(), "case {case}"),
+        }
+        assert_eq!(session.bytes().unwrap(), bytes);
+        assert_eq!(session.info(), before);
+    }
+}
+
+#[test]
 fn projects_all_annotation_types_without_reindexing_or_mutating_document() {
     let bytes = fixture(|doc, pages| {
         let mut rows = vec![

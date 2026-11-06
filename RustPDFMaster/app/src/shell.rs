@@ -61,7 +61,11 @@ pub fn document_reply_route(current: Route, command: &str, has_document: bool) -
     if has_document
         && matches!(
             command,
-            "open_document" | "new_document" | "activate_document" | "document_info"
+            "open_document"
+                | "open_recent_document"
+                | "new_document"
+                | "activate_document"
+                | "document_info"
         )
     {
         Route::Document
@@ -130,7 +134,13 @@ pub const TOOLS: [Tool; 28] = [
     entry("sheet-to-pdf", "表转 PDF", 3, "#30d158", None),
     entry("file-to-pdf", "其他文件转 PDF", 3, "#ff9f0a", None),
     entry("pdf-to-word", "PDF 转 Word", 4, "#0a84ff", None),
-    entry("pdf-to-image", "PDF 转图片", 4, "#bf5af2", None),
+    entry(
+        "pdf-to-image",
+        "PDF 转图片",
+        4,
+        "#bf5af2",
+        Some("image-export"),
+    ),
     entry("pdf-to-excel", "PDF 转 Excel", 4, "#30d158", None),
     entry("pdf-to-powerpoint", "PDF 转 PowerPoint", 4, "#ff9f0a", None),
 ];

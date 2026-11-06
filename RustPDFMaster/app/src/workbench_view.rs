@@ -1,6 +1,6 @@
 use super::Model;
 use leptos::prelude::*;
-use pdfmaster_ui::workbench::{Action, Mode, PRIMARY_MODES, Panel, tools};
+use pdfmaster_ui::workbench::{Action, Mode, PRIMARY_MODES, PageAction, tools};
 use serde_json::json;
 
 // Independent vectors preserve the original control roles. Exact SF Symbol
@@ -32,6 +32,7 @@ fn Icon(name: &'static str) -> impl IntoView {
         "rotate"=>"M4 12a8 8 0 1 0 3-6 M3 2v6h6",
         "delete-page"=>"M4 6h16 M9 3h6 M6 6l1 16h10l1-16 M10 10v8 M14 10v8",
         "save"=>"M4 14v7h16v-7 M12 2v14 M7 11l5 5 5-5",
+        "export-image"=>"M3 3h18v18H3z M4 18l6-7 5 5 3-3 3 4 M16 7h.1 M12 2v14 M8 12l4 4 4-4",
         "password"=>"M5 11h14v11H5z M8 11V6a4 4 0 0 1 8 0v5",
         "content-image"=>"M3 3h18v18H3z M4 18l6-7 5 5 3-3 3 4 M16 7h.1",
         "content-link"=>"m10 7 3-3a5 5 0 0 1 7 7l-3 3 M14 17l-3 3a5 5 0 0 1-7-7l3-3 M8 16l8-8",
@@ -45,28 +46,28 @@ pub(super) fn Toolbar(model: Model) -> impl IntoView {
     view! {
         <nav class="workbench-toolbar" aria-label="阅读工具栏">
             <div class="workbench-group workbench-left">
-                <button class="chrome-icon-button" aria-label="侧栏" title="侧栏" aria-pressed=move||m.chrome.get().sidebar.to_string() disabled=move||m.blocked() on:click=move|_|m.toggle_sidebar()><Icon name="sidebar"/></button>
-                <button class="chrome-icon-button" aria-label="页面预览" title="整页缩略图总览" aria-pressed=move||m.overview_visible.get().to_string() disabled=move||m.blocked() on:click=move|_|m.set_overview(!m.overview_visible.get_untracked())><Icon name="overview"/></button>
+                <button class="chrome-icon-button" aria-label="侧栏" title="侧栏" aria-pressed=move||m.chrome.get().sidebar.to_string() disabled=move||m.canvas_intent_disabled() on:click=move|_|m.toggle_sidebar()><Icon name="sidebar"/></button>
+                <button class="chrome-icon-button" aria-label="页面预览" title="整页缩略图总览" aria-pressed=move||m.overview_visible.get().to_string() disabled=move||m.canvas_intent_disabled() on:click=move|_|m.set_overview(!m.overview_visible.get_untracked())><Icon name="overview"/></button>
                 <details class="chrome-popup"><summary aria-label="布局选项" title="布局选项"><Icon name="layout"/></summary><div class="chrome-popup-content">
-                    <strong>"布局选项"</strong><button disabled=move||m.blocked() on:click=move|_|m.fit_page()>"适合页面"</button><button disabled=move||m.blocked() on:click=move|_|m.fit_width()>"适合宽度"</button>
+                    <strong>"布局选项"</strong><button disabled=move||m.canvas_intent_disabled() on:click=move|_|m.fit_page()>"适合页面"</button><button disabled=move||m.canvas_intent_disabled() on:click=move|_|m.fit_width()>"适合宽度"</button>
                     <button disabled aria-pressed="true">"单页（当前）"</button><button disabled title="连续页布局尚未迁移">"连续滚动"</button><button disabled title="双页布局尚未迁移">"双页"</button><button disabled>"封面"</button>
                 </div></details>
-                <select class="chrome-zoom" aria-label="缩放" disabled=move||m.blocked()||m.overview_visible.get() prop:value=move||{let _=m.zoom.get();"current"} on:change=move|e|m.choose_zoom(&event_target_value(&e))>
+                <select class="chrome-zoom" aria-label="缩放" disabled=move||m.canvas_intent_disabled()||m.overview_visible.get() prop:value=move||{let _=m.zoom.get();"current"} on:change=move|e|m.choose_zoom(&event_target_value(&e))>
                     <option value="current">{move||format!("{:.0}%",m.zoom.get()*100.)}</option><option value="page">"适合页面"</option><option value="width">"适合宽度"</option><option value="1">"100%"</option><option value="1.25">"125%"</option><option value="1.5">"150%"</option><option value="2">"200%"</option><option value="3">"300%"</option>
                 </select>
-                <button class="chrome-icon-button" aria-label="缩小" title="缩小" disabled=move||m.blocked() on:click=move|_|m.zoom_by(0.8)><Icon name="minus"/></button>
-                <button class="chrome-icon-button" aria-label="放大" title="放大" disabled=move||m.blocked() on:click=move|_|m.zoom_by(1.25)><Icon name="plus"/></button>
-                <button class="chrome-icon-button" aria-label="适合页面" title="适合页面" disabled=move||m.blocked() on:click=move|_|m.fit_page()><Icon name="fit"/></button>
+                <button class="chrome-icon-button" aria-label="缩小" title="缩小" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.zoom_by(0.8)><Icon name="minus"/></button>
+                <button class="chrome-icon-button" aria-label="放大" title="放大" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.zoom_by(1.25)><Icon name="plus"/></button>
+                <button class="chrome-icon-button" aria-label="适合页面" title="适合页面" disabled=move||m.canvas_intent_disabled() on:click=move|_|m.fit_page()><Icon name="fit"/></button>
             </div>
             <div class="workbench-group workbench-modes" aria-label="文档模式">
                 {PRIMARY_MODES.into_iter().map(|(title,mode)|view!{
                     <button class="chrome-mode" class:active=move||mode.is_some()&&m.chrome.get().mode==mode aria-pressed=move||(mode.is_some()&&m.chrome.get().mode==mode).to_string()
-                        disabled=move||mode.is_none()||m.blocked() title=if mode.is_none(){"此功能尚未迁移"}else{"选择模式；仅可用的二级工具会执行操作"} on:click=move|_|{if let Some(mode)=mode{m.select_mode(mode);}}>{title}</button>
+                        disabled=move||mode.is_none()||m.canvas_intent_disabled() title=if mode.is_none(){"此功能尚未迁移"}else{"选择模式；仅可用的二级工具会执行操作"} on:click=move|_|{if let Some(mode)=mode{m.select_mode(mode);}}>{title}</button>
                 }).collect_view()}
                 <details class="chrome-popup"><summary aria-label="更多工具" title="更多工具"><Icon name="more"/></summary><div class="chrome-popup-content">
-                    <button disabled=move||m.blocked() on:click=move|_|m.select_mode(Mode::Pages)>"页面管理"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.select_panel(Some(Panel::Batch))>"批量页面"</button>
-                    <button disabled=move||m.blocked() on:click=move|_|m.select_panel(Some(Panel::File))>"文档操作"</button>
+                    <button disabled=move||m.canvas_intent_disabled() on:click=move|_|m.select_mode(Mode::Pages)>"页面管理"</button>
+                    <PageCommands model=m/>
+                    <FileActions model=m/>
                 </div></details>
             </div>
             <div class="workbench-group workbench-right">
@@ -90,25 +91,75 @@ pub(super) fn SecondaryTools(model: Model) -> impl IntoView {
         <nav class="workbench-secondary" aria-label="模式工具" hidden=move||m.chrome.get().mode.is_none()>
             {move||m.chrome.get().mode.map(|mode|tools(mode).iter().copied().map(|tool|view!{
                 <button class="chrome-strip-tool" class:icon-only=!tool.shows_title class:danger=tool.id=="delete-page"
-                    class:active=move||matches!(tool.action,Some(Action::Panel(p))if m.chrome.get().panel==Some(p))
+                    class:active=move||match tool.action {Some(Action::Activate(active))=>m.chrome.get().active_tool==Some(active),Some(Action::Panel(panel))=>m.chrome.get().panel==Some(panel),_=>false}
+                    aria-pressed=move||match tool.action {
+                        Some(Action::Activate(active))=>Some((m.chrome.get().active_tool==Some(active)).to_string()),
+                        Some(Action::Panel(panel))=>Some((m.chrome.get().panel==Some(panel)).to_string()),
+                        _=>None,
+                    }
                     aria-label=format!("工具 · {}",tool.title) title=if tool.action.is_none(){format!("{}：尚未迁移",tool.title)}else{format!("{}：有限迁移工具，页面内完整交互仍待",tool.title)}
-                    disabled=move||m.blocked()||tool.action.is_none() on:click=move|_|{if let Some(action)=tool.action{m.run_strip_action(action);}}>
+                    disabled=move||m.canvas_intent_disabled()||tool.action.is_none() on:click=move|_|{if let Some(action)=tool.action{m.run_strip_action(action);}}>
                     <Icon name=tool.id/>{tool.shows_title.then_some(tool.title)}
                 </button>
             }).collect_view())}
+            <super::canvas_text_view::Formatting model=m/>
         </nav>
+    }
+}
+
+#[component]
+pub(super) fn InkRecovery(model: Model) -> impl IntoView {
+    let m = model;
+    view! {
+        <Show when=move || m.has_ink()>
+            <div class="ink-recovery" role="group" aria-label="手绘事务恢复">
+                <button disabled=move || m.busy.get() || !m.ink_gesture.with(|s|
+                    s.as_ref().is_some_and(|s| s.ended && s.guard.is_some()
+                        && !s.committing && !s.cancelled))
+                    on:click=move |_| m.retry_ink()>"重试提交手绘"</button>
+                <button disabled=move || m.busy.get() || !m.loaded()
+                    on:click=move |_| m.cancel_ink()>"取消／同步手绘"</button>
+            </div>
+        </Show>
     }
 }
 
 #[component]
 pub(super) fn FileActions(model: Model) -> impl IntoView {
     let m = model;
-    view! { <div class="tool-group" hidden=move||m.chrome.get().panel!=Some(Panel::File)><h3>"文档操作"</h3>
-        <button disabled=move||m.blocked() on:click=move|_|m.command("open_document",json!({}))>"打开 PDF"</button>
-        <button disabled=move||m.blocked() on:click=move|_|m.command("new_document",json!({}))>"新建"</button>
-        <button disabled=move||m.blocked() on:click=move|_|m.command("export_document",json!({}))>"导出副本"</button>
-        <button disabled=move||m.blocked()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_undo)) on:click=move|_|m.command("undo_document",json!({}))>"撤销"</button>
-        <button disabled=move||m.blocked()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_redo)) on:click=move|_|m.command("redo_document",json!({}))>"重做"</button>
-        <p class="muted">"每个 PDF 标签保留独立修改与撤销历史；保存会导出副本。完整原生菜单和快捷键仍在迁移。"</p>
-    </div> }
+    view! { <details class="command-menu"><summary role="button" aria-label="文档操作">"文档操作"</summary><div role="group" aria-label="文件命令">
+        <button disabled=move||m.canvas_intent_disabled() on:click=move|_|{m.close_chrome_popups();m.command("open_document",json!({}));}>"打开 PDF"</button>
+        <button disabled=move||m.canvas_intent_disabled() on:click=move|_|{m.close_chrome_popups();m.command("new_document",json!({}));}>"新建"</button>
+        <button disabled=move||m.canvas_intent_disabled() on:click=move|_|{m.close_chrome_popups();m.command("export_document",json!({}));}>"导出副本"</button>
+        <button disabled=move||m.canvas_intent_disabled() on:click=move|_|{m.close_chrome_popups();m.export_images(false);}>"导出 PNG 图片"</button>
+        <button disabled=move||m.canvas_intent_disabled() on:click=move|_|{m.close_chrome_popups();m.export_images(true);}>"导出 JPEG 图片"</button>
+        <button disabled=move||m.canvas_intent_disabled()||!m.loaded() on:click=move|_|{m.close_chrome_popups();m.export_text(pdfmaster_ui::text_export::TextExportFormat::PlainText);}>"导出纯文本…"</button>
+        <button disabled=move||m.canvas_intent_disabled()||!m.loaded() on:click=move|_|{m.close_chrome_popups();m.export_text(pdfmaster_ui::text_export::TextExportFormat::SummaryText);}>"导出批注摘要 TXT…"</button>
+        <button disabled=move||m.canvas_intent_disabled()||!m.loaded() on:click=move|_|{m.close_chrome_popups();m.export_text(pdfmaster_ui::text_export::TextExportFormat::SummaryMarkdown);}>"导出批注摘要 Markdown…"</button>
+        <button disabled=move||m.canvas_intent_disabled()||!m.loaded() on:click=move|_|{m.close_chrome_popups();m.export_text(pdfmaster_ui::text_export::TextExportFormat::SummaryHtml);}>"导出批注摘要 HTML…"</button>
+        <button disabled=move||m.canvas_intent_disabled()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_undo)) on:click=move|_|{m.close_chrome_popups();m.command("undo_document",json!({}));}>"撤销"</button>
+        <button disabled=move||m.canvas_intent_disabled()||!m.document.with(|d|d.as_ref().is_some_and(|d|d.info.can_redo)) on:click=move|_|{m.close_chrome_popups();m.command("redo_document",json!({}));}>"重做"</button>
+    </div></details> }
+}
+
+#[component]
+fn PageCommands(model: Model) -> impl IntoView {
+    let m = model;
+    const COMMANDS: &[(&str, Action)] = &[
+        ("顺时针旋转 90°", Action::Rotate),
+        ("复制当前页", Action::Duplicate),
+        ("在后方插入空白页", Action::InsertBlank),
+        ("在当前页后插入 PDF", Action::InsertPdf),
+        ("批量插入 PDF（整批可撤销）", Action::InsertPdfs),
+        ("当前页前移", Action::MoveBy(-1)),
+        ("当前页后移", Action::MoveBy(1)),
+        ("移动当前页…", Action::Prompt(PageAction::Move)),
+        ("提取页面…", Action::Prompt(PageAction::Extract)),
+        ("旋转页面范围…", Action::Prompt(PageAction::RotateRange)),
+        ("删除页面范围…", Action::Prompt(PageAction::DeleteRange)),
+        ("删除当前页", Action::DeleteCurrent),
+    ];
+    view! {<details class="command-menu"><summary role="button" aria-label="页面操作">"页面操作"</summary><div role="group" aria-label="页面命令">
+        {COMMANDS.iter().copied().map(|(title,action)|view!{<button disabled=move||m.canvas_intent_disabled()||match action{Action::MoveBy(-1)=>m.page.get()==0,Action::MoveBy(1)=>m.page.get()+1>=m.count(),Action::DeleteCurrent|Action::Prompt(PageAction::DeleteRange)=>m.count()<=1,_=>false} on:click=move|_|{m.close_chrome_popups();m.run_strip_action(action);}>{title}</button>}).collect_view()}
+    </div></details>}
 }

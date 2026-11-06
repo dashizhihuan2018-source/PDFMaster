@@ -65,7 +65,7 @@ pub(crate) fn update_note(
     let annots_object = page_dictionary
         .get(b"Annots")
         .map_err(|_| PdfMasterError::InvalidOperation("page has no annotations"))?;
-    let mut annots = resolve(document, annots_object)?
+    let annots = resolve(document, annots_object)?
         .as_array()
         .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into()))?
         .clone();
@@ -88,9 +88,6 @@ pub(crate) fn update_note(
         ));
     }
 
-    // Share a read-only ownership audit without cloning the entire PDF again.
-    annots_without_note(document, pages, page, annotation_index, expected_contents)?;
-    let (_, old_id) = resolve_with_id(document, &annotation_object)?;
     let mut annotation = resolve(document, &annotation_object)?
         .as_dict()
         .map_err(|_| PdfMasterError::Malformed("annotation entry must be a dictionary".into()))?
@@ -100,6 +97,31 @@ pub(crate) fn update_note(
     if annotation.has(b"P") {
         annotation.set("P", page_id);
     }
+    replace_annotation(document, pages, page, annotation_index, annotation)
+}
+
+/// Shared audited COW root and unique Popup replacement for typed updates.
+pub(crate) fn replace_annotation(
+    document: &mut Document,
+    pages: &[PageInfo],
+    page: usize,
+    annotation_index: usize,
+    mut annotation: lopdf::Dictionary,
+) -> Result<()> {
+    annots_without_annotation(document, pages, page, annotation_index)?;
+    let page_id = page_object_ids(document)?[page];
+    let mut annots = resolve(
+        document,
+        document
+            .get_object(page_id)
+            .and_then(Object::as_dict)
+            .and_then(|page| page.get(b"Annots"))
+            .map_err(|error| PdfMasterError::Malformed(error.to_string()))?,
+    )?
+    .as_array()
+    .map_err(|_| PdfMasterError::Malformed("page Annots must be array".into()))?
+    .clone();
+    let (_, old_id) = resolve_with_id(document, &annots[annotation_index])?;
     let annotation_id = document.new_object_id();
     let mut popup_ids = HashSet::new();
     if let Ok(popup) = annotation.get(b"Popup") {

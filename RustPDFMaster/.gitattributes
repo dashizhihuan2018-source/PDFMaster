@@ -1,0 +1,2 @@
+# Preserve reviewed asset/license bytes and source fixtures on every build host.
+* -text

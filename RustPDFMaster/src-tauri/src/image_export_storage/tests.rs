@@ -31,7 +31,7 @@ fn fixture_pdf() -> Vec<u8> {
     bytes
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn stages_two_selected_png_pages_and_publishes_one_complete_new_directory() {
     let source = fixture_pdf();
@@ -76,7 +76,15 @@ fn stages_two_selected_png_pages_and_publishes_one_complete_new_directory() {
         published.total_bytes,
         published_directory_bytes(&parent.path().join("images"))
     );
+    #[cfg(unix)]
     assert!(published.durability_warning.is_none());
+    #[cfg(windows)]
+    assert!(
+        published
+            .durability_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("Unsupported"))
+    );
     assert!(control.is_published());
     assert!(
         !control.cancel(),
@@ -314,21 +322,27 @@ fn cancel_first_skips_rename_and_rename_failure_leaves_gate_active() {
 
 #[cfg(windows)]
 #[test]
-fn unsupported_windows_payload_directory_sync_fails_closed_before_rename() {
+fn windows_publication_reports_directory_durability_limit_after_complete_rename() {
     let session = pdfmaster_core::Session::open(&fixture_pdf()).unwrap();
     let parent = tempfile::tempdir().unwrap();
     let control = ImageExportControl::new();
     let target = parent.path().join("images");
 
-    let error = staged(&parent, &session, &control)
+    let publication = staged(&parent, &session, &control)
         .publish_new(&target)
-        .err()
-        .expect("unsupported Windows directory sync must prevent publication");
+        .expect("complete verified images must publish on Windows");
 
-    assert!(error.contains("Unsupported"));
-    assert!(!target.exists());
-    assert!(!control.is_published());
-    assert!(control.cancel());
+    assert!(
+        publication
+            .durability_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("Unsupported"))
+    );
+    assert_eq!(publication.pages, 2);
+    assert!(target.join("page-0001.png").is_file());
+    assert!(target.join("page-0002.png").is_file());
+    assert!(control.is_published());
+    assert!(!control.cancel());
 }
 
 #[test]
@@ -543,7 +557,7 @@ fn retained_parent_identity_rejects_a_replacement_at_the_same_canonical_path() {
     assert!(!retained.matches(&chosen).unwrap());
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn published_directory_bytes(path: &Path) -> usize {
     std::fs::read_dir(path)
         .unwrap()

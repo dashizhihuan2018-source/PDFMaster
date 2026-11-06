@@ -76,6 +76,61 @@ pub struct AnnotationRow {
 }
 
 impl Session {
+    pub fn annotation_hit_rows(&self, page: usize) -> Result<Vec<AnnotationRow>> {
+        let page_id =
+            *page_object_ids(&self.document)?
+                .get(page)
+                .ok_or(PdfMasterError::InvalidOperation(
+                    "annotation hit page is unavailable",
+                ))?;
+        let document = &self.document;
+        let dictionary = document
+            .get_object(page_id)
+            .and_then(Object::as_dict)
+            .map_err(|e| PdfMasterError::Malformed(e.to_string()))?;
+        let Ok(entries) = dictionary.get(b"Annots") else {
+            return Ok(Vec::new());
+        };
+        let entries = resolve(document, entries)?
+            .as_array()
+            .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into()))?;
+        if entries.len() > MAX_PAGE_ENTRIES
+            || entries.len() > MAX_ROWS
+            || entries.len() > MAX_ENTRIES
+        {
+            return Err(PdfMasterError::Budget("annotation projection entries"));
+        }
+        entries
+            .iter()
+            .enumerate()
+            .map(|(annotation_index, value)| {
+                let (value, object_id) = resolve_with_id(document, value)?;
+                let annotation = value.as_dict().map_err(|_| {
+                    PdfMasterError::Malformed("annotation must be a dictionary".into())
+                })?;
+                let subtype = annotation.get(b"Subtype").map_err(|_| {
+                    PdfMasterError::Malformed("annotation is missing Subtype".into())
+                })?;
+                let subtype = resolve(document, subtype)?.as_name().map_err(|_| {
+                    PdfMasterError::Malformed("annotation Subtype must be a name".into())
+                })?;
+                if subtype.is_empty() || subtype.len() > 128 {
+                    return Err(PdfMasterError::Budget("annotation projection rows/type"));
+                }
+                Ok(AnnotationRow {
+                    page_index: page,
+                    annotation_index,
+                    page_id,
+                    object_id,
+                    subtype: String::from_utf8_lossy(subtype).into_owned(),
+                    contents: String::new(),
+                    color: None,
+                    bounds: bounds(document, annotation)?,
+                    modified: None,
+                })
+            })
+            .collect()
+    }
     pub fn annotations(&self) -> Result<Vec<AnnotationRow>> {
         enumerate_annotations(&self.document)
     }
@@ -96,6 +151,29 @@ pub(crate) fn delete_annotation(
             "annotation changed since it was selected",
         ));
     }
+    let page_id = page_object_ids(document)?[expected.page_index];
+    let page = document
+        .get_object(page_id)
+        .and_then(Object::as_dict)
+        .map_err(|error| PdfMasterError::Malformed(error.to_string()))?;
+    let annots = resolve(
+        document,
+        page.get(b"Annots")
+            .map_err(|_| PdfMasterError::InvalidOperation("page has no annotations"))?,
+    )?
+    .as_array()
+    .map_err(|_| PdfMasterError::Malformed("page Annots must be an array".into()))?;
+    let annotation = resolve(
+        document,
+        annots
+            .get(expected.annotation_index)
+            .ok_or(PdfMasterError::InvalidOperation(
+                "annotation index is unavailable",
+            ))?,
+    )?
+    .as_dict()
+    .map_err(|_| PdfMasterError::Malformed("annotation must be a dictionary".into()))?;
+    crate::free_text::validate_free_text_delete_permission(document, annotation)?;
     let remaining = crate::notes::annots_without_annotation(
         document,
         pages,

@@ -15,9 +15,9 @@ pub async fn call<T: DeserializeOwned>(command: &str, args: &impl Serialize) -> 
     serde_wasm_bindgen::from_value(value).map_err(|e| format!("响应格式错误：{e}"))
 }
 
-/// Timeout abandons observation, not the native mutation. Ink callers retain
-/// their request identity and reconcile/cancel it on the native side before
-/// admitting another stroke. The losing Promise never updates UI state.
+/// Timeout abandons observation, not the native mutation. Ink and Notes callers
+/// retain their request/native identity and reconcile or cancel the current
+/// operation before admitting another one. The losing Promise never updates UI state.
 pub async fn call_bounded<T: DeserializeOwned>(
     command: &str,
     args: &impl Serialize,
@@ -32,7 +32,9 @@ pub async fn call_bounded<T: DeserializeOwned>(
     let callback = Closure::once(move || {
         let _ = reject.call1(
             &JsValue::NULL,
-            &JsValue::from_str("原生响应超时；结果未知，请重试或取消／同步手绘。"),
+            &JsValue::from_str(
+                "原生响应超时；结果未知，请使用当前操作的恢复入口重试或取消／同步。",
+            ),
         );
     });
     let window = web_sys::window().ok_or("窗口不可用。")?;
