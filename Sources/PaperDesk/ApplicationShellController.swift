@@ -34,6 +34,7 @@ final class ApplicationShellController: NSViewController {
     var onFileImportStateChange: ((Bool) -> Void)?
     func cancelFileImport() { fileImportCancellation?.cancel() }
     private var lastActiveTabID: UUID?
+    private var pendingWatermarkTabCloses = Set<UUID>()
     private let tabBar = NSStackView()
     private let windowControls = NSStackView()
     private var homeTab: NSButton?
@@ -52,6 +53,7 @@ final class ApplicationShellController: NSViewController {
     var activeWorkbench: WorkbenchController? { documentTabs.first { $0.id == activeTabID }?.controller }
     var activeCanvas: CanvasController? { canvasTabs.first { $0.id == activeTabID }?.controller }
     var onActiveWorkbenchChange: ((WorkbenchController?) -> Void)?
+    var onMoveDocumentTabToNewWindow: ((UUID) -> Bool)?
     private(set) var lastOpenError: Error?
     private(set) var imageImportController: ImageImportController?
     /// Injectable native presentation boundary; normal app uses its attached window.
@@ -389,6 +391,37 @@ final class ApplicationShellController: NSViewController {
         }
         rebuildTabs(); show(activeWorkbench!); onActiveWorkbenchChange?(activeWorkbench)
     }
+    @discardableResult func extractDocumentTab(id: UUID) -> DocumentTab? {
+        guard let index = documentTabs.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = documentTabs[index]
+        guard tab.controller.pdfView.finishInlineTextEditing(),
+              !tab.controller.isLocalToolRunning,
+              !tab.controller.isContentEditPending,
+              tab.controller.view.window?.attachedSheet == nil else { return nil }
+        if copilotWorkbench === tab.controller { hideCopilot() }
+        tab.controller.registerInkMenuItem(nil)
+        tab.controller.onShowCopilot = nil
+        tab.controller.onDocumentSave = nil
+        tab.controller.onDocumentRevisionChange = nil
+        tab.controller.readerCommands.externalCommand = nil
+        tab.controller.readerCommands.canExternalCommand = nil
+        documentTabs.remove(at: index)
+        if activeTabID == id {
+            if let next = documentTabs[safe: min(index, max(documentTabs.count - 1, 0))] { activate(tabID: next.id) }
+            else if let next = canvasTabs.last { activate(tabID: next.id) }
+            else { showHome() }
+        } else { rebuildTabs() }
+        return tab
+    }
+    func adoptDocumentTab(_ tab: DocumentTab) {
+        guard !documentTabs.contains(where: { $0.id == tab.id }) else { activate(tabID: tab.id); return }
+        documentTabs.append(tab)
+        activate(tabID: tab.id)
+    }
+    @discardableResult func requestMoveDocumentTabToNewWindow(_ id: UUID) -> Bool {
+        guard documentTabs.contains(where: { $0.id == id }) else { return false }
+        return onMoveDocumentTabToNewWindow?(id) ?? false
+    }
     func showHome() {
         guard activeWorkbench?.pdfView.finishInlineTextEditing() != false else { return }
         guard activeWorkbench?.view.window?.attachedSheet == nil else { return }
@@ -420,6 +453,16 @@ final class ApplicationShellController: NSViewController {
         }
         guard let index = documentTabs.firstIndex(where: { $0.id == tabID }) else { return true }
         let controller = documentTabs[index].controller
+        if controller.watermarkJob != nil {
+            guard pendingWatermarkTabCloses.insert(tabID).inserted else { return false }
+            let tab = documentTabs[index]
+            Task { [weak self] in
+                guard let self else { return }
+                defer { self.pendingWatermarkTabCloses.remove(tabID) }
+                _ = await self.closeAfterCancellingWatermark(tab, dirtyDecision: dirtyDecision)
+            }
+            return false
+        }
         guard controller.pdfView.finishInlineTextEditing() else { return false }
         guard !controller.isLocalToolRunning, controller.view.window?.attachedSheet == nil else { return false }
         guard !controller.workspace.isDirty || (dirtyDecision?() ?? controller.guardDirty()) else { return false }
@@ -428,6 +471,29 @@ final class ApplicationShellController: NSViewController {
         documentTabs.remove(at: index)
         if activeTabID == tabID { if let next = documentTabs[safe: min(index, max(documentTabs.count - 1, 0))] { activate(tabID: next.id) } else if let next = canvasTabs.last { activate(tabID: next.id) } else { showHome() } }
         else { rebuildTabs() }
+        return true
+    }
+    /// Deferred continuation of the ordinary tab-close request. Revalidate the
+    /// exact tab/document/window after the owned worker has fully cleaned up.
+    func closeAfterCancellingWatermark(_ tab: DocumentTab, dirtyDecision: (() -> Bool)? = nil) async -> Bool {
+        guard documentTabs.contains(where: { $0 === tab }) else { return false }
+        let owner = tab.controller.view.window, document = tab.controller.workspace.document
+        if let job = tab.controller.watermarkJob {
+            guard job.canCancelForClosing else { return false }
+            job.cancel(); await job.waitUntilFinished()
+        }
+        guard documentTabs.contains(where: { $0 === tab }), tab.controller.view.window === owner,
+              tab.controller.workspace.document === document else { return false }
+        return close(tabID: tab.id, dirtyDecision: dirtyDecision)
+    }
+    var hasWatermarkJobs: Bool { documentTabs.contains { $0.controller.watermarkJob != nil } }
+    /// Scope is this shell only. Do not cancel another local tool or dismiss a
+    /// sheet which is not owned by one of these exact watermark operations.
+    func cancelWatermarksForClosing() async -> Bool {
+        let jobs = documentTabs.compactMap { $0.controller.watermarkJob }
+        guard jobs.allSatisfy(\.canCancelForClosing) else { return false }
+        jobs.forEach { $0.cancel() }
+        for job in jobs { await job.waitUntilFinished() }
         return true
     }
     func guardAllDirty(_ decision: ((DocumentTab) -> Bool)? = nil) -> Bool {
@@ -448,7 +514,14 @@ final class ApplicationShellController: NSViewController {
             guard let next = ReaderTabPolicy.adjacent(ids: documentTabs.map(\.id), active: activeTabID, backward: command == .previousTab) else { return false }
             activate(tabID: next); return true
         case .closeOtherTabs:
-            guard let activeTabID, let closing = ReaderTabPolicy.closeOthers(ids: documentTabs.map(\.id), keeping: activeTabID, approve: { id in
+            guard let activeTabID else { return false }
+            // This legacy bulk route is synchronous: never detach a tab while
+            // its owned watermark operation is still awaiting UI or cleanup.
+            guard !documentTabs.contains(where: { $0.id != activeTabID && $0.controller.watermarkJob != nil }) else {
+                activeWorkbench?.setInteractionStatus("其他标签正在处理水印，暂不能关闭其他标签。请先完成或取消删除水印。")
+                return false
+            }
+            guard let closing = ReaderTabPolicy.closeOthers(ids: documentTabs.map(\.id), keeping: activeTabID, approve: { id in
                 guard let tab = self.documentTabs.first(where: { $0.id == id }) else { return false }
                 guard tab.controller.pdfView.finishInlineTextEditing() else { return false }
                 return !tab.controller.workspace.isDirty || tab.controller.guardDirty()
@@ -496,7 +569,16 @@ final class ApplicationShellController: NSViewController {
         for tab in documentTabs {
             let box = NSStackView(); box.orientation = .horizontal; box.spacing = 4
             box.wantsLayer = true; box.layer?.backgroundColor = (activeTabID == tab.id ? NSColor(calibratedWhite: 0.25, alpha: 1) : ShellPalette.top).cgColor
-            let select = TabButton(title: tab.title, target: self, action: #selector(selectTab(_:))); select.tabID = tab.id; select.isBordered = false; select.state = activeTabID == tab.id ? .on : .off; select.font = .systemFont(ofSize: 12); select.contentTintColor = ShellPalette.primary; select.setAccessibilityLabel("文档标签 \(tab.title)"); select.setAccessibilityValue(activeTabID == tab.id ? "已选中" : "未选中")
+            let select = DraggableDocumentTabButton(title: tab.title, target: self, action: #selector(selectTab(_:))); select.tabID = tab.id; select.isBordered = false; select.state = activeTabID == tab.id ? .on : .off; select.font = .systemFont(ofSize: 12); select.contentTintColor = ShellPalette.primary; select.setAccessibilityLabel("文档标签 \(tab.title)"); select.setAccessibilityValue(activeTabID == tab.id ? "已选中" : "未选中")
+            select.onTransfer = { [weak self] id in self?.requestMoveDocumentTabToNewWindow(id) ?? false }
+            select.isScreenPointInsideTabBar = { [weak self] point in
+                guard let self, let window = self.tabBar.window else { return false }
+                let windowPoint = window.convertPoint(fromScreen: point)
+                return self.tabBar.bounds.contains(self.tabBar.convert(windowPoint, from: nil))
+            }
+            let context = NSMenu(title: tab.title)
+            let move = NSMenuItem(title: "移到新窗口", action: #selector(moveTabToNewWindow(_:)), keyEquivalent: "")
+            move.target = self; move.representedObject = tab.id.uuidString; context.addItem(move); select.menu = context
             let close = TabButton(title: "×", target: self, action: #selector(closeTab(_:))); close.tabID = tab.id; close.isBordered = false; close.setAccessibilityLabel("关闭 \(tab.title)")
             configureTabLayout(box, select: select, close: close)
             box.heightAnchor.constraint(equalToConstant: 40).isActive = true
@@ -534,6 +616,10 @@ final class ApplicationShellController: NSViewController {
     @objc private func homeAction() { dashboard.select(.home); showHome() }
     @objc private func selectTab(_ sender: TabButton) { if let id = sender.tabID { activate(tabID: id) } }
     @objc private func closeTab(_ sender: TabButton) { if let id = sender.tabID { _ = close(tabID: id) } }
+    @objc private func moveTabToNewWindow(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw) else { return }
+        _ = requestMoveDocumentTabToNewWindow(id)
+    }
 }
 
 enum HomeBrandIcon {
@@ -557,5 +643,60 @@ private final class ChromeTabButton: NSButton {
     }
 }
 
-private final class TabButton: NSButton { var tabID: UUID? }
+private class TabButton: NSButton { var tabID: UUID? }
+private final class DraggableDocumentTabButton: TabButton {
+    var onTransfer: ((UUID) -> Bool)?
+    var isScreenPointInsideTabBar: ((NSPoint) -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled, let window, let tabID else { return }
+        let start = window.convertPoint(toScreen: event.locationInWindow)
+        let tracker = TabDragTracker(tabID: tabID, start: start,
+                                     isInsideTabBar: { [weak self] point in self?.isScreenPointInsideTabBar?(point) ?? true },
+                                     onTransfer: { [weak self] id in self?.onTransfer?(id) ?? false })
+        var preview: TabDragPreview?
+        isHighlighted = true
+        defer { isHighlighted = false; preview?.hide() }
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown],
+                                               until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+            let screenPoint = window.convertPoint(toScreen: next.locationInWindow)
+            if next.type == .keyDown, next.keyCode == 53 {
+                tracker.cancel()
+                return
+            }
+            if next.type == .leftMouseDragged {
+                if tracker.update(to: screenPoint), preview == nil {
+                    preview = TabDragPreview(image: imageForDragging(), size: bounds.size)
+                }
+                preview?.move(near: screenPoint)
+                continue
+            }
+            guard next.type == .leftMouseUp else { continue }
+            if tracker.isDragging { _ = tracker.finish(at: screenPoint) }
+            else if bounds.contains(convert(next.locationInWindow, from: nil)) { performClick(nil) }
+            return
+        }
+    }
+    private func imageForDragging() -> NSImage {
+        let image = NSImage(size: bounds.size)
+        image.lockFocus(); draw(bounds); image.unlockFocus()
+        return image
+    }
+}
+private final class TabDragPreview {
+    private let window: NSWindow
+    init(image: NSImage, size: NSSize) {
+        window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: .borderless,
+                          backing: .buffered, defer: false)
+        window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
+        window.ignoresMouseEvents = true; window.level = .floating
+        let imageView = NSImageView(frame: NSRect(origin: .zero, size: size))
+        imageView.image = image; imageView.alphaValue = 0.84; window.contentView = imageView
+    }
+    func move(near screenPoint: NSPoint) {
+        window.setFrameOrigin(NSPoint(x: screenPoint.x + 10, y: screenPoint.y - window.frame.height - 10))
+        window.orderFront(nil)
+    }
+    func hide() { window.orderOut(nil) }
+}
 private extension Array { subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil } }

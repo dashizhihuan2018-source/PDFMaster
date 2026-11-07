@@ -28,7 +28,8 @@ enum ReferenceToolStrip {
                 .init(id: "content-text", title: "文本", symbol: "text.cursor", showsTitle: true),
                 .init(id: "content-image", title: "图像", symbol: "photo", showsTitle: true),
                 .init(id: "content-link", title: "链接", symbol: "link", showsTitle: true),
-                .init(id: "content-redact", title: "隐藏", symbol: "doc.text", showsTitle: true)
+                .init(id: "content-redact", title: "隐藏", symbol: "doc.text", showsTitle: true),
+                .init(id: "remove-watermark", title: "删除水印", symbol: "drop.degreesign.slash", showsTitle: true)
             ]
         case .pages:
             return [

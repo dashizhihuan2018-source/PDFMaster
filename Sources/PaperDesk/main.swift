@@ -96,6 +96,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc private func openCopilot() { onShowCopilot?() }
     var localToolCancellation: LocalToolCancellation?
+    var watermarkDependencies = PDFWatermarkDependencies()
+    var watermarkJob: PDFWatermarkJob?
     var compressionPanelController: PDFCompressionPanelController?
     var isLocalToolRunning: Bool { localToolCancellation != nil }
     var isContentEditPending = false
@@ -758,6 +760,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             return
         }
         switch button.toolID {
+        case "remove-watermark": removeWatermark(button)
         case "highlight": highlight()
         case "underline": underline()
         case "strikeout": strikeout()
@@ -1569,7 +1572,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         case #selector(undo): return workspace.canUndo
         case #selector(redo): return workspace.canRedo
         case #selector(printDocument): return hasDocument && workspace.allowsPrinting
-        case #selector(reduceFileSize(_:)):
+        case #selector(reduceFileSize(_:)), #selector(removeWatermark(_:)):
             return hasDocument && workspace.allowsCopying && workspace.allowsDocumentAssembly && !workspace.isEncryptedSource && !isLocalToolRunning
         case #selector(saveDocument), #selector(saveAsDocument), #selector(saveCopy), #selector(saveFlattenedCopy), #selector(savePasswordProtectedCopy), #selector(extractPages), #selector(exportPlainText), #selector(exportAnnotationSummaryText), #selector(exportAnnotationSummaryMarkdown), #selector(exportAnnotationSummaryHTML):
             return hasDocument && workspace.allowsCopying
@@ -1630,13 +1633,29 @@ private final class ModeButton: NSButton { var mode: WorkbenchMode? }
 private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Selector? }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
-    var window: NSWindow!
-    let controller: ApplicationShellController
+    private var bootstrapController: ApplicationShellController?
+    private(set) var windowSessions: [PDFWindowSession] = []
+    private var focusedSession: PDFWindowSession? {
+        if let key = NSApp.keyWindow, let session = windowSessions.first(where: { $0.window === key }) { return session }
+        if let main = NSApp.mainWindow, let session = windowSessions.first(where: { $0.window === main }) { return session }
+        return windowSessions.first
+    }
+    var controller: ApplicationShellController {
+        if let controller = focusedSession?.controller ?? bootstrapController { return controller }
+        preconditionFailure("AppDelegate requires a bootstrap or live window controller")
+    }
+    var window: NSWindow! { focusedSession?.window }
     private var pendingOpen: [URL] = []
     private var externalOpenReady = false
     var onExternalOpenFailure: ((Error) -> Void)?
     private var terminationPending = false
+    private var pendingWatermarkWindowCloses = Set<UUID>()
     private weak var inkMenuItem: NSMenuItem?
+    /// Extension point for feature-specific file commands without rebuilding the application menu.
+    var installAdditionalFileMenuItems: ((NSMenu) -> Void)?
+    func addFileMenuItem(_ item: NSMenuItem) {
+        NSApp.mainMenu?.items.first(where: { $0.submenu?.title == "文件" })?.submenu?.addItem(item)
+    }
     override init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("PDF Master", isDirectory: true)
         let profile = Bundle.main.bundleIdentifier?.contains(".validation") == true ? support.appendingPathComponent("Validation", isDirectory: true).appendingPathComponent(Bundle.main.bundleIdentifier!, isDirectory: true) : support
@@ -1645,27 +1664,62 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             validationAccount = AccountStore(metadataURL: profile.appendingPathComponent("accounts-v1.json"),
                 secretStorage: ProfileAccountSecretStorage(base: KeychainAccountSecretStorage(), namespace: id))
         } else { validationAccount = nil }
-        controller = ApplicationShellController(recentStore: RecentDocumentStore(url: profile.appendingPathComponent("recent-documents.json")), accountStore: validationAccount)
+        bootstrapController = ApplicationShellController(recentStore: RecentDocumentStore(url: profile.appendingPathComponent("recent-documents.json")), accountStore: validationAccount)
         super.init()
     }
     init(controller: ApplicationShellController) {
-        self.controller = controller
+        self.bootstrapController = controller
         super.init()
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        if windowSessions.isEmpty, let bootstrapController {
+            _ = createWindowSession(controller: bootstrapController, makeKey: true)
+            self.bootstrapController = nil
+        }
+        installMenus(); finishExternalOpenStartup()
+    }
+    func controller(for window: NSWindow?) -> ApplicationShellController {
+        if let window, let session = windowSessions.first(where: { $0.window === window }) { return session.controller }
+        if let controller = windowSessions.first?.controller ?? bootstrapController { return controller }
+        preconditionFailure("AppDelegate requires a bootstrap or live window controller")
+    }
+    @discardableResult func newWindow(makeKey: Bool = true) -> PDFWindowSession {
+        let base = controller
+        let shell = ApplicationShellController(recentStore: base.recentStore, preferredTools: base.preferredTools,
+                                               accountStore: base.accountStore)
+        return createWindowSession(controller: shell, makeKey: makeKey)
+    }
+    @discardableResult private func createWindowSession(controller: ApplicationShellController,
+                                                        makeKey: Bool) -> PDFWindowSession {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         // AppDelegate owns and reuses this window for warm file opens and Dock
         // reopens. AppKit's default release-on-close over-releases it under ARC.
         window.isReleasedWhenClosed = false
         window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true; window.isMovableByWindowBackground = true
-        window.title = "PDF Master"; window.contentViewController = controller; window.contentMinSize = NSSize(width: 1180, height: 700); window.setContentSize(NSSize(width: 1280, height: 820)); window.minSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size; window.delegate = self; window.center(); window.makeKeyAndOrderFront(nil)
+        window.title = "PDF Master"; window.contentViewController = controller; window.contentMinSize = NSSize(width: 1180, height: 700); window.setContentSize(NSSize(width: 1280, height: 820)); window.minSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size; window.delegate = self; window.center()
         window.appearance = NSAppearance(named: .darkAqua)
         controller.installWindowChrome(in: window)
-        controller.onActiveWorkbenchChange = { [weak self] workbench in
-            if let item = self?.inkMenuItem { workbench?.registerInkMenuItem(item); if workbench == nil { item.state = .off } }
-            self?.updateReaderMenus()
+        let session = PDFWindowSession(controller: controller, window: window)
+        windowSessions.append(session)
+        controller.onMoveDocumentTabToNewWindow = { [weak self, weak controller] id in
+            guard let self, let controller else { return false }
+            return self.moveTabToNewWindow(id, from: controller)
         }
-        installMenus(); finishExternalOpenStartup()
+        controller.onActiveWorkbenchChange = { [weak self, weak controller] workbench in
+            guard let self, let controller, self.controller === controller else { return }
+            if let item = self.inkMenuItem { workbench?.registerInkMenuItem(item); if workbench == nil { item.state = .off } }
+            self.updateReaderMenus()
+        }
+        if makeKey { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
+        return session
+    }
+    @discardableResult func moveTabToNewWindow(_ id: UUID, from source: ApplicationShellController) -> Bool {
+        guard windowSessions.contains(where: { $0.controller === source }),
+              let tab = source.extractDocumentTab(id: id) else { return false }
+        let destination = newWindow(makeKey: true)
+        destination.controller.adoptDocumentTab(tab)
+        destination.window.makeKeyAndOrderFront(nil)
+        return true
     }
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
         let url = filename.lowercased().hasPrefix("file:") ? URL(string: filename) : URL(fileURLWithPath: filename)
@@ -1712,13 +1766,98 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         else { alert.runModal() }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        window?.makeKeyAndOrderFront(nil)
+        if let existing = windowSessions.first?.window { existing.makeKeyAndOrderFront(nil) }
+        else if let bootstrapController {
+            _ = createWindowSession(controller: bootstrapController, makeKey: true)
+            self.bootstrapController = nil
+        }
         return true
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { controller.guardAllDirty() }
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        let routed = controller(for: window)
+        if let item = inkMenuItem {
+            routed.activeWorkbench?.registerInkMenuItem(item)
+            if routed.activeWorkbench == nil { item.state = .off }
+        }
+        updateReaderMenus()
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              let index = windowSessions.firstIndex(where: { $0.window === window }),
+              windowSessions.count > 1 else { return }
+        let session = windowSessions.remove(at: index)
+        session.controller.onMoveDocumentTabToNewWindow = nil
+        session.controller.onActiveWorkbenchChange = nil
+        [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }.forEach { $0.removeFromSuperview() }
+        window.contentViewController = nil
+        window.contentView = nil
+    }
+    func canCloseWindow(_ window: NSWindow, canvasDecision: ((CanvasTab) -> Bool)? = nil,
+                        documentDecision: ((DocumentTab) -> Bool)? = nil) -> Bool {
+        guard let session = windowSessions.first(where: { $0.window === window }) else { return true }
+        return session.controller.guardAllDirty(canvasDecision: canvasDecision, documentDecision)
+    }
+    func canTerminate(canvasDecision: ((CanvasTab) -> Bool)? = nil,
+                      documentDecision: ((DocumentTab) -> Bool)? = nil) -> Bool {
+        windowSessions.allSatisfy {
+            $0.controller.guardAllDirty(canvasDecision: canvasDecision, documentDecision)
+        }
+    }
+    func prepareToCloseWindow(_ window: NSWindow, canvasDecision: ((CanvasTab) -> Bool)? = nil,
+                              documentDecision: ((DocumentTab) -> Bool)? = nil) async -> Bool {
+        guard let session = windowSessions.first(where: { $0.window === window }) else { return false }
+        let tabs = session.controller.documentTabs, canvases = session.controller.canvasTabs.map(\.id)
+        let documents = tabs.map { $0.controller.workspace.document }
+        guard await session.controller.cancelWatermarksForClosing() else { return false }
+        guard windowSessions.contains(where: { $0 === session }), session.window === window,
+              session.controller.documentTabs.map(\.id) == tabs.map(\.id), session.controller.canvasTabs.map(\.id) == canvases,
+              zip(tabs, documents).allSatisfy({ $0.controller.workspace.document === $1 }) else { return false }
+        return canCloseWindow(window, canvasDecision: canvasDecision, documentDecision: documentDecision)
+    }
+    func prepareToTerminate(canvasDecision: ((CanvasTab) -> Bool)? = nil,
+                            documentDecision: ((DocumentTab) -> Bool)? = nil) async -> Bool {
+        let sessions = windowSessions
+        let tabs = sessions.flatMap { $0.controller.documentTabs }
+        let documents = tabs.map { $0.controller.workspace.document }
+        let identities = sessions.map { ($0.controller.documentTabs.map(\.id), $0.controller.canvasTabs.map(\.id)) }
+        // Cancel every window's owned operation before awaiting any one of them.
+        let jobs = tabs.compactMap { $0.controller.watermarkJob }
+        guard jobs.allSatisfy(\.canCancelForClosing) else { return false }
+        jobs.forEach { $0.cancel() }
+        for job in jobs { await job.waitUntilFinished() }
+        guard windowSessions.map(\.id) == sessions.map(\.id),
+              zip(sessions, identities).allSatisfy({ $0.controller.documentTabs.map(\.id) == $1.0 && $0.controller.canvasTabs.map(\.id) == $1.1 }),
+              zip(tabs, documents).allSatisfy({ $0.controller.workspace.document === $1 }) else { return false }
+        return canTerminate(canvasDecision: canvasDecision, documentDecision: documentDecision)
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let session = windowSessions.first(where: { $0.window === sender }), session.controller.hasWatermarkJobs else { return canCloseWindow(sender) }
+        guard pendingWatermarkWindowCloses.insert(session.id).inserted else { return false }
+        Task { [weak self, weak sender] in
+            guard let self else { return }
+            defer { self.pendingWatermarkWindowCloses.remove(session.id) }
+            guard let sender, await self.prepareToCloseWindow(sender),
+                  self.windowSessions.contains(where: { $0 === session }) else { return }
+            // Approval and close are contiguous on the main actor; do not ask
+            // dirty decisions a second time through performClose/delegate.
+            sender.close()
+        }
+        return false
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminationPending { return .terminateLater }
-        guard controller.guardAllDirty() else { return .terminateCancel }
+        if windowSessions.contains(where: { $0.controller.hasWatermarkJobs }) {
+            terminationPending = true
+            Task {
+                let allowed = await self.prepareToTerminate()
+                self.terminationPending = false
+                sender.reply(toApplicationShouldTerminate: allowed)
+            }
+            return .terminateLater
+        }
+        guard canTerminate() else { return .terminateCancel }
         guard LocalToolActivity.hasRunningJobs else { return .terminateNow }
         terminationPending = true
         Task {
@@ -1740,6 +1879,8 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
 
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "文件")
+        let newWindow = NSMenuItem(title: "新建窗口", action: #selector(newWindowAction), keyEquivalent: "n")
+        newWindow.keyEquivalentModifierMask = [.command, .option]; newWindow.target = self; fileMenu.addItem(newWindow)
         addItems([
             ("打开…", #selector(WorkbenchController.openDocument), "o"),
             ("新建", #selector(WorkbenchController.newDocument), "n"),
@@ -1748,6 +1889,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             ("存储打平副本…", #selector(WorkbenchController.saveFlattenedCopy), ""),
             ("存储密码保护副本…", #selector(WorkbenchController.savePasswordProtectedCopy), ""),
             ("压缩文件大小…", #selector(WorkbenchController.reduceFileSize(_:)), ""),
+            ("删除水印", #selector(WorkbenchController.removeWatermark(_:)), ""),
             ("导出纯文本…", #selector(WorkbenchController.exportPlainText), ""),
             ("导出批注摘要 TXT…", #selector(WorkbenchController.exportAnnotationSummaryText), ""),
             ("导出批注摘要 Markdown…", #selector(WorkbenchController.exportAnnotationSummaryMarkdown), ""),
@@ -1761,6 +1903,8 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         fileMenu.addItem(newTab)
         let closeTab = NSMenuItem(title: "关闭当前标签", action: #selector(closeTabAction), keyEquivalent: "w"); closeTab.target = self
         fileMenu.addItem(closeTab)
+        let moveTab = NSMenuItem(title: "将当前标签移到新窗口", action: #selector(moveCurrentTabToNewWindowAction), keyEquivalent: "")
+        moveTab.target = self; fileMenu.addItem(moveTab)
         fileMenu.addItem(.separator())
         let newCanvas = NSMenuItem(title: "新建无边记", action: #selector(newCanvasAction), keyEquivalent: "N"); newCanvas.target = self
         fileMenu.addItem(newCanvas)
@@ -1770,6 +1914,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         fileMenu.addItem(saveCanvas)
         let toCanvas = NSMenuItem(title: "将当前 PDF 复制到无边记", action: #selector(pdfToCanvasAction), keyEquivalent: ""); toCanvas.target = self
         fileMenu.addItem(toCanvas)
+        installAdditionalFileMenuItems?(fileMenu)
 
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "编辑")
@@ -1848,12 +1993,22 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             if item.menu == nil { main.addItem(item) }
         }
     }
+    @objc private func newWindowAction() { _ = newWindow(makeKey: true) }
     @objc private func newTabAction() { controller.showHome() }
     @objc private func closeTabAction() {
         guard NSApp.modalWindow == nil else { return }
+        if let key = NSApp.keyWindow, let session = windowSessions.first(where: { $0.window === key }) {
+            if let id = session.controller.activeTabID { _ = session.controller.close(tabID: id) }
+            else { key.performClose(nil) }
+            return
+        }
         WindowCloseRouting.perform(keyWindow: NSApp.keyWindow, mainWindow: window) {
             if let id = controller.activeTabID { _ = controller.close(tabID: id) }
         }
+    }
+    @objc private func moveCurrentTabToNewWindowAction() {
+        guard let id = controller.activeTabID else { return }
+        _ = moveTabToNewWindow(id, from: controller)
     }
     @objc private func newCanvasAction() { controller.createCanvas() }
     @objc private func saveCanvasAction() {
@@ -1906,14 +2061,18 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         else { _ = controller.routeDocumentCommand(action, sender: item) }
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(newWindowAction) { return NSApp.modalWindow == nil }
+        if item.action == #selector(moveCurrentTabToNewWindowAction) {
+            return NSApp.modalWindow == nil && controller.activeWorkbench != nil
+        }
         if item.action == #selector(closeTabAction) {
             guard NSApp.modalWindow == nil else { return false }
-            if let key = NSApp.keyWindow, key !== window {
+            if let key = NSApp.keyWindow, !windowSessions.contains(where: { $0.window === key }) {
                 item.title = "关闭窗口"
                 return key.styleMask.contains(.closable)
             }
-            item.title = "关闭当前标签"
-            return controller.activeTabID != nil
+            item.title = controller.activeTabID == nil ? "关闭窗口" : "关闭当前标签"
+            return controller.activeTabID != nil || window?.styleMask.contains(.closable) == true
         }
         if item.action == #selector(saveCanvasAction) { return controller.activeCanvas != nil || controller.activeWorkbench?.workspace.allowsCopying == true }
         if item.action == #selector(pdfToCanvasAction) { return controller.activeWorkbench?.workspace.allowsCopying == true }

@@ -35,7 +35,7 @@ import AppKit
         c.view.layoutSubtreeIfNeeded()
         XCTAssertEqual(c.secondaryToolFrame.midX, c.view.bounds.midX, accuracy: 2)
         c.enterMode(.editing)
-        XCTAssertEqual(c.secondaryToolIDs, ["content-text", "content-image", "content-link", "content-redact"])
+        XCTAssertEqual(c.secondaryToolIDs, ["content-text", "content-image", "content-link", "content-redact", "remove-watermark"])
         XCTAssertFalse(c.pdfView.inkEnabled)
     }
 

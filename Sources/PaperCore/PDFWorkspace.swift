@@ -99,6 +99,10 @@ public final class PDFWorkspace: ObservableObject {
     public var allowsDocumentAssembly: Bool { permissions.assembly }
     public var isEncryptedSource: Bool { sourceWasEncrypted }
 
+    /// Immutable import provenance for local engine admission before PDFKit
+    /// serialization can omit security metadata. Does not serialize or mutate.
+    public var engineAdmissionDatas: [Data] { admittedContentInputs }
+
     public func engineInput() throws -> PDFEngineInput {
         let current = try requireDocument()
         guard !sourceWasEncrypted else { throw PDFWorkspaceError.permissionDenied }
