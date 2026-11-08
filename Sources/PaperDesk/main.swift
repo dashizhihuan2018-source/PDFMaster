@@ -106,8 +106,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     lazy var readerSession = ReaderSession(pdfView: pdfView)
     lazy var readerSidebar = ReaderSidebarController(session: readerSession)
     lazy var readerCommands = ReaderCommandController(session: readerSession, sidebar: readerSidebar)
+    lazy var layoutOptionsController = ReaderLayoutOptionsController(commands: readerCommands)
     let pageOverview = PageOverviewController()
     private(set) var isOverviewVisible = false
+    private(set) var isLayoutSidebarVisible = false
     private var readerPresentationNeedsRefresh = false
     private let emptyView = NSStackView()
     private let pageField = NSTextField(string: "1")
@@ -139,7 +141,6 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     var secondaryToolIDs: [String] { secondaryTools.arrangedSubviews.compactMap { ($0 as? ToolStripButton)?.toolID } }
     var secondaryToolFrame: NSRect { secondaryTools.convert(secondaryTools.bounds, to: view) }
     private var primaryModeButtons: [ModeButton] = []
-    private let layoutPopover = NSPopover()
     private var eraserEnabled = false
     var clipboard = DocumentClipboard.shared
     private var paletteHeightConstraint: NSLayoutConstraint?
@@ -167,6 +168,11 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     let thumbnailSidebarWidth: CGFloat = 176
     var pageBadgeText: String { pageBadge.stringValue }
     var thumbnailSidebarFrame: NSRect { sidebarScrollView?.frame ?? .zero }
+    var layoutSidebarFrame: NSRect {
+        guard isLayoutSidebarVisible, layoutOptionsController.isViewLoaded,
+              let content = readerContentView else { return .zero }
+        return layoutOptionsController.view.convert(layoutOptionsController.view.bounds, to: content)
+    }
     var toolbarAccessibilityLabels: [String] { toolbarControls.compactMap { $0.accessibilityLabel() } }
 
     override func loadView() {
@@ -180,6 +186,9 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         addChild(readerSidebar)
         let readerSideView = readerSidebar.view
         readerSideView.translatesAutoresizingMaskIntoConstraints = false; side.addSubview(readerSideView)
+        addChild(layoutOptionsController)
+        let layoutView = layoutOptionsController.view
+        layoutView.translatesAutoresizingMaskIntoConstraints = false; side.addSubview(layoutView); layoutView.isHidden = true
         side.layer?.masksToBounds = true
         let sideTrailing = readerSideView.trailingAnchor.constraint(equalTo: side.trailingAnchor)
         sideTrailing.priority = .defaultHigh
@@ -190,9 +199,16 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             readerSideView.topAnchor.constraint(equalTo: side.topAnchor),
             readerSideView.bottomAnchor.constraint(equalTo: side.bottomAnchor)
         ])
+        NSLayoutConstraint.activate([
+            layoutView.leadingAnchor.constraint(equalTo: side.leadingAnchor),
+            layoutView.trailingAnchor.constraint(equalTo: side.trailingAnchor),
+            layoutView.topAnchor.constraint(equalTo: side.topAnchor),
+            layoutView.bottomAnchor.constraint(equalTo: side.bottomAnchor)
+        ])
         readerSession.onChange = { [weak self] in
             guard let self else { return }
             self.readerSidebar.refresh()
+            self.layoutOptionsController.refresh()
             self.searchStatus.stringValue = self.readerSession.searchStatus
         }
         readerSidebar.onAnnotationSelection = { [weak self] page, index in
@@ -217,9 +233,14 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
         readerCommands.setSidebarVisible = { [weak self] visible in
             guard let self else { return }
+            if visible {
+                self.readerSidebar.view.isHidden = self.isLayoutSidebarVisible
+                self.layoutOptionsController.view.isHidden = !self.isLayoutSidebarVisible
+            }
             self.sidebarDragWidth = nil
             self.updateSidebarWidth()
         }
+        readerCommands.onSidebarModeReveal = { [weak self] _ in self?.showReaderSidebarContent() }
         readerCommands.onError = { [weak self] error in self?.setInteractionStatus("阅读操作失败：\(error)") }
         readerCommands.interceptCommand = { [weak self] command in
             guard let self, self.isOverviewVisible else { return nil }
@@ -716,15 +737,26 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc private func toggleSidebar() { _ = readerCommands.run(.toggleSidebar) }
     func toggleSidebarForTesting() { toggleSidebar() }
-    @objc private func showLayoutOptions(_ sender: NSButton) {
-        if layoutPopover.isShown { layoutPopover.performClose(sender); return }
-        if isOverviewVisible { setOverviewVisible(false) }
-        layoutPopover.behavior = .transient
-        layoutPopover.contentViewController = ReaderLayoutOptionsController(commands: readerCommands)
-        layoutPopover.contentSize = NSSize(width: 280, height: 230)
-        layoutPopover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    private func showReaderSidebarContent() {
+        isLayoutSidebarVisible = false
+        layoutOptionsController.view.isHidden = true
+        readerSidebar.view.isHidden = false
     }
-    @objc private func toggleContinuous() { readerCommands.setContinuous(!readerCommands.continuous) }
+    @objc private func showLayoutOptions(_ sender: NSButton) {
+        let wasOverviewVisible = isOverviewVisible
+        if wasOverviewVisible { setOverviewVisible(false) }
+        if isLayoutSidebarVisible && readerCommands.sidebarVisible && !wasOverviewVisible {
+            showReaderSidebarContent()
+            return
+        }
+        if !readerCommands.sidebarVisible { _ = readerCommands.run(.toggleSidebar) }
+        isLayoutSidebarVisible = true
+        readerSidebar.view.isHidden = true
+        layoutOptionsController.view.isHidden = false
+        layoutOptionsController.refresh()
+        updateSidebarWidth()
+    }
+    @objc func toggleContinuous() { readerCommands.setContinuous(!readerCommands.continuous) }
     @objc private func selectMode(_ sender: ModeButton) { if let mode = sender.mode { enterMode(mode) } }
     func enterMode(_ mode: WorkbenchMode) {
         guard pdfView.finishInlineTextEditing() else { return }
@@ -1584,6 +1616,9 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             return hasDocument && workspace.allowsDocumentAssembly
         case #selector(showOutline):
             return hasDocument
+        case #selector(toggleContinuous):
+            menuItem.state = readerCommands.continuous ? .on : .off
+            return readerCommands.canChangeLayout && !isOverviewVisible
         default: return true
         }
     }
@@ -1989,7 +2024,14 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             let id = NSUserInterfaceItemIdentifier(identifier)
             let item = main.items.first { $0.identifier == id } ?? NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.identifier = id
-            item.submenu = controller.activeWorkbench?.readerCommands.makeMenu(commands: commands, title: title) ?? NSMenu(title: title)
+            let menu = controller.activeWorkbench?.readerCommands.makeMenu(commands: commands, title: title) ?? NSMenu(title: title)
+            if identifier == "reader-view", let workbench = controller.activeWorkbench {
+                let continuous = NSMenuItem(title: "连续滚动", action: #selector(WorkbenchController.toggleContinuous), keyEquivalent: "")
+                continuous.target = workbench
+                continuous.setAccessibilityLabel("连续滚动")
+                menu.insertItem(continuous, at: min(3, menu.items.count))
+            }
+            item.submenu = menu
             if item.menu == nil { main.addItem(item) }
         }
     }

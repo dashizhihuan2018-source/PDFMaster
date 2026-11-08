@@ -8,11 +8,16 @@ import PDFKit
     public var interceptCommand: ((ReaderCommand) -> Bool?)?
     public var canExternalCommand: ((ReaderCommand) -> Bool)?
     public var setSidebarVisible: ((Bool) -> Void)?
+    public var onSidebarModeReveal: ((ReaderSidebarMode) -> Void)?
     public var onError: ((Error) -> Void)?
     private let zoomMenus = NSHashTable<NSMenu>.weakObjects()
     public private(set) var sidebarVisible = true
     public var continuous: Bool { [.singlePageContinuous, .twoUpContinuous].contains(session.pdfView.displayMode) }
     public var layout: ReaderLayout { session.currentLayout }
+    var canChangeLayout: Bool {
+        guard let document = session.pdfView.document else { return false }
+        return !document.isLocked && document.pageCount > 0
+    }
     public init(session: ReaderSession, sidebar: ReaderSidebarController) { self.session = session; self.sidebar = sidebar }
     public func makeMenu(commands: [ReaderCommand], title: String) -> NSMenu {
         let menu = NSMenu(title: title)
@@ -88,6 +93,7 @@ import PDFKit
     }
     private func reveal(_ mode: ReaderSidebarMode) {
         sidebarVisible = true; sidebar.view.isHidden = false
+        onSidebarModeReveal?(mode)
         sidebar.show(mode); setSidebarVisible?(true)
     }
     public func setContinuous(_ value: Bool) { session.setLayout(layout, continuous: value) }
