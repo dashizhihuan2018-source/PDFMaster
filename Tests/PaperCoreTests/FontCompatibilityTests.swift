@@ -5,7 +5,6 @@ import XCTest
 
 @MainActor
 final class FontCompatibilityTests: XCTestCase {
-    private lazy var publicFixture = try! PublicContentFixture()
     func testNativeRepairPreservesCFFOutlinesAndCorrectsItsPDFType() throws {
         let source = NativeFontFixture.pdf()
         XCTAssertTrue(PDFFontCompatibility.needsRepair(source))
@@ -44,6 +43,98 @@ final class FontCompatibilityTests: XCTestCase {
         let result = PDFFontCompatibility.normalize(source)
         XCTAssertEqual(source, result.data)
         XCTAssertNil(result.notice)
+    }
+
+    func testNativeRepairSupportsIdentityMapAndIndirectCIDSystemInfo() throws {
+        for indirect in [false, true] {
+            let source = NativeFontFixture.pdf(identityMap: true, indirectSystem: indirect)
+            let result = PDFFontCompatibility.normalize(source)
+            XCTAssertNotEqual(result.data, source, "Identity is a valid CID-to-GID map, not a stream reference")
+            XCTAssertFalse(PDFFontCompatibility.needsRepair(result.data))
+            let actual = try XCTUnwrap(PDFDocument(data: result.data))
+            let reference = try XCTUnwrap(PDFDocument(data: NativeFontFixture.pdf(correct: true)))
+            XCTAssertEqual(actual.page(at: 0)?.string, "AB")
+            XCTAssertLessThan(try difference(pixels(actual, page: 0), pixels(reference, page: 0)), 0.001)
+            let reopened = try XCTUnwrap(PDFDocument(data: try XCTUnwrap(actual.dataRepresentation())))
+            XCTAssertLessThan(try difference(pixels(reopened, page: 0), pixels(reference, page: 0)), 0.001)
+        }
+    }
+
+    func testNativeRepairSupportsStreamMapWithIndirectCIDSystemInfo() throws {
+        let result = PDFFontCompatibility.normalize(NativeFontFixture.pdf(indirectSystem: true))
+        XCTAssertFalse(PDFFontCompatibility.needsRepair(result.data))
+        let actual = try XCTUnwrap(PDFDocument(data: result.data))
+        let reference = try XCTUnwrap(PDFDocument(data: NativeFontFixture.pdf(correct: true)))
+        XCTAssertLessThan(try difference(pixels(actual, page: 0), pixels(reference, page: 0)), 0.001)
+    }
+
+    func testNativeCFFMovesLateROSFirstWithoutMovingOrConvertingOutlines() throws {
+        let ros = Data(hex: "f81bf81c8b0c1e"), box = Data(hex: "8b8bf950f95005")
+        var late = NativeFontFixture.program
+        let range = try XCTUnwrap(late.range(of: ros + box))
+        late.replaceSubrange(range, with: box + ros)
+        let normalized = try NativeFontCFF.charset(late).denseProgram
+        XCTAssertEqual(normalized, NativeFontFixture.denseProgram,
+                       "Only ROS entry order and known CID labels may change; all absolute offsets and outline bytes must survive")
+        let result = PDFFontCompatibility.normalize(NativeFontFixture.pdf(fontProgram: late))
+        let actual = try XCTUnwrap(PDFDocument(data: result.data))
+        let reference = try XCTUnwrap(PDFDocument(data: NativeFontFixture.pdf(correct: true)))
+        XCTAssertLessThan(try difference(pixels(actual, page: 0), pixels(reference, page: 0)), 0.001)
+    }
+
+    func testIdentityMapRejectsAmbiguousSparseCharset() {
+        let source = NativeFontFixture.pdf(fontProgram: NativeFontFixture.program, identityMap: true)
+        XCTAssertEqual(PDFFontCompatibility.normalize(source).data, source)
+    }
+
+    func testPrivateIdentityCFFOpeningAndSaveRegression() throws {
+        guard let path = ProcessInfo.processInfo.environment["PDFMASTER_IDENTITY_CFF_FIXTURE"] else {
+            throw XCTSkip("Private local acceptance fixture is opt-in and never distributed")
+        }
+        let url = URL(fileURLWithPath: path), source = try Data(contentsOf: url)
+        XCTAssertTrue(PDFFontCompatibility.needsRepair(source))
+        let workspace = PDFWorkspace()
+        try workspace.open(url)
+        let actual = try XCTUnwrap(workspace.document)
+        XCTAssertFalse(PDFFontCompatibility.needsRepair(try XCTUnwrap(actual.dataRepresentation())))
+        XCTAssertFalse(workspace.isDirty)
+        let before = try XCTUnwrap(PDFDocument(data: source))
+        XCTAssertEqual(actual.pageCount, before.pageCount)
+        for page in 0..<actual.pageCount {
+            // Correct glyph metrics can change PDFKit's inferred line/bullet
+            // order. Require every non-whitespace character to survive instead
+            // of treating the broken font's inferred whitespace as canonical.
+            func characters(_ document: PDFDocument) -> [UInt32] {
+                (document.page(at: page)?.string ?? "").unicodeScalars
+                    .filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.map(\.value).sorted()
+            }
+            XCTAssertTrue(characters(actual) == characters(before), "Character inventory changed on page \(page + 1)")
+            XCTAssertEqual(actual.page(at: page)?.bounds(for: .mediaBox), before.page(at: page)?.bounds(for: .mediaBox))
+        }
+        XCTAssertGreaterThan(try difference(pixels(actual, page: 1), pixels(before, page: 1)), 0.001)
+        if let path = ProcessInfo.processInfo.environment["PDFMASTER_IDENTITY_CFF_REFERENCE"] {
+            let reference = try XCTUnwrap(PDFDocument(url: URL(fileURLWithPath: path)))
+            XCTAssertEqual(actual.pageCount, reference.pageCount)
+            for page in 0..<actual.pageCount {
+                XCTAssertLessThan(try difference(pixels(actual, page: page), pixels(reference, page: page)), 0.001,
+                                  "Native rendering must match the verified reference on page \(page + 1)")
+            }
+        }
+        let saved = FileManager.default.temporaryDirectory.appendingPathComponent("IdentityCFF-" + UUID().uuidString + ".pdf")
+        defer { try? FileManager.default.removeItem(at: saved) }
+        try workspace.saveCopy(to: saved)
+        let reopened = try XCTUnwrap(PDFDocument(url: saved))
+        XCTAssertLessThan(try difference(pixels(actual, page: 1), pixels(reopened, page: 1)), 0.001)
+        XCTAssertEqual(try Data(contentsOf: url), source)
+        if let path = ProcessInfo.processInfo.environment["PDFMASTER_FONT_EVIDENCE_DIR"] {
+            let directory = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (name, document) in [("before", before), ("after", actual)] {
+                let image = try XCTUnwrap(document.page(at: 1)).thumbnail(of: NSSize(width: 2200, height: 1600), for: .mediaBox)
+                let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + ".png"))
+            }
+        }
     }
 
     func testNativeRepairRejectsWrongCIDMapWithoutChangingInput() {
@@ -220,30 +311,33 @@ private enum NativeFontFixture {
     """)
 
     static func pdf(correct: Bool = false, mapping: Data = Data([0, 0, 0, 10, 0, 200]), signed: Bool = false,
-                    vertical: Bool = false, fontProgram: Data = program, trueType: Bool = false) -> Data {
+                    vertical: Bool = false, fontProgram: Data? = nil, trueType: Bool = false,
+                    identityMap: Bool = false, indirectSystem: Bool = false) -> Data {
         func ascii(_ text: String) -> Data { Data(text.utf8) }
         func stream(_ data: Data, extra: String = "") -> Data {
             ascii("<< /Length \(data.count) \(extra) >>\nstream\n") + data + ascii("\nendstream")
         }
         let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def /CMapName /PDFMasterSyntheticEncoding def /CMapType 1 def /WMode 0 def 1 begincodespacerange <0000> <ffff> endcodespacerange 3 begincidchar <0000> 0 <0001> 10 <0002> 200 endcidchar endcmap CMapName currentdict /CMap defineresource pop end end"
-        let unicode = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /TestUCS def /CMapType 2 def 1 begincodespacerange <0000> <ffff> endcodespacerange 2 beginbfchar <0001> <0041> <0002> <0042> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end"
+        let codes = ["0001", "0002"]
+        let unicode = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /TestUCS def /CMapType 2 def 1 begincodespacerange <0000> <ffff> endcodespacerange 2 beginbfchar <\(codes[0])> <0041> <\(codes[1])> <0042> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end"
         let fontFile = correct && !trueType ? "/FontFile3 5 0 R" : "/FontFile2 5 0 R"
         let childType = correct && !trueType ? "/CIDFontType0" : "/CIDFontType2"
-        let map = trueType ? "/CIDToGIDMap /Identity" : (correct ? "" : "/CIDToGIDMap 7 0 R")
+        let map = correct && !trueType ? "" : (trueType || identityMap ? "/CIDToGIDMap /Identity" : "/CIDToGIDMap 7 0 R")
+        let system = indirectSystem ? "4 0 R" : "<< /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>"
         let encoding = vertical ? "/Identity-V" : "/Identity-H"
         let signature = signed ? "/AcroForm << /Fields [13 0 R] /SigFlags 3 >>" : ""
         let objects: [Data] = [
             ascii("<< /Type /Catalog /Pages 2 0 R \(signature) >>"),
             ascii("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
             ascii("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 10 0 R >> >> /Contents 11 0 R >>"),
-            ascii("<< >>"),
-            stream(trueType ? trueTypeProgram : (correct ? denseProgram : fontProgram), extra: correct && !trueType ? "/Subtype /CIDFontType0C" : ""),
+            ascii("<< /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>"),
+            stream(trueType ? trueTypeProgram : (correct ? denseProgram : (fontProgram ?? (identityMap ? denseProgram : program))), extra: correct && !trueType ? "/Subtype /CIDFontType0C" : ""),
             ascii("<< /Type /FontDescriptor /FontName /PDFMasterSynthetic /Flags 32 /FontBBox [0 0 700 700] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 \(fontFile) >>"),
             stream(mapping),
-            ascii("<< /Type /Font /Subtype \(childType) /BaseFont /PDFMasterSynthetic /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 1000 /FontDescriptor 6 0 R \(map) >>"),
+            ascii("<< /Type /Font /Subtype \(childType) /BaseFont /PDFMasterSynthetic /CIDSystemInfo \(system) /DW 1000 /FontDescriptor 6 0 R \(map) >>"),
             stream(ascii(unicode)),
             ascii("<< /Type /Font /Subtype /Type0 /BaseFont /PDFMasterSynthetic /Encoding \(encoding) /DescendantFonts [8 0 R] /ToUnicode 9 0 R >>"),
-            stream(ascii("BT /F1 70 Tf 30 70 Td <00010002> Tj ET")),
+            stream(ascii("BT /F1 70 Tf 30 70 Td <\(codes.joined())> Tj ET")),
             stream(ascii(cmap)),
             ascii(signed ? "<< /Type /Annot /Subtype /Widget /FT /Sig /T (Synthetic signature) /V 14 0 R /Rect [0 0 1 1] >>" : "<< >>"),
             ascii(signed ? "<< /Type /Sig /ByteRange [0 0 0 0] /Contents <> >>" : "<< >>")

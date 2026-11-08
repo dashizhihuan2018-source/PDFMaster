@@ -18,11 +18,14 @@ enum NativeFontCFF {
               reader.bytes[0] == 1, reader.bytes[1] == 0,
               reader.bytes[2] >= 4, (1...4).contains(reader.bytes[3]) else { throw Invalid.structure }
         reader.at = Int(reader.bytes[2])
-        let names = try reader.index(), tops = try reader.index(), strings = try reader.index()
+        let names = try reader.index()
+        var topRange: Range<Int>?
+        let tops = try reader.index { topRange = $0 }, strings = try reader.index()
         _ = try reader.index() // Global subroutines; directory bounds only.
         var protectedRanges = [0..<reader.at]
         guard names.count == 1, tops.count == 1 else { throw Invalid.structure }
-        let top = try dictionary(tops[0])
+        var rosRange: Range<Int>?
+        let top = try dictionary(tops[0]) { key, range in if key == 1230 { rosRange = range } }
         guard let ros = top[1230], ros.count == 3,
               ros.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 65535 && $0.rounded() == $0 }),
               let registry = string(Int(ros[0]), strings), let ordering = string(Int(ros[1]), strings),
@@ -76,6 +79,16 @@ enum NativeFontCFF {
         reader.at = charset
         let format = try reader.byte()
         var cids = [0], dense = data
+        // CFF §18 requires ROS first in a CID-keyed Top DICT. Quartz treats
+        // a late ROS as a name-keyed font and falls back to Times. Move only
+        // this complete entry, preserving INDEX lengths and every absolute
+        // offset into CharStrings, FDArray, FDSelect, and subroutines.
+        guard let topRange, let rosRange else { throw Invalid.structure }
+        if rosRange.lowerBound != 0 {
+            let bytes = tops[0]
+            let ordered = Array(bytes[rosRange]) + Array(bytes[..<rosRange.lowerBound]) + Array(bytes[rosRange.upperBound...])
+            dense.replaceSubrange(topRange, with: ordered)
+        }
         func writeCID(_ cid: Int, at: Int) {
             dense[at] = UInt8(cid >> 8); dense[at + 1] = UInt8(cid & 255)
         }
@@ -119,8 +132,9 @@ enum NativeFontCFF {
         return String(bytes: bytes, encoding: .ascii)
     }
 
-    private static func dictionary(_ bytes: [UInt8]) throws -> [Int: [Double]] {
+    private static func dictionary(_ bytes: [UInt8], entry: ((Int, Range<Int>) -> Void)? = nil) throws -> [Int: [Double]] {
         var reader = Reader(bytes: bytes), stack: [Double] = [], output: [Int: [Double]] = [:]
+        var start = 0
         while reader.at < bytes.count {
             let first = try reader.byte()
             let value: Double
@@ -153,6 +167,7 @@ enum NativeFontCFF {
             case 0...21:
                 let key = first == 12 ? 1200 + Int(try reader.byte()) : Int(first)
                 guard output[key] == nil else { throw Invalid.structure }
+                entry?(key, start..<reader.at); start = reader.at
                 output[key] = stack; stack = []; continue
             default: throw Invalid.structure
             }
@@ -176,7 +191,7 @@ enum NativeFontCFF {
             for _ in 0..<size { result = result * 256 + Int(try byte()) }
             return result
         }
-        mutating func index() throws -> [[UInt8]] {
+        mutating func index(element: ((Range<Int>) -> Void)? = nil) throws -> [[UInt8]] {
             let count = try uint(2)
             guard count > 0 else { return [] }
             let size = Int(try byte())
@@ -189,7 +204,9 @@ enum NativeFontCFF {
             var values: [[UInt8]] = []
             for index in 0..<count {
                 guard offsets[index] <= offsets[index+1] else { throw Invalid.structure }
-                values.append(Array(bytes[(start + offsets[index] - 1)..<(start + offsets[index+1] - 1)]))
+                let range = (start + offsets[index] - 1)..<(start + offsets[index+1] - 1)
+                element?(range)
+                values.append(Array(bytes[range]))
             }
             at = start + last - 1
             return values

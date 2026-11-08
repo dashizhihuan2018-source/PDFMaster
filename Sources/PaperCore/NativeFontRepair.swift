@@ -52,22 +52,34 @@ enum NativeFontRepair {
             guard program.count >= 4, program[0] == 1, program[1] == 0 else { continue }
             guard parent["/Encoding"] as? String == "/Identity-H",
                   child["/W2"] == nil, child["/DW2"] == nil,
-                  let mapRef = child["/CIDToGIDMap"] as? String,
-                  let system = child["/CIDSystemInfo"] as? [String: Any] else { throw Invalid.unsupported }
-            let charset = try NativeFontCFF.charset(program), mapping = try stream(mapRef)
+                  let mapRef = child["/CIDToGIDMap"] as? String else { throw Invalid.unsupported }
+            // PDF dictionaries may be indirect; Identity is a name, not a
+            // stream reference. Both occur in otherwise repairable CFF files.
+            let system = (child["/CIDSystemInfo"] as? [String: Any])
+                ?? (child["/CIDSystemInfo"] as? String).flatMap(dictionary)
+            let charset = try NativeFontCFF.charset(program)
+            guard let system else { throw Invalid.unsupported }
             guard system["/Registry"] as? String == "u:" + charset.registry,
                   system["/Ordering"] as? String == "u:" + charset.ordering,
-                  system["/Supplement"] as? Int == charset.supplement,
-                  !mapping.isEmpty, mapping.count.isMultiple(of: 2), mapping.count <= 131_072 else { throw Invalid.unsupported }
-            var cids: [Int] = []
-            for at in stride(from: 0, to: mapping.count, by: 2) {
-                let cid = Int(mapping[at]) * 256 + Int(mapping[at + 1]), glyph = at / 2
-                guard cid == 0 || (glyph < charset.cids.count && charset.cids[glyph] == cid) else { throw Invalid.unsupported }
-                cids.append(cid)
+                  system["/Supplement"] as? Int == charset.supplement else { throw Invalid.unsupported }
+            if mapRef == "/Identity" {
+                // Do not guess whether sparse charset labels represent CIDs
+                // or GIDs. This case is unambiguous only for a dense charset.
+                guard charset.cids.enumerated().allSatisfy({ $0.offset == $0.element }) else { throw Invalid.unsupported }
+            } else {
+                let mapping = try stream(mapRef)
+                guard !mapping.isEmpty, mapping.count.isMultiple(of: 2), mapping.count <= 131_072 else { throw Invalid.unsupported }
+                var cids: [Int] = []
+                for at in stride(from: 0, to: mapping.count, by: 2) {
+                    let cid = Int(mapping[at]) * 256 + Int(mapping[at + 1]), glyph = at / 2
+                    guard cid == 0 || (glyph < charset.cids.count && charset.cids[glyph] == cid) else { throw Invalid.unsupported }
+                    cids.append(cid)
+                }
+                guard cids == charset.cids else { throw Invalid.unsupported }
             }
             // This defective wrapper uses GID-indexed codes. Change only the
-            // CFF charset labels; preserve outlines, metrics and ToUnicode.
-            guard cids == charset.cids else { throw Invalid.unsupported }
+            // CFF charset labels and ROS entry order; preserve outlines,
+            // metrics, absolute offsets and ToUnicode.
             descriptor.removeValue(forKey: "/FontFile2")
             guard descriptor["/FontFile"] == nil, descriptor["/FontFile3"] == nil else { throw Invalid.unsupported }
             descriptor["/FontFile3"] = allocate(["stream": ["dict": ["/Subtype": "/CIDFontType0C"], "data": charset.denseProgram.base64EncodedString()]])
