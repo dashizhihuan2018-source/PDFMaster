@@ -25,6 +25,7 @@ final class DocumentTab: Identifiable {
 @MainActor
 final class ApplicationShellController: NSViewController {
     let recentStore: RecentDocumentStore
+    let signatureStore: SignatureAssetStore
     let preferredTools: PreferredToolStore
     private(set) var documentTabs: [DocumentTab] = []
     private(set) var canvasTabs: [CanvasTab] = []
@@ -83,8 +84,9 @@ final class ApplicationShellController: NSViewController {
     var pdfImageExportPresenter: ((PDFImageExportController) -> Void)?
 
     init(recentStore: RecentDocumentStore, preferredTools: PreferredToolStore? = nil,
-         accountStore: AccountStore? = nil, aiPreferences: UserDefaults = .standard, aiClient: DMXAIClient = DMXAIClient()) {
+         accountStore: AccountStore? = nil, aiPreferences: UserDefaults = .standard, aiClient: DMXAIClient = DMXAIClient(), signatureStore: SignatureAssetStore? = nil) {
         self.recentStore = recentStore
+        self.signatureStore = signatureStore ?? SignatureAssetStore(directory: recentStore.url.deletingLastPathComponent().appendingPathComponent("Signatures"))
         self.injectedAccountStore = accountStore; self.aiPreferences = aiPreferences; self.aiClient = aiClient
         let defaultURL = recentStore.url.deletingLastPathComponent().appendingPathComponent("preferred-tools.json")
         self.preferredTools = preferredTools ?? PreferredToolStore(url: defaultURL)
@@ -193,7 +195,7 @@ final class ApplicationShellController: NSViewController {
         if url.pathExtension.lowercased() == "pdfmasterboard" { return openCanvas(url: url) }
         let normalized = RecentDocumentStore.normalize(url)
         if let existing = documentTabs.first(where: { $0.sourceURL == normalized }) { activate(tabID: existing.id); return true }
-        let controller = WorkbenchController()
+        let controller = WorkbenchController(); controller.signatureStore = signatureStore
         do {
             let admitted = try DocumentAdmission.admit(url: normalized, passwordPrompt: passwordPrompt, shouldReplace: { true }) { password in
                 if let password { try controller.workspace.open(normalized, password: password) } else { try controller.workspace.open(normalized) }
@@ -218,7 +220,7 @@ final class ApplicationShellController: NSViewController {
         defer { fileImportCancellation = nil; LocalToolActivity.finish(activity); onFileImportStateChange?(false) }
         let batch = try await FileImportJob.prepare(urls, cancellation: flag)
         guard !flag.isCancelled, !batch.isEmpty else { throw FilePDFImportError.cancelled }
-        let controller = WorkbenchController()
+        let controller = WorkbenchController(); controller.signatureStore = signatureStore
         try controller.workspace.createUnsavedFileMerge(batch)
         _ = controller.view
         controller.resetDocumentInteractionState(); controller.refreshDocument()
@@ -228,7 +230,7 @@ final class ApplicationShellController: NSViewController {
         documentTabs.append(tab); activate(tabID: tab.id); return tab
     }
     @discardableResult func createBlankDocument() -> DocumentTab {
-        let controller = WorkbenchController(); _ = controller.view
+        let controller = WorkbenchController(); controller.signatureStore = signatureStore; _ = controller.view
         controller.perform { try controller.workspace.createBlank(); controller.refreshDocument() }
         let tab = DocumentTab(controller: controller, sourceURL: nil); documentTabs.append(tab); activate(tabID: tab.id); return tab
     }
@@ -269,7 +271,7 @@ final class ApplicationShellController: NSViewController {
         guard data.count <= 50 * 1024 * 1024, let document = PDFDocument(data: data),
               !document.isEncrypted, document.pageCount > 0,
               !DocumentAdmission.hasInteractiveWidgets(document) else { throw CocoaError(.fileReadCorruptFile) }
-        let controller = WorkbenchController()
+        let controller = WorkbenchController(); controller.signatureStore = signatureStore
         try controller.workspace.createUnsavedPDFCopy(data: data)
         _ = controller.view
         controller.resetDocumentInteractionState(); controller.refreshDocument()
@@ -296,7 +298,7 @@ final class ApplicationShellController: NSViewController {
               output.pageCount > 0, !DocumentAdmission.hasInteractiveWidgets(check) else {
             throw ImageImportControllerFailure.invalidOutput
         }
-        let controller = WorkbenchController()
+        let controller = WorkbenchController(); controller.signatureStore = signatureStore
         try controller.workspace.createUnsavedDocument(data: output.data)
         _ = controller.view
         controller.resetDocumentInteractionState(); controller.refreshDocument()

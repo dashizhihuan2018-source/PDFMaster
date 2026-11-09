@@ -105,7 +105,8 @@ import PaperCore
         XCTAssertEqual(c.workspace.revision, revision + 1, "All signature strokes form one undo transaction")
         XCTAssertEqual(c.workspace.document?.page(at: 0)?.annotations.count, 0)
         let annotations = try XCTUnwrap(c.workspace.document?.page(at: 1)?.annotations)
-        XCTAssertEqual(annotations.count, 2)
+        XCTAssertEqual(annotations.count, 1)
+        XCTAssertEqual(annotations.first?.paths?.count, 2)
         let bounds = annotations.reduce(CGRect.null) { $0.union($1.bounds) }
         XCTAssertEqual(bounds.midX, click.x, accuracy: 0.1)
         XCTAssertEqual(bounds.midY, click.y, accuracy: 0.1)

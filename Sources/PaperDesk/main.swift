@@ -15,6 +15,7 @@ enum PendingPlacement {
     case note(NoteConfiguration)
     case freeText(String)
     case signature([[CGPoint]])
+    case imageSignature(SignatureImage)
     case shape(AnnotationShape, AnnotationConfiguration)
     case line(LineEndings, AnnotationConfiguration)
 
@@ -28,11 +29,21 @@ enum PendingPlacement {
         case .freeText: size = CGSize(width: 240, height: 72)
         case .signature:
             size = rotation % 180 == 0 ? CGSize(width: 160, height: 70) : CGSize(width: 70, height: 160)
+        case .imageSignature(let image):
+            let ratio = CGFloat(image.pixelWidth) / CGFloat(image.pixelHeight)
+            size = rotation % 180 == 0 ? CGSize(width: 160, height: 160 / ratio) : CGSize(width: 160 / ratio, height: 160)
         case .shape, .line:
             return try ToolInputValidation.normalizedDrag(from: start, to: end, within: crop)
         }
         if start != end {
-            return try ToolInputValidation.normalizedDrag(from: start, to: end, within: crop)
+            let rect = try ToolInputValidation.normalizedDrag(from: start, to: end, within: crop)
+            if case .imageSignature = self {
+                let fit = min(rect.width / size.width, rect.height / size.height)
+                let width = size.width * fit, height = size.height * fit
+                guard width > 0, height > 0 else { throw PDFWorkspaceError.invalidSelection }
+                return CGRect(x: rect.midX-width/2, y: rect.midY-height/2, width: width, height: height)
+            }
+            return rect
         }
         let fit = min(1, crop.width / size.width, crop.height / size.height)
         let width = size.width * fit, height = size.height * fit
@@ -153,6 +164,8 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private weak var inkMenuItem: NSMenuItem?
     private let annotationSelection = AnnotationSelectionTracker()
     private var pendingPlacement: PendingPlacement?
+    var signatureStore: SignatureAssetStore?
+    private var signaturePicker: SignaturePickerController?
     private var activeMarkup: (kind: PDFAnnotationSubtype, color: NSColor)?
     let shapeStyleBar = ShapeStyleBarView()
     /// A separate instance keeps pen width/color independent of shape defaults.
@@ -1155,9 +1168,14 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc func addSignature() {
         guard workspace.document != nil, workspace.allowsCommenting else { return }
-        let sheet = SignaturePanel()
-        guard let strokes = sheet.run(window: view.window), !strokes.isEmpty else { return }
-        beginPlacement(.signature(strokes), accessibilityName: "签名放置模式")
+        guard let store = signatureStore else { showError("签名库不可用") ; return }
+        let picker = SignaturePickerController(store: store, onSelectImage: { [weak self] image in
+            self?.beginPlacement(.imageSignature(image), accessibilityName: "图片签名放置模式")
+        }, onDraw: { [weak self] in
+            guard let self, let strokes = SignaturePanel().run(window: self.view.window), !strokes.isEmpty else { return }
+            self.beginPlacement(.signature(strokes), accessibilityName: "签名放置模式")
+        })
+        signaturePicker = picker; picker.show()
     }
     @objc func printDocument() {
         if let reason = DocumentOperationMessage.printBlockReason(
@@ -1403,12 +1421,18 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             case .signature(let strokes):
                 // Ink bounds include a full line-width margin; keep that margin
                 // inside the crop even when the pointer is on the page edge.
-                let crop = page.bounds(for: .cropBox).insetBy(dx: 2.2, dy: 2.2)
+                let crop = page.bounds(for: .cropBox).insetBy(dx: 2.21, dy: 2.21)
                 let a = CGPoint(x: min(max(start.x, crop.minX), crop.maxX), y: min(max(start.y, crop.minY), crop.maxY))
                 let z = CGPoint(x: min(max(end.x, crop.minX), crop.maxX), y: min(max(end.y, crop.minY), crop.maxY))
                 let bounds = try placement.bounds(from: a, to: z, within: crop, rotation: page.rotation)
                 let mapped = PendingPlacement.signatureStrokes(strokes, in: bounds, rotation: page.rotation)
-                mutateAnnotations(pages: IndexSet(integer: pageIndex)) { try workspace.addInk(strokes: mapped, page: pageIndex, color: .black, width: 2.2) }
+                mutateAnnotations(pages: IndexSet(integer: pageIndex)) { try workspace.addSignatureInk(strokes: mapped, page: pageIndex, color: .black, width: 2.2) }
+            case .imageSignature(let image):
+                let crop = page.bounds(for: .cropBox)
+                let a = CGPoint(x: min(max(start.x, crop.minX), crop.maxX), y: min(max(start.y, crop.minY), crop.maxY))
+                let z = CGPoint(x: min(max(end.x, crop.minX), crop.maxX), y: min(max(end.y, crop.minY), crop.maxY))
+                let bounds = try placement.bounds(from: a, to: z, within: crop, rotation: page.rotation)
+                mutateAnnotations(pages: IndexSet(integer: pageIndex)) { try workspace.addImageSignature(image, page: pageIndex, bounds: bounds) }
             case .shape(let shape, let configuration):
                 let bounds = try ToolInputValidation.normalizedDrag(from: start, to: end, within: page.bounds(for: .cropBox))
                 mutateAnnotations(pages: IndexSet(integer: pageIndex)) { try workspace.addShape(shape, page: pageIndex, bounds: bounds, style: configuration.style) }
@@ -1725,7 +1749,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
     @discardableResult func newWindow(makeKey: Bool = true) -> PDFWindowSession {
         let base = controller
         let shell = ApplicationShellController(recentStore: base.recentStore, preferredTools: base.preferredTools,
-                                               accountStore: base.accountStore)
+                                               accountStore: base.accountStore, signatureStore: base.signatureStore)
         return createWindowSession(controller: shell, makeKey: makeKey)
     }
     @discardableResult private func createWindowSession(controller: ApplicationShellController,
