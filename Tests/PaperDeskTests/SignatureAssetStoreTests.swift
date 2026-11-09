@@ -4,6 +4,30 @@ import PaperCore
 @testable import PaperDesk
 
 final class SignatureAssetStoreTests: XCTestCase {
+    @MainActor func testMissingAssetCanBeRemovedAndLibraryReused() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 3, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let source = root.appendingPathComponent("source.png")
+        try rep.representation(using: .png, properties: [:])!.write(to: source)
+        let directory = root.appendingPathComponent("library")
+        let store = SignatureAssetStore(directory: directory)
+        let asset = try store.importPNG(from: source)
+        let stored = directory.appendingPathComponent("\(asset.id.uuidString).png")
+        try FileManager.default.removeItem(at: stored)
+        try FileManager.default.createSymbolicLink(at: stored, withDestinationURL: source)
+        XCTAssertThrowsError(try store.remove(id: asset.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(store.entries.count, 1)
+        try FileManager.default.removeItem(at: stored)
+        try store.remove(id: asset.id)
+        let reopened = SignatureAssetStore(directory: directory)
+        try reopened.reload()
+        XCTAssertTrue(reopened.entries.isEmpty)
+        XCTAssertNoThrow(try reopened.importPNG(from: source))
+    }
+
     @MainActor func testPersistenceDedupRemovalAndModes() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

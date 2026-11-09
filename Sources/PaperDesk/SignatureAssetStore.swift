@@ -155,12 +155,18 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
         try perform {
             try load()
             guard entries.contains(where: { $0.id == id }) else { throw StoreError.missing }
-            // Validate the asset before changing the index; unlink never follows a link.
-            _ = try read(assetURL(id), maximum: 8 * 1024 * 1024)
+            // A missing asset should not make its history entry impossible to remove.
+            // Existing links and special files remain rejected, never followed.
+            let path = assetURL(id)
+            var info = stat()
+            if lstat(path.path, &info) == 0 {
+                _ = try read(path, maximum: 8 * 1024 * 1024)
+            } else if errno != ENOENT { throw StoreError.io }
             let remaining = entries.filter { $0.id != id }
             try writeAtomic(JSONEncoder().encode(remaining), to: index)
             entries = remaining
-            guard !failUnlink(), unlink(assetURL(id).path) == 0 else { throw StoreError.io }
+            guard !failUnlink() else { throw StoreError.io }
+            if unlink(path.path) != 0 && errno != ENOENT { throw StoreError.io }
         }
     }
 }
