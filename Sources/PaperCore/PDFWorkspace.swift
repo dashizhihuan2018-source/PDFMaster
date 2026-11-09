@@ -887,6 +887,37 @@ public final class PDFWorkspace: ObservableObject {
         }
     }
 
+    public func addImageSignature(_ image: SignatureImage, page: Int, bounds: CGRect) throws {
+        guard valid(bounds) else { throw PDFWorkspaceError.invalidSelection }
+        try mutate(requiring: .commenting, annotationPages: annotationPageScope(page)) { candidate in
+            guard let target = candidate.page(at: page) else { throw PDFWorkspaceError.invalidPage }
+            guard target.bounds(for: .cropBox).contains(bounds) else { throw PDFWorkspaceError.invalidSelection }
+            target.addAnnotation(try PDFSignatureAppearance.make(image, bounds: bounds, rotation: target.rotation))
+            forceFreeTextAppearanceWrite(candidate)
+        }
+    }
+
+    public func addSignatureInk(strokes: [[CGPoint]], page: Int, color: NSColor, width: CGFloat) throws {
+        guard !strokes.isEmpty, width.isFinite, width > 0, valid(color),
+              strokes.allSatisfy({ $0.count >= 2 && $0.allSatisfy(valid) }) else { throw PDFWorkspaceError.invalidInk }
+        let bounds = strokes.flatMap { $0 }.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) }.insetBy(dx: -width, dy: -width)
+        guard valid(bounds) else { throw PDFWorkspaceError.invalidInk }
+        try mutate(requiring: .commenting, annotationPages: annotationPageScope(page)) { candidate in
+            guard let target = candidate.page(at: page) else { throw PDFWorkspaceError.invalidPage }
+            guard target.bounds(for: .cropBox).contains(bounds) else { throw PDFWorkspaceError.invalidSelection }
+            let annotation = PDFAnnotation(bounds: bounds, forType: .ink, withProperties: nil)
+            annotation.color = color
+            let border = PDFBorder(); border.lineWidth = width; annotation.border = border
+            for points in strokes {
+                let path = NSBezierPath(); path.lineWidth = width
+                path.move(to: CGPoint(x: points[0].x - bounds.minX, y: points[0].y - bounds.minY))
+                for point in points.dropFirst() { path.line(to: CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY)) }
+                annotation.add(path)
+            }
+            target.addAnnotation(annotation)
+        }
+    }
+
     public func addInk(points: [CGPoint], page: Int, color: NSColor, width: CGFloat, smoothed: Bool = false) throws {
         try addInk(strokes: [points], page: page, color: color, width: width, smoothed: smoothed)
     }
