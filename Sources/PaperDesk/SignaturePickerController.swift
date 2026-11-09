@@ -69,7 +69,7 @@ import UniformTypeIdentifiers
                 guard let source = CGImageSourceCreateWithData(image.pngData as CFData, nil),
                       let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 240] as CFDictionary) else { throw CocoaError(.fileReadCorruptFile) }
                 let row = NSStackView(); row.orientation = .horizontal; row.spacing = 12
-                let preview = NSButton(image: NSImage(cgImage: thumbnail, size: NSSize(width: 200, height: 80)), target: self, action: #selector(selectAction(_:)))
+                let preview = NSButton(image: NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height)), target: self, action: #selector(selectAction(_:)))
                 preview.imageScaling = .scaleProportionallyUpOrDown; preview.identifier = NSUserInterfaceItemIdentifier(entry.id.uuidString); preview.setAccessibilityLabel("选择签名 \(entry.createdAt.formatted())")
                 preview.widthAnchor.constraint(equalToConstant: 200).isActive = true; preview.heightAnchor.constraint(equalToConstant: 80).isActive = true
                 let remove = NSButton(title: "删除", target: self, action: #selector(deleteAction(_:))); remove.identifier = preview.identifier; remove.setAccessibilityLabel("删除签名 \(entry.createdAt.formatted())")
