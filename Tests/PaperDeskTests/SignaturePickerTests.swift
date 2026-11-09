@@ -5,6 +5,73 @@ import PaperCore
 @testable import PaperDesk
 
 @MainActor final class SignaturePickerTests: XCTestCase {
+    func testUnavailableNewestEntryKeepsHealthyHistoryAndCanBeDeleted() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func makePNG(_ name: String, value: UInt8) throws -> URL {
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 4, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            let bytes = try XCTUnwrap(bitmap.bitmapData)
+            for i in 0..<(8 * 4 * 4) { bytes[i] = value }
+            let url = root.appendingPathComponent(name)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url)
+            return url
+        }
+        let olderSource = try makePNG("older.png", value: 100)
+        let missingSource = try makePNG("missing.png", value: 150)
+        let newSource = try makePNG("new.png", value: 200)
+        let directory = root.appendingPathComponent("Signatures")
+        let store = SignatureAssetStore(directory: directory)
+        let older = try store.importPNG(from: olderSource)
+        let missing = try store.importPNG(from: missingSource)
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("\(missing.id.uuidString).png"))
+        var confirm = false, errors = [String]()
+        let picker = SignaturePickerController(store: store, onSelectImage: { _ in }, onDraw: {}, chooseFile: { newSource }, confirmDelete: { confirm }, presentError: { errors.append($0) })
+        picker.show()
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "我的签名" && $0.isVisible })
+        defer { window.close() }
+        func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? [] + view.subviews.flatMap(buttons) }
+        let all = buttons(try XCTUnwrap(window.contentView))
+        XCTAssertNotNil(all.first { $0.identifier?.rawValue == older.id.uuidString && $0.accessibilityLabel()?.hasPrefix("选择签名 ") == true })
+        let unavailableDelete = try XCTUnwrap(all.first { $0.identifier?.rawValue == missing.id.uuidString && $0.accessibilityLabel()?.hasPrefix("删除签名 ") == true })
+        XCTAssertNotNil(all.first { $0.identifier?.rawValue == missing.id.uuidString && $0.accessibilityLabel()?.contains("不可用") == true })
+        XCTAssertEqual(errors.count, 1)
+        unavailableDelete.performClick(nil)
+        XCTAssertTrue(picker.entries.contains { $0.id == missing.id })
+        confirm = true
+        unavailableDelete.performClick(nil)
+        XCTAssertEqual(picker.entries.map(\.id), [older.id])
+        picker.importPNG()
+        XCTAssertEqual(picker.entries.count, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: missingSource.path))
+        XCTAssertEqual(errors.count, 1)
+    }
+    func testCorruptAssetCanBeDeletedFromPicker() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 4, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let source = root.appendingPathComponent("source.png")
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: source)
+        let directory = root.appendingPathComponent("Signatures")
+        let store = SignatureAssetStore(directory: directory)
+        let entry = try store.importPNG(from: source)
+        try Data("corrupt".utf8).write(to: directory.appendingPathComponent("\(entry.id.uuidString).png"))
+        var errors = [String]()
+        let picker = SignaturePickerController(store: store, onSelectImage: { _ in XCTFail("corrupt asset selected") }, onDraw: {}, confirmDelete: { true }, presentError: { errors.append($0) })
+        picker.show()
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "我的签名" && $0.isVisible })
+        defer { window.close() }
+        func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? [] + view.subviews.flatMap(buttons) }
+        let all = buttons(try XCTUnwrap(window.contentView))
+        XCTAssertNotNil(all.first { $0.identifier?.rawValue == entry.id.uuidString && $0.accessibilityLabel()?.contains("不可用") == true })
+        let remove = try XCTUnwrap(all.first { $0.identifier?.rawValue == entry.id.uuidString && $0.accessibilityLabel()?.hasPrefix("删除签名 ") == true })
+        XCTAssertEqual(errors.count, 1)
+        remove.performClick(nil)
+        XCTAssertTrue(picker.entries.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(errors.count, 1)
+    }
     func testPickerDisplaysProportionalBoundedThumbnailAndAccessibleActions() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

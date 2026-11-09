@@ -63,19 +63,27 @@ import UniformTypeIdentifiers
         guard panel != nil else { return }
         list.arrangedSubviews.forEach { list.removeArrangedSubview($0); $0.removeFromSuperview() }
         list.frame = NSRect(x: 0, y: 0, width: 380, height: max(300, entries.count * 88))
+        var failures = [String]()
         for entry in entries {
+            let row = NSStackView(); row.orientation = .horizontal; row.spacing = 12
+            let preview: NSButton
             do {
                 let image = try store.image(for: entry.id)
                 guard let source = CGImageSourceCreateWithData(image.pngData as CFData, nil),
                       let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 240] as CFDictionary) else { throw CocoaError(.fileReadCorruptFile) }
-                let row = NSStackView(); row.orientation = .horizontal; row.spacing = 12
-                let preview = NSButton(image: NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height)), target: self, action: #selector(selectAction(_:)))
-                preview.imageScaling = .scaleProportionallyUpOrDown; preview.identifier = NSUserInterfaceItemIdentifier(entry.id.uuidString); preview.setAccessibilityLabel("选择签名 \(entry.createdAt.formatted())")
-                preview.widthAnchor.constraint(equalToConstant: 200).isActive = true; preview.heightAnchor.constraint(equalToConstant: 80).isActive = true
-                let remove = NSButton(title: "删除", target: self, action: #selector(deleteAction(_:))); remove.identifier = preview.identifier; remove.setAccessibilityLabel("删除签名 \(entry.createdAt.formatted())")
-                row.addArrangedSubview(preview); row.addArrangedSubview(remove); list.addArrangedSubview(row)
-            } catch { presentError(error.localizedDescription); break }
+                preview = NSButton(image: NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height)), target: self, action: #selector(selectAction(_:)))
+                preview.imageScaling = .scaleProportionallyUpOrDown; preview.setAccessibilityLabel("选择签名 \(entry.createdAt.formatted())")
+            } catch {
+                failures.append(error.localizedDescription)
+                preview = NSButton(title: "签名不可用", target: nil, action: nil)
+                preview.isEnabled = false; preview.setAccessibilityLabel("签名不可用 \(entry.createdAt.formatted())")
+            }
+            preview.identifier = NSUserInterfaceItemIdentifier(entry.id.uuidString)
+            preview.widthAnchor.constraint(equalToConstant: 200).isActive = true; preview.heightAnchor.constraint(equalToConstant: 80).isActive = true
+            let remove = NSButton(title: "删除", target: self, action: #selector(deleteAction(_:))); remove.identifier = preview.identifier; remove.setAccessibilityLabel("删除签名 \(entry.createdAt.formatted())")
+            row.addArrangedSubview(preview); row.addArrangedSubview(remove); list.addArrangedSubview(row)
         }
+        if let first = failures.first { presentError("\(failures.count) 个签名不可用，可确认后从签名库删除。\n\(first)") }
     }
     @objc private func importAction() { importPNG() }
     @objc private func drawAction() { panel?.close(); onDraw() }
