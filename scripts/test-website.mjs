@@ -2,6 +2,13 @@ import { readFileSync, existsSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 const root = new URL('../docs/', import.meta.url);
+test('layout UI release states measured scope and visual acceptance limits', () => {
+  const report = readFileSync(new URL('LAYOUT-UI-V0.1.28.md', root), 'utf8');
+  for (const phrase of ['28点按钮', '1点蓝色轮廓', '240点', '886', '884通过', '2项私人样本跳过', '逐像素一致', 'VoiceOver']) assert.ok(report.includes(phrase), phrase);
+  const release = JSON.parse(readFileSync(new URL('release.json', root), 'utf8'));
+  assert.equal(release.version, 'V0.1.28');
+  assert.equal(release.build, 50);
+});
 test('layout sidebar guide preserves real scrolling and states split limits', () => {
   const report = readFileSync(new URL('LAYOUT-SIDEBAR-V0.1.27.md', root), 'utf8');
   for (const phrase of ['固定左栏', '单独显示首页', '显示 → 连续滚动', '没有新增', '882', '2 跳过']) assert.ok(report.includes(phrase), phrase);
@@ -50,22 +57,22 @@ test('first installation is actionable without globally disabling macOS protecti
   assert.ok(guide.includes('id="install"'));
   for (const phrase of ['隐私与安全性', '仍要打开', '可信来源', '未遭篡改', '已损坏', '将损坏', '系统管理员', '另一台 Mac', 'shasum -a 256']) assert.ok(guide.includes(phrase), phrase);
   assert.ok(guide.includes('https://support.apple.com/zh-cn/102445'));
-  assert.ok(guide.includes('be0e3767525311de57424a1f152262447e77960580f7cd45c0ff3abb3fba8afb'));
+  assert.ok(guide.includes('60ceff607f14a30e38bd598aad9570f5ba71a467a525a85a0698e99c3adcecd6'));
   assert.ok(!/spctl\s+--(?:master-disable|global-disable)|xattr\s+-[a-z]*d|sudo\s/.test(html + guide));
 });
 test('homepage pins the verified public installer and labels limitations', () => {
   if (!existsSync(new URL('index.html', root))) return assert.fail('missing download homepage');
   const html = readFileSync(new URL('index.html', root), 'utf8');
   const release = JSON.parse(readFileSync(new URL('release.json', root), 'utf8'));
-  assert.equal(release.version, 'V0.1.27');
-  assert.equal(release.build, 49);
-  assert.equal(release.sha256, 'be0e3767525311de57424a1f152262447e77960580f7cd45c0ff3abb3fba8afb');
+  assert.equal(release.version, 'V0.1.28');
+  assert.equal(release.build, 50);
+  assert.equal(release.sha256, '60ceff607f14a30e38bd598aad9570f5ba71a467a525a85a0698e99c3adcecd6');
   assert.ok(html.includes(release.download));
   assert.ok(html.includes(release.checksum));
   assert.ok(html.includes('未获 Apple 公证'));
   assert.ok(html.includes('Python'));
   assert.ok(html.includes('对应项目源码已公开'));
-  assert.equal(release.sourceVersion, 'V0.1.27/build49');
+  assert.equal(release.sourceVersion, 'V0.1.28/build50');
   assert.equal(release.selfContainedContentEditing, true);
   assert.ok(html.includes('不再依赖外置 Python'));
   assert.ok(html.includes('不会上传'));
@@ -94,7 +101,7 @@ test('all local page and resource links resolve, including cross-page anchors', 
       }
     }
     if (page !== 'index.html') {
-      assert.ok(html.includes('V0.1.27 / build49'));
+      assert.ok(html.includes('V0.1.28 / build50'));
       assert.ok(!html.includes('尚未发布') && !html.includes('待发布预览'));
     }
   }

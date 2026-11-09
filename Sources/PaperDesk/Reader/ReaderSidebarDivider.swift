@@ -7,11 +7,13 @@ import AppKit
     static let maximum: CGFloat = 480
     private let defaults: UserDefaults
     private(set) var preferred: CGFloat
+    private(set) var hasSavedPreference: Bool
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let saved = defaults.double(forKey: Self.key)
-        preferred = saved.isFinite && saved >= Self.minimum && saved <= Self.maximum ? saved : Self.minimum
+        hasSavedPreference = saved.isFinite && saved >= Self.minimum && saved <= Self.maximum
+        preferred = hasSavedPreference ? saved : Self.minimum
     }
 
     func fitted(_ proposed: CGFloat? = nil, available: CGFloat) -> CGFloat {
@@ -24,6 +26,7 @@ import AppKit
     func commit(_ width: CGFloat) {
         guard width.isFinite else { return }
         preferred = min(Self.maximum, max(Self.minimum, width))
+        hasSavedPreference = true
         defaults.set(Double(preferred), forKey: Self.key)
     }
 }

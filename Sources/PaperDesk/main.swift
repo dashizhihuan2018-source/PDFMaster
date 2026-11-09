@@ -718,7 +718,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         let visible = readerCommands.sidebarVisible && !isOverviewVisible
         sidebarScrollView?.isHidden = !visible
         sidebarDivider.isHidden = !visible
-        let width = visible ? sidebarWidthPreference.fitted(sidebarDragWidth, available: readerContentView?.bounds.width ?? view.bounds.width) : 0
+        // Reference layout panel starts at 240pt; never replace an explicit
+        // reader-width preference or persist this mode-specific default.
+        let proposed = sidebarDragWidth ?? (isLayoutSidebarVisible && !sidebarWidthPreference.hasSavedPreference ? 240 : nil)
+        let width = visible ? sidebarWidthPreference.fitted(proposed, available: readerContentView?.bounds.width ?? view.bounds.width) : 0
         if sidebarWidthConstraint?.constant != width { sidebarWidthConstraint?.constant = width }
         sidebarDivider.setAccessibilityValue("\(Int(width)) 点")
     }
@@ -741,6 +744,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         isLayoutSidebarVisible = false
         layoutOptionsController.view.isHidden = true
         readerSidebar.view.isHidden = false
+        updateSidebarWidth()
     }
     @objc private func showLayoutOptions(_ sender: NSButton) {
         let wasOverviewVisible = isOverviewVisible
