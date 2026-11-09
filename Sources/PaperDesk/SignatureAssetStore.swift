@@ -15,10 +15,10 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
     private(set) var lastError: Error?
     private let directory: URL
     private let limit: Int
-    private let failIndexWrite: () -> Bool
-    private let failUnlink: () -> Bool
+    private let renameFile: (String, String) -> Int32
+    private let unlinkFile: (String) -> Int32
     private enum StoreError: LocalizedError {
-        case unsafeFile, corruptIndex, limit, missing, io
+        case unsafeFile, corruptIndex, limit, missing, io, rollbackCleanup
         var errorDescription: String? {
             switch self {
             case .unsafeFile: return "签名文件或目录不安全。"
@@ -26,15 +26,18 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
             case .limit: return "签名库已达到容量限制。"
             case .missing: return "未找到该签名。"
             case .io: return "无法读写本机签名库。"
+            case .rollbackCleanup: return "签名保存失败，临时资产清理失败，请检查本机签名库。"
             }
         }
     }
 
-    init(directory: URL, byteLimit: Int = 128 * 1024 * 1024, failIndexWrite: @escaping () -> Bool = { false }, failUnlink: @escaping () -> Bool = { false }) {
+    init(directory: URL, byteLimit: Int = 128 * 1024 * 1024,
+         renameFile: @escaping (String, String) -> Int32 = { Darwin.rename($0, $1) },
+         unlinkFile: @escaping (String) -> Int32 = { Darwin.unlink($0) }) {
         self.directory = directory
         self.limit = max(0, min(byteLimit, 128 * 1024 * 1024))
-        self.failIndexWrite = failIndexWrite
-        self.failUnlink = failUnlink
+        self.renameFile = renameFile
+        self.unlinkFile = unlinkFile
     }
     private var index: URL { directory.appendingPathComponent("index.json") }
     private func assetURL(_ id: UUID) -> URL { directory.appendingPathComponent("\(id.uuidString).png") }
@@ -79,7 +82,7 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
         let temp = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
         let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw StoreError.io }
-        defer { close(fd); unlink(temp.path) }
+        defer { close(fd); _ = unlinkFile(temp.path) }
         try data.withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
@@ -98,7 +101,7 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
         let dirFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard dirFD >= 0 else { throw StoreError.io }
         defer { close(dirFD) }
-        guard rename(temp.path, url.path) == 0 else { throw StoreError.io }
+        guard renameFile(temp.path, url.path) == 0 else { throw StoreError.io }
         // Once renamed the operation is committed: reporting failure here would
         // cause callers to roll back an asset referenced by the new index.
         _ = fsync(dirFD)
@@ -137,10 +140,12 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
             let path = assetURL(asset.id)
             try writeAtomic(image.pngData, to: path)
             do {
-                guard !failIndexWrite() else { throw StoreError.io }
                 try writeAtomic(JSONEncoder().encode(entries + [asset]), to: index)
             }
-            catch { unlink(path.path); throw error }
+            catch {
+                if unlinkFile(path.path) != 0 && errno != ENOENT { throw StoreError.rollbackCleanup }
+                throw error
+            }
             entries.append(asset)
             return asset
         }
@@ -165,8 +170,7 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
             let remaining = entries.filter { $0.id != id }
             try writeAtomic(JSONEncoder().encode(remaining), to: index)
             entries = remaining
-            guard !failUnlink() else { throw StoreError.io }
-            if unlink(path.path) != 0 && errno != ENOENT { throw StoreError.io }
+            if unlinkFile(path.path) != 0 && errno != ENOENT { throw StoreError.io }
         }
     }
 }

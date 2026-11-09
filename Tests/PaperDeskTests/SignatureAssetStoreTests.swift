@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import PaperCore
+import Darwin
 @testable import PaperDesk
 
 final class SignatureAssetStoreTests: XCTestCase {
@@ -91,17 +92,35 @@ final class SignatureAssetStoreTests: XCTestCase {
         let seeded = SignatureAssetStore(directory: failDirectory)
         _ = try seeded.importPNG(from: source)
         let originalIndex = try Data(contentsOf: failDirectory.appendingPathComponent("index.json"))
-        let failing = SignatureAssetStore(directory: failDirectory, failIndexWrite: { true })
+        let failing = SignatureAssetStore(directory: failDirectory, renameFile: { from, to in
+            if to.hasSuffix("index.json") { errno = EIO; return -1 }
+            return Darwin.rename(from, to)
+        })
         XCTAssertThrowsError(try failing.importPNG(from: second))
         XCTAssertEqual(try Data(contentsOf: failDirectory.appendingPathComponent("index.json")), originalIndex)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: failDirectory.path).count, 2)
+        let rollbackDirectory = root.appendingPathComponent("rollback")
+        let rollbackFail = SignatureAssetStore(directory: rollbackDirectory, renameFile: { from, to in
+            if to.hasSuffix("index.json") { errno = EIO; return -1 }
+            return Darwin.rename(from, to)
+        }, unlinkFile: { path in
+            if path.hasSuffix(".png") { errno = EIO; return -1 }
+            return Darwin.unlink(path)
+        })
+        XCTAssertThrowsError(try rollbackFail.importPNG(from: source)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("清理"))
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: rollbackDirectory.path).filter { $0.hasSuffix(".png") }.count, 1)
         let budget = try SignatureImage(pngData: Data(contentsOf: source)).pngData.count
         print("Signature byte-budget test: \(budget) bytes")
         let limited = SignatureAssetStore(directory: root.appendingPathComponent("limited"), byteLimit: budget)
         _ = try limited.importPNG(from: source)
         XCTAssertThrowsError(try limited.importPNG(from: second))
         XCTAssertEqual(limited.entries.count, 1)
-        let unlinkFail = SignatureAssetStore(directory: root.appendingPathComponent("unlink"), byteLimit: 128 * 1024 * 1024, failUnlink: { true })
+        let unlinkFail = SignatureAssetStore(directory: root.appendingPathComponent("unlink"), unlinkFile: { path in
+            if path.hasSuffix(".png") { errno = EIO; return -1 }
+            return Darwin.unlink(path)
+        })
         let asset = try unlinkFail.importPNG(from: source)
         XCTAssertThrowsError(try unlinkFail.remove(id: asset.id))
         XCTAssertNotNil(unlinkFail.lastError)

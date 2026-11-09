@@ -1,6 +1,7 @@
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+import zlib
 
 public struct SignatureImage {
     private enum Invalid: LocalizedError {
@@ -57,6 +58,8 @@ public struct SignatureImage {
             return c ^ 0xffffffff
         }
         var offset = 8, seenHeader = false, seenData = false, endedData = false, seenPalette = false
+        var width = 0, height = 0, bitsPerPixel = 0, interlace = 0
+        var compressed = [UInt8]()
         while offset <= b.count - 12 {
             let length = Int(word(offset))
             guard length <= b.count - offset - 12 else { return false }
@@ -69,14 +72,27 @@ public struct SignatureImage {
                 guard name == "IHDR", length == 13 else { return false }
                 let w = Int(word(offset + 8)), h = Int(word(offset + 12))
                 guard w > 0, h > 0, w <= 4_000_000 / h else { return false }
+                let depth = Int(b[offset + 16]), color = b[offset + 17]
+                let channels: Int
+                switch color {
+                case 0: guard [1, 2, 4, 8, 16].contains(depth) else { return false }; channels = 1
+                case 2: guard [8, 16].contains(depth) else { return false }; channels = 3
+                case 3: guard [1, 2, 4, 8].contains(depth) else { return false }; channels = 1
+                case 4: guard [8, 16].contains(depth) else { return false }; channels = 2
+                case 6: guard [8, 16].contains(depth) else { return false }; channels = 4
+                default: return false
+                }
+                guard b[offset + 18] == 0, b[offset + 19] == 0, b[offset + 20] <= 1 else { return false }
+                width = w; height = h; bitsPerPixel = channels * depth; interlace = Int(b[offset + 20])
                 seenHeader = true
             } else if name == "IHDR" || name == "acTL" || name == "fcTL" || name == "fdAT" {
                 return false
             } else if name == "IDAT" {
                 guard !endedData else { return false }
                 seenData = true
+                compressed.append(contentsOf: b[(offset + 8)..<end])
             } else if name == "IEND" {
-                return length == 0 && seenData && end + 4 == b.count
+                return length == 0 && seenData && end + 4 == b.count && validInflate(compressed, width: width, height: height, bitsPerPixel: bitsPerPixel, interlace: interlace)
             } else {
                 if seenData { endedData = true }
                 if name == "PLTE" {
@@ -87,5 +103,42 @@ public struct SignatureImage {
             offset = end + 4
         }
         return false
+    }
+
+    private static func validInflate(_ input: [UInt8], width: Int, height: Int, bitsPerPixel: Int, interlace: Int) -> Bool {
+        let passes = interlace == 0 ? [(0, 0, 1, 1)] : [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)]
+        var rows: [(Int, Int)] = []
+        var total = 0
+        for (x, y, dx, dy) in passes {
+            guard width > x, height > y else { continue }
+            let columns = (width - x + dx - 1) / dx
+            let count = (height - y + dy - 1) / dy
+            let rowSize = (columns * bitsPerPixel + 7) / 8 + 1
+            total += rowSize * count
+            rows.append((rowSize, count))
+        }
+        guard !input.isEmpty, total > 0, total <= 36_000_000 else { return false }
+        var stream = z_stream()
+        guard inflateInit_(&stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return false }
+        defer { inflateEnd(&stream) }
+        var output = [UInt8](repeating: 0, count: total + 1)
+        let status: Int32 = input.withUnsafeBufferPointer { src in
+            output.withUnsafeMutableBufferPointer { dst in
+                stream.next_in = UnsafeMutablePointer(mutating: src.baseAddress)
+                stream.avail_in = uInt(src.count)
+                stream.next_out = dst.baseAddress
+                stream.avail_out = uInt(dst.count)
+                return inflate(&stream, Z_FINISH)
+            }
+        }
+        guard status == Z_STREAM_END, stream.total_out == total, stream.avail_in == 0 else { return false }
+        var pos = 0
+        for (rowSize, count) in rows {
+            for _ in 0..<count {
+                guard output[pos] <= 4 else { return false }
+                pos += rowSize
+            }
+        }
+        return true
     }
 }
