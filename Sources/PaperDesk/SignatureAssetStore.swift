@@ -14,10 +14,28 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
     private(set) var entries: [SignatureAsset] = []
     private(set) var lastError: Error?
     private let directory: URL
-    private let limit = 128 * 1024 * 1024
-    private enum StoreError: Error { case unsafeFile, corruptIndex, limit, missing, io }
+    private let limit: Int
+    private let failIndexWrite: () -> Bool
+    private let failUnlink: () -> Bool
+    private enum StoreError: LocalizedError {
+        case unsafeFile, corruptIndex, limit, missing, io
+        var errorDescription: String? {
+            switch self {
+            case .unsafeFile: return "签名文件或目录不安全。"
+            case .corruptIndex: return "签名库索引损坏，未修改历史。"
+            case .limit: return "签名库已达到容量限制。"
+            case .missing: return "未找到该签名。"
+            case .io: return "无法读写本机签名库。"
+            }
+        }
+    }
 
-    init(directory: URL) { self.directory = directory }
+    init(directory: URL, byteLimit: Int = 128 * 1024 * 1024, failIndexWrite: @escaping () -> Bool = { false }, failUnlink: @escaping () -> Bool = { false }) {
+        self.directory = directory
+        self.limit = max(0, min(byteLimit, 128 * 1024 * 1024))
+        self.failIndexWrite = failIndexWrite
+        self.failUnlink = failUnlink
+    }
     private var index: URL { directory.appendingPathComponent("index.json") }
     private func assetURL(_ id: UUID) -> URL { directory.appendingPathComponent("\(id.uuidString).png") }
 
@@ -27,6 +45,7 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
     }
 
     private func prepare() throws {
+        guard directory.isFileURL else { throw StoreError.unsafeFile }
         var info = stat()
         if lstat(directory.path, &info) != 0 {
             guard errno == ENOENT else { throw StoreError.io }
@@ -37,6 +56,7 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
     }
 
     private func read(_ url: URL, maximum: Int) throws -> Data {
+        guard url.isFileURL else { throw StoreError.unsafeFile }
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { throw StoreError.io }
         defer { close(fd) }
@@ -116,7 +136,10 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
             let asset = SignatureAsset(id: UUID(), createdAt: Date(), width: image.pixelWidth, height: image.pixelHeight)
             let path = assetURL(asset.id)
             try writeAtomic(image.pngData, to: path)
-            do { try writeAtomic(JSONEncoder().encode(entries + [asset]), to: index) }
+            do {
+                guard !failIndexWrite() else { throw StoreError.io }
+                try writeAtomic(JSONEncoder().encode(entries + [asset]), to: index)
+            }
             catch { unlink(path.path); throw error }
             entries.append(asset)
             return asset
@@ -137,7 +160,7 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
             let remaining = entries.filter { $0.id != id }
             try writeAtomic(JSONEncoder().encode(remaining), to: index)
             entries = remaining
-            guard unlink(assetURL(id).path) == 0 else { throw StoreError.io }
+            guard !failUnlink(), unlink(assetURL(id).path) == 0 else { throw StoreError.io }
         }
     }
 }

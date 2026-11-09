@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import PaperCore
 @testable import PaperDesk
 
 final class SignatureAssetStoreTests: XCTestCase {
@@ -33,7 +34,8 @@ final class SignatureAssetStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("source")
-        try Data("invalid".utf8).write(to: source)
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 3, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        try rep.representation(using: .png, properties: [:])!.write(to: source)
         let link = root.appendingPathComponent("link")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
         let directory = root.appendingPathComponent("library")
@@ -45,6 +47,58 @@ final class SignatureAssetStoreTests: XCTestCase {
         try bad.write(to: index)
         XCTAssertThrowsError(try store.importPNG(from: source))
         XCTAssertEqual(try Data(contentsOf: index), bad)
+    }
+
+    @MainActor func testLocalURLsAndFaultsAndByteBudget() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 3, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let source = root.appendingPathComponent("valid.png")
+        try rep.representation(using: .png, properties: [:])!.write(to: source)
+        let badDirectory = SignatureAssetStore(directory: URL(string: "https://example.com/library")!)
+        XCTAssertThrowsError(try badDirectory.reload())
+        let store = SignatureAssetStore(directory: root.appendingPathComponent("store"))
+        XCTAssertThrowsError(try store.importPNG(from: URL(string: "https://example.com/image.png")!))
+        let second = root.appendingPathComponent("second.png")
+        rep.setColor(NSColor(deviceRed: 1, green: 0, blue: 0, alpha: 1), atX: 0, y: 0)
+        try rep.representation(using: .png, properties: [:])!.write(to: second)
+        let failDirectory = root.appendingPathComponent("fail")
+        let seeded = SignatureAssetStore(directory: failDirectory)
+        _ = try seeded.importPNG(from: source)
+        let originalIndex = try Data(contentsOf: failDirectory.appendingPathComponent("index.json"))
+        let failing = SignatureAssetStore(directory: failDirectory, failIndexWrite: { true })
+        XCTAssertThrowsError(try failing.importPNG(from: second))
+        XCTAssertEqual(try Data(contentsOf: failDirectory.appendingPathComponent("index.json")), originalIndex)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: failDirectory.path).count, 2)
+        let budget = try SignatureImage(pngData: Data(contentsOf: source)).pngData.count
+        print("Signature byte-budget test: \(budget) bytes")
+        let limited = SignatureAssetStore(directory: root.appendingPathComponent("limited"), byteLimit: budget)
+        _ = try limited.importPNG(from: source)
+        XCTAssertThrowsError(try limited.importPNG(from: second))
+        XCTAssertEqual(limited.entries.count, 1)
+        let unlinkFail = SignatureAssetStore(directory: root.appendingPathComponent("unlink"), byteLimit: 128 * 1024 * 1024, failUnlink: { true })
+        let asset = try unlinkFail.importPNG(from: source)
+        XCTAssertThrowsError(try unlinkFail.remove(id: asset.id))
+        XCTAssertNotNil(unlinkFail.lastError)
+        XCTAssertTrue(unlinkFail.entries.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("unlink/\(asset.id.uuidString).png").path))
+    }
+
+    @MainActor func testHundredDistinctEntriesRejectsNext() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SignatureAssetStore(directory: root.appendingPathComponent("store"))
+        let source = root.appendingPathComponent("source.png")
+        for i in 0...100 {
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            rep.setColor(NSColor(deviceRed: CGFloat(i) / 255, green: 0, blue: 0, alpha: 1), atX: 0, y: 0)
+            try rep.representation(using: .png, properties: [:])!.write(to: source)
+            if i < 100 { _ = try store.importPNG(from: source) }
+            else { XCTAssertThrowsError(try store.importPNG(from: source)) }
+        }
+        XCTAssertEqual(store.entries.count, 100)
     }
 
     @MainActor func testStaleInstancesReloadBeforeWritingAndIndexLimitRefusesWrites() throws {
