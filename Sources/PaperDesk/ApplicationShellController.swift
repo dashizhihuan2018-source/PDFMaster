@@ -36,7 +36,7 @@ final class ApplicationShellController: NSViewController {
     func cancelFileImport() { fileImportCancellation?.cancel() }
     private var lastActiveTabID: UUID?
     private var pendingWatermarkTabCloses = Set<UUID>()
-    private let tabBar = NSStackView()
+    private let tabBar = WindowTitlebarStackView()
     private let windowControls = NSStackView()
     private var homeTab: NSButton?
     private var newTabButton: NSButton?
@@ -602,7 +602,8 @@ final class ApplicationShellController: NSViewController {
         let plus = ChromeTabButton(title: "+", target: self, action: #selector(homeAction)); plus.isBordered = false; plus.font = .systemFont(ofSize: 24, weight: .light); plus.setAccessibilityLabel("新标签"); plus.toolTip = "新标签"; plus.widthAnchor.constraint(equalToConstant: 36).isActive = true; plus.heightAnchor.constraint(equalToConstant: 40).isActive = true; newTabButton = plus; tabBar.addArrangedSubview(plus)
         // Only this trailing space may grow. Otherwise AppKit stretches the first
         // document tab to fill the titlebar and pushes its neighbour to the right.
-        let trailingSpace = NSView()
+        let trailingSpace = WindowTitlebarBlankSpace()
+        tabBar.blankSpace = trailingSpace
         trailingSpace.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         trailingSpace.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         tabBar.addArrangedSubview(trailingSpace)
