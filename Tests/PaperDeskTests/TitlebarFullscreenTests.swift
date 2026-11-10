@@ -2,8 +2,8 @@ import AppKit
 import XCTest
 @testable import PaperDesk
 
-@MainActor final class TitlebarFullscreenTests: XCTestCase {
-    // Record AppKit routing without starting a fullscreen animation or showing a window.
+@MainActor final class TitlebarMaximizeTests: XCTestCase {
+    // Hidden windows resize normally; entering a fullscreen Space is forbidden.
     private final class RecordingWindow: NSWindow {
         var fullscreenRequests = 0
         var dragRequests = 0
@@ -11,7 +11,7 @@ import XCTest
         override func performDrag(with event: NSEvent) { dragRequests += 1 }
     }
 
-    func testBlankTitlebarDoubleClickRoutesToItsOwnWindowAfterTabRebuilds() throws {
+    func testDoubleClickFillsCurrentScreenVisibleAreaAndRestoresAfterTabRebuilds() throws {
         try withShell { shell, window in
             let first = shell.createBlankDocument()
             _ = shell.createBlankDocument()
@@ -20,23 +20,34 @@ import XCTest
                 shell.activate(tabID: first.id)
                 shell.view.layoutSubtreeIfNeeded()
                 let blank = try XCTUnwrap(descendants(shell.view).compactMap { $0 as? WindowTitlebarBlankSpace }.first)
+                let bar = try XCTUnwrap(blank.superview as? WindowTitlebarStackView)
+                let available = NSRect(x: -1920, y: 40, width: 1920, height: 1040)
+                bar.visibleScreenFrame = { _ in available }
                 XCTAssertGreaterThan(blank.bounds.width, 20)
                 let point = blank.convert(NSPoint(x: blank.bounds.midX, y: blank.bounds.midY), to: nil)
-                let before = window.fullscreenRequests
+                let original = window.frame
                 let target: NSView = width == 1600 ? try XCTUnwrap(blank.superview) : blank
                 target.mouseDown(with: try mouse(window, point: point))
-                XCTAssertEqual(window.fullscreenRequests, before + 1)
+                XCTAssertEqual(window.frame, available)
+                XCTAssertEqual(window.fullscreenRequests, 0)
                 XCTAssertFalse(window.isVisible)
                 XCTAssertFalse(window.styleMask.contains(.fullScreen))
+                shell.showHome()
+                shell.view.layoutSubtreeIfNeeded()
+                let updatedBlank = try XCTUnwrap(bar.blankSpace)
+                let restorePoint = updatedBlank.convert(NSPoint(x: updatedBlank.bounds.midX, y: updatedBlank.bounds.midY), to: nil)
+                updatedBlank.mouseDown(with: try mouse(window, point: restorePoint))
+                XCTAssertEqual(window.frame, original)
             }
         }
     }
 
-    func testTitlebarControlsTabsAndReaderDoNotTriggerFullscreen() throws {
+    func testTitlebarControlsTabsAndReaderDoNotMaximize() throws {
         try withShell { shell, window in
             _ = shell.createBlankDocument()
             shell.view.layoutSubtreeIfNeeded()
             let bar = try XCTUnwrap(descendants(shell.view).compactMap { $0 as? WindowTitlebarStackView }.first)
+            let original = window.frame
             let buttons = descendants(shell.view).compactMap { $0 as? NSButton }.filter {
                 ["主界面标签", "新标签"].contains($0.accessibilityLabel() ?? "") ||
                 ($0.accessibilityLabel()?.hasPrefix("文档标签 ") == true) ||
@@ -50,6 +61,34 @@ import XCTest
             let below = bar.convert(NSPoint(x: bar.bounds.midX, y: -20), to: nil)
             XCTAssertFalse(bar.handleBackgroundMouseDown(try mouse(window, point: below)))
             XCTAssertEqual(window.fullscreenRequests, 0)
+            XCTAssertEqual(window.frame, original)
+        }
+    }
+
+    func testResizeAfterMaximizeUsesNewFrameForRestoreAndMissingScreenDoesNothing() throws {
+        try withShell { shell, window in
+            shell.view.layoutSubtreeIfNeeded()
+            let bar = try XCTUnwrap(descendants(shell.view).compactMap { $0 as? WindowTitlebarStackView }.first)
+            let available = NSRect(x: 2000, y: 30, width: 1920, height: 1040)
+            bar.visibleScreenFrame = { _ in available }
+            @MainActor func doubleClick() throws -> Bool {
+                shell.view.layoutSubtreeIfNeeded()
+                let blank = try XCTUnwrap(bar.blankSpace)
+                return bar.handleBackgroundMouseDown(try mouse(window, point: blank.convert(NSPoint(x: blank.bounds.midX, y: blank.bounds.midY), to: nil)))
+            }
+            XCTAssertTrue(try doubleClick())
+            XCTAssertEqual(window.frame, available)
+            let resized = NSRect(x: 2100, y: 100, width: 1280, height: 820)
+            window.setFrame(resized, display: false)
+            XCTAssertTrue(try doubleClick())
+            XCTAssertEqual(window.frame, available)
+            XCTAssertTrue(try doubleClick())
+            XCTAssertEqual(window.frame, resized)
+            bar.visibleScreenFrame = { _ in nil }
+            XCTAssertFalse(try doubleClick())
+            XCTAssertEqual(window.frame, resized)
+            XCTAssertEqual(window.fullscreenRequests, 0)
+            XCTAssertFalse(window.isVisible)
         }
     }
 

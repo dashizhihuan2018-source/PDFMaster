@@ -3,6 +3,9 @@ import AppKit
 /// Only the unused titlebar background participates in this window gesture.
 final class WindowTitlebarStackView: NSStackView {
     weak var blankSpace: NSView?
+    var visibleScreenFrame: (NSWindow) -> NSRect? = { $0.screen?.visibleFrame }
+    private var restoreFrame: NSRect?
+    private var maximizedFrame: NSRect?
     // Receive the click before handing a single click to native window dragging.
     override var mouseDownCanMoveWindow: Bool { false }
 
@@ -17,9 +20,22 @@ final class WindowTitlebarStackView: NSStackView {
             if let button = window.standardWindowButton(type),
                button.bounds.contains(button.convert(event.locationInWindow, from: nil)) { return false }
         }
-        if event.clickCount == 2 { window.toggleFullScreen(nil) }
-        else { window.performDrag(with: event) }
+        if event.clickCount == 2 {
+            guard !window.styleMask.contains(.fullScreen),
+                  let visibleFrame = visibleScreenFrame(window), visibleFrame.width > 0, visibleFrame.height > 0 else { return false }
+            if let restoreFrame, let maximizedFrame, Self.sameFrame(window.frame, maximizedFrame) {
+                window.setFrame(restoreFrame, display: true)
+                self.restoreFrame = nil; self.maximizedFrame = nil
+            } else {
+                restoreFrame = window.frame; maximizedFrame = visibleFrame
+                window.setFrame(visibleFrame, display: true)
+            }
+        } else { window.performDrag(with: event) }
         return true
+    }
+
+    private static func sameFrame(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) < 1 && abs(a.minY - b.minY) < 1 && abs(a.width - b.width) < 1 && abs(a.height - b.height) < 1
     }
 
     override func mouseDown(with event: NSEvent) {
