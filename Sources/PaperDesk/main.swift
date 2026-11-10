@@ -1766,6 +1766,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
     private var pendingOpen: [URL] = []
     private var externalOpenReady = false
     var onExternalOpenFailure: ((Error) -> Void)?
+    private(set) var lastExternalOpenError: Error?
     private var terminationPending = false
     private var pendingWatermarkWindowCloses = Set<UUID>()
     private weak var inkMenuItem: NSMenuItem?
@@ -1877,7 +1878,9 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         return succeeded
     }
     private func reportExternalOpenError(_ error: Error) {
+        lastExternalOpenError = error
         if let onExternalOpenFailure { onExternalOpenFailure(error); return }
+        guard presentation == .interactive else { return }
         let alert = NSAlert()
         alert.messageText = "无法打开文件"
         alert.informativeText = "\(error.localizedDescription)\n请确认文件已下载完成且仍在原位置；也可先保存到本机，再使用 PDF Master 打开。"

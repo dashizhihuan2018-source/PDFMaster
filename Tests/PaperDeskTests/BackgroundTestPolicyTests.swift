@@ -55,4 +55,23 @@ import XCTest
         let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0, String(decoding: data, as: UTF8.self))
     }
+
+    func testBackgroundExternalOpenFailureWithoutCallbackDoesNotPresentDialog() throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let shell = ApplicationShellController(recentStore: RecentDocumentStore(url: root.appendingPathComponent("recent.json")))
+        let delegate = AppDelegate(controller: shell, presentation: .background)
+        let session = delegate.newWindow(makeKey: false)
+        defer {
+            session.window.delegate = nil; session.window.contentViewController = nil; session.window.close()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let previousModal = NSApp.modalWindow
+        XCTAssertNil(delegate.onExternalOpenFailure)
+        delegate.finishExternalOpenStartup()
+        XCTAssertFalse(delegate.application(NSApp, openFile: root.appendingPathComponent("missing.pdf").path))
+        XCTAssertNotNil(delegate.lastExternalOpenError)
+        XCTAssertNil(session.window.attachedSheet); XCTAssertFalse(session.window.isVisible)
+        XCTAssertTrue(NSApp.modalWindow === previousModal)
+    }
 }
