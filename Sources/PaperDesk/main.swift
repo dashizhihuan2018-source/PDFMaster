@@ -164,6 +164,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private weak var inkMenuItem: NSMenuItem?
     private let annotationSelection = AnnotationSelectionTracker()
     private var pendingPlacement: PendingPlacement?
+    private var pendingSignatureAssetID: UUID?
     var signatureStore: SignatureAssetStore?
     private(set) var signaturePicker: SignaturePickerController?
     private let signatureInspectorHost = NSView()
@@ -1140,7 +1141,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         hideSignatureInspector()
         cancelPendingPlacement(); pdfView.clearShapeSelection(); pdfView.annotationManipulationEnabled = false
         pdfView.contentEditingEnabled = false; contentToolID = nil; eraserEnabled = false
-        pendingPlacement = nil
+        pendingPlacement = nil; pendingSignatureAssetID = nil
         pdfView.placementEnabled = false
         pdfView.inkEnabled.toggle()
         inkMenuItem = sender
@@ -1196,8 +1197,12 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         setOverviewVisible(false)
         if signaturePicker?.store !== store {
             signaturePicker?.dismissEditor(); signaturePicker?.view.removeFromSuperview(); signaturePicker?.removeFromParent()
-            let picker = SignaturePickerController(store: store, onSelectImage: { [weak self] image in
-                self?.beginPlacement(.imageSignature(image), accessibilityName: "图片签名放置模式", keepingSignatureInspector: true)
+            let picker = SignaturePickerController(store: store, onSelectImage: { [weak self] id, image in
+                self?.beginPlacement(.imageSignature(image), accessibilityName: "图片签名放置模式", keepingSignatureInspector: true, signatureAssetID: id)
+            }, onDelete: { [weak self] id in
+                self?.invalidatePendingSignature(assetID: id)
+            }, onSelectionFailure: { [weak self] in
+                self?.invalidatePendingSignature()
             }, presentError: { [weak self] message in self?.setInteractionStatus(message) })
             signaturePicker = picker; addChild(picker)
         }
@@ -1352,7 +1357,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
     }
 
-    func beginPlacement(_ placement: PendingPlacement, accessibilityName: String, keepingSignatureInspector: Bool = false) {
+    func beginPlacement(_ placement: PendingPlacement, accessibilityName: String, keepingSignatureInspector: Bool = false, signatureAssetID: UUID? = nil) {
         guard workspace.document != nil, workspace.allowsCommenting else { return }
         guard pdfView.finishInlineTextEditing() else { return }
         if !keepingSignatureInspector { hideSignatureInspector() }
@@ -1363,12 +1368,25 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         pdfView.shapeTool = nil; shapeStyleBar.isHidden = true; selectedShape = nil; pdfView.clearShapeSelection()
         updatePaletteLayout()
         pendingPlacement = placement
+        if case .imageSignature = placement { pendingSignatureAssetID = signatureAssetID }
+        else { pendingSignatureAssetID = nil }
         pdfView.contentEditingEnabled = false; contentToolID = nil; eraserEnabled = false
         pdfView.inkEnabled = false
         pdfView.placementEnabled = true
         syncInkMenuState()
         pdfView.setAccessibilityLabel("“\(accessibilityName)”，点击 PDF 页面放置，或拖动调整大小；Esc 取消")
         setInteractionStatus("点击页面放置 · 拖动可指定大小 · Esc 取消且不修改文档")
+    }
+
+    private func invalidatePendingSignature(assetID: UUID? = nil) {
+        guard case .imageSignature = pendingPlacement, let pendingID = pendingSignatureAssetID,
+              assetID == nil || assetID == pendingID else { return }
+        // Only abandon the uncommitted library image. Keep the inspector and
+        // all annotations already placed in the document untouched.
+        pendingPlacement = nil; pendingSignatureAssetID = nil
+        pdfView.placementEnabled = false
+        pdfView.setAccessibilityLabel("PDF 文档视图")
+        refreshPersistentDocumentStatus()
     }
 
     private func cancelPendingPlacement() {
@@ -1381,6 +1399,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         selectedInk = nil
         inkStyleBar.isHidden = true
         pendingPlacement = nil
+        pendingSignatureAssetID = nil
         pdfView.placementEnabled = false
         pdfView.shapeTool = nil; shapeStyleBar.isHidden = true; selectedShape = nil
         updatePaletteLayout()
@@ -1401,6 +1420,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         selectedShape = nil; pdfView.clearShapeSelection(); pdfView.shapeTool = nil; shapeStyleBar.isHidden = true
         pdfView.contentEditingEnabled = false; contentToolID = nil
         pendingPlacement = nil
+        pendingSignatureAssetID = nil
         annotationSelection.clear()
         pdfView.inkEnabled = false
         pdfView.placementEnabled = false
@@ -1442,7 +1462,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             beginFreeTextInput(from: start, to: end, page: pageIndex); return
         }
         let persistentTool = pdfView.shapeTool
-        if persistentTool == nil { pendingPlacement = nil; pdfView.placementEnabled = false }
+        if persistentTool == nil { pendingPlacement = nil; pendingSignatureAssetID = nil; pdfView.placementEnabled = false }
         pdfView.setAccessibilityLabel("PDF 文档视图")
         refreshPersistentDocumentStatus()
         do {
@@ -1500,7 +1520,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
             shapeStyleBar.configure(tool: tool, style: AnnotationStyle(annotation: annotation), mode: pdfView.shapeTool == nil ? .selection : .drawing, enabled: workspace.allowsCommenting)
             shapeStyleBar.isHidden = false
         } else if annotation.type == "Ink", let document = workspace.document {
-            selectedShape = nil; pendingPlacement = nil
+            selectedShape = nil; pendingPlacement = nil; pendingSignatureAssetID = nil
             pdfView.placementEnabled = false; pdfView.shapeTool = nil
             selectedInk = (page,index,workspace.revision,ObjectIdentifier(document))
             pdfView.selectInk(page:page,index:index)

@@ -6,7 +6,9 @@ import PaperCore
 @MainActor final class SignaturePickerController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     let store: SignatureAssetStore
     let tableView = SignatureHistoryTable()
-    private let onSelectImage: (SignatureImage) -> Void
+    private let onSelectImage: (UUID, SignatureImage) -> Void
+    private let onDelete: (UUID) -> Void
+    private let onSelectionFailure: () -> Void
     private let presentError: @MainActor (String) -> Void
     private let empty = NSTextField(wrappingLabelWithString: "点击上方 + 添加签名")
     private(set) var editor: SignatureEditorController?
@@ -15,11 +17,14 @@ import PaperCore
     private(set) var entries: [SignatureAsset] = []
     var selectedID: UUID? { entries.indices.contains(tableView.selectedRow) ? entries[tableView.selectedRow].id : nil }
 
-    init(store: SignatureAssetStore, onSelectImage: @escaping (SignatureImage) -> Void,
+    init(store: SignatureAssetStore, onSelectImage: @escaping (UUID, SignatureImage) -> Void,
+         onDelete: @escaping (UUID) -> Void = { _ in },
+         onSelectionFailure: @escaping () -> Void = {},
          presentError: @escaping @MainActor (String) -> Void = { message in
              let alert = NSAlert(); alert.messageText = "签名库操作失败"; alert.informativeText = message; alert.runModal()
          }) {
-        self.store = store; self.onSelectImage = onSelectImage; self.presentError = presentError
+        self.store = store; self.onSelectImage = onSelectImage; self.onDelete = onDelete
+        self.onSelectionFailure = onSelectionFailure; self.presentError = presentError
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -69,14 +74,17 @@ import PaperCore
     func select(id: UUID) {
         guard let row = entries.firstIndex(where: { $0.id == id }) else { return }
         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        do { onSelectImage(try store.image(for: id)) } catch { presentError(error.localizedDescription) }
+        do { onSelectImage(id, try store.image(for: id)) }
+        catch { onSelectionFailure(); presentError(error.localizedDescription) }
     }
     func delete(id: UUID) {
         let row = entries.firstIndex(where: { $0.id == id }) ?? 0
         let oldSelection = selectedID
         do {
             try store.remove(id: id)
-            let next = oldSelection == id ? (entries.isEmpty ? nil : entries[min(row, entries.count - 1)].id) : oldSelection
+            onDelete(id)
+            let remaining = store.entries
+            let next = oldSelection == id ? (remaining.isEmpty ? nil : remaining[min(row, remaining.count - 1)].id) : oldSelection
             render(selecting: next)
         } catch { presentError(error.localizedDescription) }
     }

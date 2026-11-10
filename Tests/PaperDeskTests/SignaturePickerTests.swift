@@ -26,7 +26,7 @@ import PaperCore
         let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
         let first = try store.importPNG(from: png("first.png", value: 30))
         let second = try store.importPNG(from: png("second.png", value: 80))
-        let picker = SignaturePickerController(store: store, onSelectImage: { _ in }, presentError: { XCTFail($0) })
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, _ in }, presentError: { XCTFail($0) })
         picker.reloadHistory(); picker.view.layoutSubtreeIfNeeded()
         XCTAssertEqual(picker.entries.map(\.id), [first.id, second.id]); XCTAssertNil(picker.view.window)
         let buttons = descendants(picker.view, NSButton.self)
@@ -45,7 +45,7 @@ import PaperCore
     }
     func testEmptyMessageAndProportionalAlphaThumbnail() throws {
         let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
-        let picker = SignaturePickerController(store: store, onSelectImage: { _ in }, presentError: { XCTFail($0) })
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, _ in }, presentError: { XCTFail($0) })
         picker.reloadHistory()
         XCTAssertTrue(descendants(picker.view, NSTextField.self).contains { !$0.isHidden && $0.stringValue.contains("上方") })
         picker.view.layoutSubtreeIfNeeded()
@@ -69,7 +69,7 @@ import PaperCore
         let missing = try store.importPNG(from: source)
         try FileManager.default.removeItem(at: directory.appendingPathComponent("\(missing.id).png"))
         var selected: SignatureImage?, errors = [String]()
-        let picker = SignaturePickerController(store: store, onSelectImage: { selected = $0 }, presentError: { errors.append($0) })
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, image in selected = image }, presentError: { errors.append($0) })
         picker.reloadHistory(); picker.reloadHistory()
         XCTAssertEqual(picker.tableView.numberOfRows, 2); XCTAssertTrue(errors.isEmpty)
         let cell = try XCTUnwrap(picker.tableView(picker.tableView, viewFor: nil, row: 1) as? NSTableCellView)
@@ -84,7 +84,7 @@ import PaperCore
         let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
         let first = try store.importPNG(from: png("first.png", value: 30))
         _ = try store.importPNG(from: png("second.png", value: 80))
-        let picker = SignaturePickerController(store: store, onSelectImage: { _ in }, presentError: { XCTFail($0) })
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, _ in }, presentError: { XCTFail($0) })
         picker.reloadHistory(); picker.select(id: first.id)
         let menu = try XCTUnwrap(picker.contextMenu(forRow: 1))
         let remove = try XCTUnwrap(menu.items.first)
@@ -104,9 +104,105 @@ import PaperCore
         try workspace.addImageSignature(store.image(for: entry.id), page: 0, bounds: CGRect(x: 80, y: 100, width: 160, height: 80))
         let pdf = root.appendingPathComponent("signed.pdf"); try workspace.save(to: pdf)
         let before = try Data(contentsOf: pdf)
-        let picker = SignaturePickerController(store: store, onSelectImage: { _ in }, presentError: { XCTFail($0) })
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, _ in }, presentError: { XCTFail($0) })
         picker.reloadHistory(); picker.delete(id: entry.id)
         XCTAssertEqual(try Data(contentsOf: source), bytes); XCTAssertEqual(try Data(contentsOf: pdf), before)
+    }
+    private func workbench(store: SignatureAssetStore) throws -> WorkbenchController {
+        let controller = WorkbenchController()
+        controller.signatureStore = store
+        try controller.workspace.createBlank(); _ = controller.view; controller.refreshDocument()
+        controller.addSignature()
+        return controller
+    }
+    private func clickPDF(_ controller: WorkbenchController) throws {
+        let page = try XCTUnwrap(controller.pdfView.document?.page(at: 0))
+        controller.pdfView.beginGesture(on: page, at: CGPoint(x: 180, y: 420))
+        controller.pdfView.finishGesture()
+    }
+    func testDeletingOnlyArmedSignaturePreventsLaterPDFInsertionAndKeepsExistingAnnotation() throws {
+        let source = try png("only.png")
+        let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
+        let asset = try store.importPNG(from: source)
+        let controller = try workbench(store: store)
+        let picker = try XCTUnwrap(controller.signaturePicker)
+        picker.select(id: asset.id); try clickPDF(controller)
+        XCTAssertEqual(controller.workspace.document?.page(at: 0)?.annotations.count, 1)
+        picker.select(id: asset.id)
+        let revision = controller.workspace.revision
+        picker.delete(id: asset.id)
+        XCTAssertTrue(controller.isSignatureInspectorVisible); XCTAssertTrue(picker.entries.isEmpty)
+        XCTAssertFalse(controller.pdfView.placementEnabled)
+        try clickPDF(controller)
+        XCTAssertEqual(controller.workspace.revision, revision)
+        XCTAssertEqual(controller.workspace.document?.page(at: 0)?.annotations.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+    func testDeletingArmedSignatureWithSurvivorDoesNotInsertDeletedImage() throws {
+        let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
+        let first = try store.importPNG(from: png("first.png", value: 30))
+        let second = try store.importPNG(from: png("second.png", value: 80))
+        let controller = try workbench(store: store), picker = try XCTUnwrap(controller.signaturePicker)
+        picker.select(id: first.id); XCTAssertTrue(controller.pdfView.placementEnabled)
+        let revision = controller.workspace.revision
+        picker.delete(id: first.id)
+        XCTAssertEqual(picker.selectedID, second.id); XCTAssertTrue(controller.isSignatureInspectorVisible)
+        XCTAssertFalse(controller.pdfView.placementEnabled)
+        try clickPDF(controller)
+        XCTAssertEqual(controller.workspace.revision, revision)
+        XCTAssertEqual(controller.workspace.document?.page(at: 0)?.annotations.count, 0)
+    }
+    func testContextDeletingNonarmedSignatureLeavesArmedImagePlacement() throws {
+        let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
+        let first = try store.importPNG(from: png("first.png", value: 30))
+        _ = try store.importPNG(from: png("second.png", value: 80))
+        let controller = try workbench(store: store), picker = try XCTUnwrap(controller.signaturePicker)
+        picker.select(id: first.id)
+        let remove = try XCTUnwrap(picker.contextMenu(forRow: 1)?.items.first)
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(remove.action), to: remove.target, from: remove))
+        XCTAssertEqual(store.entries.map(\.id), [first.id]); XCTAssertTrue(controller.pdfView.placementEnabled)
+        XCTAssertTrue(controller.isSignatureInspectorVisible)
+        try clickPDF(controller)
+        XCTAssertEqual(controller.workspace.document?.page(at: 0)?.annotations.count, 1)
+    }
+    func testDeletingLastSelectedSignatureChoosesAdjacentPreviousRow() throws {
+        let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
+        let first = try store.importPNG(from: png("first.png", value: 30))
+        let second = try store.importPNG(from: png("second.png", value: 80))
+        let third = try store.importPNG(from: png("third.png", value: 150))
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, _ in }, presentError: { XCTFail($0) })
+        picker.reloadHistory(); picker.select(id: third.id); picker.delete(id: third.id)
+        XCTAssertEqual(picker.entries.map(\.id), [first.id, second.id]); XCTAssertEqual(picker.selectedID, second.id)
+    }
+    func testSelectingUnavailableSignatureCancelsPreviousImageAndReportsError() throws {
+        let directory = root.appendingPathComponent("Signatures")
+        let store = SignatureAssetStore(directory: directory)
+        let first = try store.importPNG(from: png("first.png", value: 30))
+        let unavailable = try store.importPNG(from: png("missing.png", value: 80))
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("\(unavailable.id).png"))
+        let controller = try workbench(store: store), picker = try XCTUnwrap(controller.signaturePicker)
+        picker.select(id: first.id); XCTAssertTrue(controller.pdfView.placementEnabled)
+        let revision = controller.workspace.revision
+        picker.select(id: unavailable.id)
+        XCTAssertEqual(picker.selectedID, unavailable.id); XCTAssertTrue(controller.isSignatureInspectorVisible)
+        XCTAssertFalse(controller.pdfView.placementEnabled)
+        XCTAssertFalse(controller.interactionStatusText.isEmpty)
+        XCTAssertFalse(controller.interactionStatusText.contains("点击页面放置"))
+        XCTAssertEqual(store.entries.map(\.id), [first.id, unavailable.id])
+        try clickPDF(controller)
+        XCTAssertEqual(controller.workspace.revision, revision)
+        XCTAssertEqual(controller.workspace.document?.page(at: 0)?.annotations.count, 0)
+    }
+    func testDeletingLibraryAssetDoesNotCancelUnrelatedNotePlacement() throws {
+        let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
+        let asset = try store.importPNG(from: png("first.png"))
+        let controller = try workbench(store: store), picker = try XCTUnwrap(controller.signaturePicker)
+        picker.select(id: asset.id)
+        controller.beginPlacement(.note(NoteConfiguration(contents: "keep note", author: nil, color: .yellow)), accessibilityName: "note")
+        picker.delete(id: asset.id)
+        XCTAssertTrue(controller.pdfView.placementEnabled)
+        try clickPDF(controller)
+        XCTAssertEqual(controller.workspace.document?.page(at: 0)?.annotations.last?.contents, "keep note")
     }
     func testRightInspectorNarrowsPDFAndReusesControllerAcrossActivation() throws {
         let controller = WorkbenchController()
@@ -159,8 +255,8 @@ import PaperCore
         let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
         let first = try store.importPNG(from: png("first.png", value: 30))
         let second = try store.importPNG(from: png("second.png", value: 80))
-        let picker = SignaturePickerController(store: store, onSelectImage: { _ in }, presentError: { _ in })
-        let other = SignaturePickerController(store: store, onSelectImage: { _ in }, presentError: { XCTFail($0) })
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, _ in }, presentError: { _ in })
+        let other = SignaturePickerController(store: store, onSelectImage: { _, _ in }, presentError: { XCTFail($0) })
         other.reloadHistory()
         picker.reloadHistory(); picker.select(id: first.id)
         other.delete(id: first.id)
@@ -173,7 +269,7 @@ import PaperCore
     func testPlusOwnsResettableSheetAndCreateSelectsWithoutClosingInspector() throws {
         let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
         var selected: SignatureImage?
-        let picker = SignaturePickerController(store: store, onSelectImage: { selected = $0 }, presentError: { XCTFail($0) })
+        let picker = SignaturePickerController(store: store, onSelectImage: { _, image in selected = image }, presentError: { XCTFail($0) })
         let owner = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 480), styleMask: [.titled], backing: .buffered, defer: false)
         owner.contentViewController = picker; picker.reloadHistory()
         defer { picker.dismissEditor(); owner.contentViewController = nil }
