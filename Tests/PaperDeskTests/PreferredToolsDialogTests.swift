@@ -81,6 +81,7 @@ import XCTest
 
     private func runDialog(_ dashboard: DashboardViewController, response: String,
                            inspect: @escaping (NSView, [NSPopUpButton]) throws -> Void) throws {
+        try NativeTestEnvironment.requireForeground()
         var inspected = false
         var inspectionError: Error?
         // Inspect the actual alert opened by the production action, not a

@@ -180,7 +180,7 @@ final class MultiwindowTests: XCTestCase {
             var shell: ApplicationShellController? = ApplicationShellController(
                 recentStore: RecentDocumentStore(url: root.appendingPathComponent("recents.json")))
             releasedShell = shell
-            delegate = AppDelegate(controller: shell!)
+            delegate = AppDelegate(controller: shell!, presentation: .background)
             delegate!.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
             _ = delegate!.newWindow(makeKey: false)
             let firstWindow = delegate!.windowSessions[0].window
@@ -206,7 +206,7 @@ final class MultiwindowTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MultiwindowTests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let shell = ApplicationShellController(recentStore: RecentDocumentStore(url: root.appendingPathComponent("recents.json")))
-        let delegate = AppDelegate(controller: shell)
+        let delegate = AppDelegate(controller: shell, presentation: .background)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         defer {
             for session in delegate.windowSessions {

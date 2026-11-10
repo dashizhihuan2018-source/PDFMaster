@@ -33,7 +33,7 @@ import XCTest
         let oldMenu = NSApp.mainMenu
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let shell = ApplicationShellController(recentStore: RecentDocumentStore(url: directory.appendingPathComponent("recent.json")))
-        let delegate = AppDelegate(controller: shell)
+        let delegate = AppDelegate(controller: shell, presentation: .background)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         defer {
             for session in delegate.windowSessions { session.window.delegate = nil; session.window.close() }

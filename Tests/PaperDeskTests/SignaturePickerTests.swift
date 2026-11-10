@@ -267,6 +267,7 @@ import PaperCore
         XCTAssertEqual(picker.entries.map(\.id), [second.id]); XCTAssertEqual(picker.selectedID, second.id)
     }
     func testPlusOwnsResettableSheetAndCreateSelectsWithoutClosingInspector() throws {
+        try NativeTestEnvironment.requireForeground()
         let store = SignatureAssetStore(directory: root.appendingPathComponent("Signatures"))
         var selected: SignatureImage?
         let picker = SignaturePickerController(store: store, onSelectImage: { _, image in selected = image }, presentError: { XCTFail($0) })

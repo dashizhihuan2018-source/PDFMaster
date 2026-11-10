@@ -161,7 +161,7 @@ import XCTest
         let before = try c.workspace.engineInput()
         let document = c.workspace.document, revision = c.workspace.revision, dirty = c.workspace.isDirty
         let originalPage = c.pdfView.currentPage, originalZoom = c.pdfView.scaleFactor, originalLayout = c.readerCommands.layout
-        let delegate = AppDelegate(controller: shell)
+        let delegate = AppDelegate(controller: shell, presentation: .background)
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         defer {
             for session in delegate.windowSessions {

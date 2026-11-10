@@ -209,6 +209,7 @@ import PDFKit
         XCTAssertEqual(services.progressDelayNanoseconds, 500_000_000)
     }
     func testNativeConfirmationUsesVerifiedOrdinaryWPSMessageAndButtons() async throws {
+        try NativeTestEnvironment.requireForeground()
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

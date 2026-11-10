@@ -43,6 +43,7 @@ import XCTest
         XCTAssertEqual(checks, 2)
     }
     func testCloseOtherTabsRejectsRunningWatermarkWithoutChangingTaskDocumentOrForeignSheet() async throws {
+        try NativeTestEnvironment.requireForeground()
         let shell = shell(), kept = shell.createBlankDocument(), other = shell.createBlankDocument()
         shell.activate(tabID: kept.id)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled], backing: .buffered, defer: false)
@@ -88,7 +89,7 @@ import XCTest
         XCTAssertFalse(LocalToolActivity.hasRunningJobs)
     }
     func testWindowCloseCancelsOnlyWatermarksInThatWindow() async throws {
-        let first = shell(), delegate = AppDelegate(controller: first), oldMenu = NSApp.mainMenu
+        let first = shell(), delegate = AppDelegate(controller: first, presentation: .background), oldMenu = NSApp.mainMenu
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         let second = delegate.newWindow(makeKey: false)
         defer {
@@ -125,7 +126,7 @@ import XCTest
         XCTAssertFalse(LocalToolActivity.hasRunningJobs)
     }
     func testQuitCancelsAllWindowWatermarksButDirtyRefusalStillPreventsQuit() async throws {
-        let first = shell(), delegate = AppDelegate(controller: first), oldMenu = NSApp.mainMenu
+        let first = shell(), delegate = AppDelegate(controller: first, presentation: .background), oldMenu = NSApp.mainMenu
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         let second = delegate.newWindow(makeKey: false)
         defer {
@@ -165,6 +166,7 @@ import XCTest
         return (source, bytes)
     }
     func testTabCloseUnblocksOwnedNativeConfirmationNoticeAndProgress() async throws {
+        try NativeTestEnvironment.requireForeground()
         for stage in 0..<3 {
             let shell = shell(), tab = shell.createBlankDocument()
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750), styleMask: [.titled], backing: .buffered, defer: false)
@@ -191,7 +193,8 @@ import XCTest
         }
     }
     func testUnknownSheetAndOtherToolAreNotDismissedOrCanceled() async throws {
-        let first = shell(), delegate = AppDelegate(controller: first), oldMenu = NSApp.mainMenu
+        try NativeTestEnvironment.requireForeground()
+        let first = shell(), delegate = AppDelegate(controller: first, presentation: .background), oldMenu = NSApp.mainMenu
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         let window = try XCTUnwrap(delegate.windowSessions.first?.window), tab = first.createBlankDocument()
         defer { window.delegate = nil; window.contentViewController = nil; window.close(); NSApp.mainMenu = oldMenu }
@@ -226,7 +229,8 @@ import XCTest
         XCTAssertFalse(allowed); XCTAssertTrue(shell.documentTabs.contains { $0 === tab })
     }
     func testForeignChildOnOwnedConfirmationIsNeverDismissedToForceClosing() async throws {
-        let first = shell(), delegate = AppDelegate(controller: first), oldMenu = NSApp.mainMenu
+        try NativeTestEnvironment.requireForeground()
+        let first = shell(), delegate = AppDelegate(controller: first, presentation: .background), oldMenu = NSApp.mainMenu
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         let window = try XCTUnwrap(delegate.windowSessions.first?.window), tab = first.createBlankDocument()
         defer { window.delegate = nil; window.contentViewController = nil; window.close(); NSApp.mainMenu = oldMenu }

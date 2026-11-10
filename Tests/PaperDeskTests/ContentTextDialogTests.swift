@@ -48,6 +48,7 @@ import PaperCore
     }
 
     func testFailedApplyShowsReasonAndKeepsDraftForRetry() async throws {
+        try NativeTestEnvironment.requireForeground()
         _ = NSApplication.shared
         let fixture = publicFixture.source
         let engine = ContentEditEngine()

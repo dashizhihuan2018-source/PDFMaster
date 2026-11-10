@@ -78,6 +78,7 @@ import PaperCore
     }
 
     func testNativeDragChangesVisibleInkBeforeReleaseAndCommitsOnlyOnce() throws {
+        try NativeTestEnvironment.requireForeground()
         let c = WorkbenchController(); _ = c.view
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentViewController = c

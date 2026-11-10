@@ -1750,6 +1750,7 @@ private final class ModeButton: NSButton { var mode: WorkbenchMode? }
 private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Selector? }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
+    private let presentation: ApplicationPresentation
     private var bootstrapController: ApplicationShellController?
     private(set) var windowSessions: [PDFWindowSession] = []
     private var focusedSession: PDFWindowSession? {
@@ -1774,6 +1775,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         NSApp.mainMenu?.items.first(where: { $0.submenu?.title == "文件" })?.submenu?.addItem(item)
     }
     override init() {
+        presentation = .interactive
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("PDF Master", isDirectory: true)
         let profile = Bundle.main.bundleIdentifier?.contains(".validation") == true ? support.appendingPathComponent("Validation", isDirectory: true).appendingPathComponent(Bundle.main.bundleIdentifier!, isDirectory: true) : support
         let validationAccount: AccountStore?
@@ -1784,8 +1786,9 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         bootstrapController = ApplicationShellController(recentStore: RecentDocumentStore(url: profile.appendingPathComponent("recent-documents.json")), accountStore: validationAccount)
         super.init()
     }
-    init(controller: ApplicationShellController) {
+    init(controller: ApplicationShellController, presentation: ApplicationPresentation) {
         self.bootstrapController = controller
+        self.presentation = presentation
         super.init()
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1827,7 +1830,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             if let item = self.inkMenuItem { workbench?.registerInkMenuItem(item); if workbench == nil { item.state = .off } }
             self.updateReaderMenus()
         }
-        if makeKey { window.makeKeyAndOrderFront(nil) } else { window.orderFront(nil) }
+        presentation.present(window, makeKey: makeKey)
         return session
     }
     @discardableResult func moveTabToNewWindow(_ id: UUID, from source: ApplicationShellController) -> Bool {
@@ -1835,7 +1838,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
               let tab = source.extractDocumentTab(id: id) else { return false }
         let destination = newWindow(makeKey: true)
         destination.controller.adoptDocumentTab(tab)
-        destination.window.makeKeyAndOrderFront(nil)
+        presentation.present(destination.window)
         return true
     }
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
@@ -1870,7 +1873,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
             if !opened, let error = controller.lastOpenError { reportExternalOpenError(error) }
             if !opened { succeeded = false }
         }
-        if externalOpenReady, !urls.isEmpty { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+        if externalOpenReady, !urls.isEmpty { presentation.present(window, activate: true) }
         return succeeded
     }
     private func reportExternalOpenError(_ error: Error) {
@@ -1883,7 +1886,7 @@ private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Se
         else { alert.runModal() }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if let existing = windowSessions.first?.window { existing.makeKeyAndOrderFront(nil) }
+        if let existing = windowSessions.first?.window { presentation.present(existing) }
         else if let bootstrapController {
             _ = createWindowSession(controller: bootstrapController, makeKey: true)
             self.bootstrapController = nil
