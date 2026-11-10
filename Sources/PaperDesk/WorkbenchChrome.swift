@@ -3,10 +3,11 @@ import AppKit
 /// Only the unused titlebar background participates in this window gesture.
 final class WindowTitlebarStackView: NSStackView {
     weak var blankSpace: NSView?
-    override var mouseDownCanMoveWindow: Bool { true }
+    // Receive the click before handing a single click to native window dragging.
+    override var mouseDownCanMoveWindow: Bool { false }
 
-    @discardableResult func handleBackgroundDoubleClick(_ event: NSEvent) -> Bool {
-        guard event.type == .leftMouseDown, event.clickCount == 2, let window,
+    @discardableResult func handleBackgroundMouseDown(_ event: NSEvent) -> Bool {
+        guard event.type == .leftMouseDown, [1, 2].contains(event.clickCount), let window,
               event.window === window else { return false }
         let point = convert(event.locationInWindow, from: nil)
         guard bounds.contains(point) else { return false }
@@ -16,19 +17,20 @@ final class WindowTitlebarStackView: NSStackView {
             if let button = window.standardWindowButton(type),
                button.bounds.contains(button.convert(event.locationInWindow, from: nil)) { return false }
         }
-        window.toggleFullScreen(nil)
+        if event.clickCount == 2 { window.toggleFullScreen(nil) }
+        else { window.performDrag(with: event) }
         return true
     }
 
     override func mouseDown(with event: NSEvent) {
-        if !handleBackgroundDoubleClick(event) { super.mouseDown(with: event) }
+        if !handleBackgroundMouseDown(event) { super.mouseDown(with: event) }
     }
 }
 
 final class WindowTitlebarBlankSpace: NSView {
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
     override func mouseDown(with event: NSEvent) {
-        if (superview as? WindowTitlebarStackView)?.handleBackgroundDoubleClick(event) != true {
+        if (superview as? WindowTitlebarStackView)?.handleBackgroundMouseDown(event) != true {
             super.mouseDown(with: event)
         }
     }

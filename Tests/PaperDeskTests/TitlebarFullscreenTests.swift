@@ -6,7 +6,9 @@ import XCTest
     // Record AppKit routing without starting a fullscreen animation or showing a window.
     private final class RecordingWindow: NSWindow {
         var fullscreenRequests = 0
+        var dragRequests = 0
         override func toggleFullScreen(_ sender: Any?) { fullscreenRequests += 1 }
+        override func performDrag(with event: NSEvent) { dragRequests += 1 }
     }
 
     func testBlankTitlebarDoubleClickRoutesToItsOwnWindowAfterTabRebuilds() throws {
@@ -43,29 +45,32 @@ import XCTest
             XCTAssertGreaterThanOrEqual(buttons.count, 4)
             for button in buttons + [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap({ window.standardWindowButton($0) }) {
                 let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-                XCTAssertFalse(bar.handleBackgroundDoubleClick(try mouse(window, point: point)))
+                XCTAssertFalse(bar.handleBackgroundMouseDown(try mouse(window, point: point)))
             }
             let below = bar.convert(NSPoint(x: bar.bounds.midX, y: -20), to: nil)
-            XCTAssertFalse(bar.handleBackgroundDoubleClick(try mouse(window, point: below)))
+            XCTAssertFalse(bar.handleBackgroundMouseDown(try mouse(window, point: below)))
             XCTAssertEqual(window.fullscreenRequests, 0)
         }
     }
 
-    func testSingleTripleRightAndOtherWindowClicksAreIgnored() throws {
+    func testSingleClickDragsWhileTripleRightAndOtherWindowClicksAreIgnored() throws {
         try withShell { shell, window in
             shell.view.layoutSubtreeIfNeeded()
             let bar = try XCTUnwrap(descendants(shell.view).compactMap { $0 as? WindowTitlebarStackView }.first)
             let blank = try XCTUnwrap(bar.blankSpace)
             let point = blank.convert(NSPoint(x: blank.bounds.midX, y: blank.bounds.midY), to: nil)
-            for count in [1, 3] { XCTAssertFalse(bar.handleBackgroundDoubleClick(try mouse(window, point: point, count: count))) }
-            XCTAssertFalse(bar.handleBackgroundDoubleClick(try mouse(window, point: point, type: .rightMouseDown)))
+            blank.mouseDown(with: try mouse(window, point: point, count: 1))
+            bar.mouseDown(with: try mouse(window, point: point, count: 1))
+            XCTAssertEqual(window.dragRequests, 2)
+            XCTAssertFalse(bar.handleBackgroundMouseDown(try mouse(window, point: point, count: 3)))
+            XCTAssertFalse(bar.handleBackgroundMouseDown(try mouse(window, point: point, type: .rightMouseDown)))
             let foreign = RecordingWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
             foreign.isReleasedWhenClosed = false
             defer { foreign.close() }
-            XCTAssertFalse(bar.handleBackgroundDoubleClick(try mouse(foreign, point: point)))
+            XCTAssertFalse(bar.handleBackgroundMouseDown(try mouse(foreign, point: point)))
             XCTAssertEqual(window.fullscreenRequests, 0)
-            XCTAssertTrue(bar.mouseDownCanMoveWindow)
-            XCTAssertTrue(blank.mouseDownCanMoveWindow)
+            XCTAssertFalse(bar.mouseDownCanMoveWindow)
+            XCTAssertFalse(blank.mouseDownCanMoveWindow)
         }
     }
 
