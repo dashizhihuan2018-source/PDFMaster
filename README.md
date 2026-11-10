@@ -10,11 +10,11 @@
 
 **自由创作，灵感无界。**
 
-V0.1.29 / build51：签名入口新增 PNG 导入、本机历史复用和逐项确认删除，保留透明度与图像比例。删除历史不影响原始图片或已经签入的 PDF；多笔手绘作为一枚批注。图形签名不是数字证书。[本版范围与验证](docs/SIGNATURES-V0.1.29.md)。已有布局、字体兼容、多窗口与显式水印支持保留。
+V0.1.30 / build52：签名库改为文档右侧检查器；顶部＋打开创建预览，PNG选择/拖放后点创建才保存历史，取消不入库。历史按保存顺序显示，可右键或Delete删除，无二次确认；不影响原始图片或已签入PDF。绘制签名可创建为透明图片并复用。图形签名不是数字证书。[本版范围与验证](docs/SIGNATURES-V0.1.30.md)。已有布局、字体兼容、多窗口与显式水印支持保留。
 
-[官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [逐项功能](https://dashizhihuan2018-source.github.io/PDFMaster/features.html) · [使用教程](https://dashizhihuan2018-source.github.io/PDFMaster/guide.html) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.29)
+[官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [逐项功能](https://dashizhihuan2018-source.github.io/PDFMaster/features.html) · [使用教程](https://dashizhihuan2018-source.github.io/PDFMaster/guide.html) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.30)
 
-2026-11-09 **V0.1.29 / build51**：沿用独立 Swift / Apple 系统框架内容编辑与字体兼容引擎，必要 qpdf 随 App 打包，不要求用户安装 Python、PyMuPDF、fontTools 或 Homebrew。复杂 PDF 保守拒绝，不承诺任意格式或所有 Mac 兼容。历史 [V0.1.19 源码修订 r1](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19-r1) 保留，不覆盖旧资产。
+2026-11-10 **V0.1.30 / build52**：沿用独立 Swift / Apple 系统框架内容编辑与字体兼容引擎，必要 qpdf 随 App 打包，不要求用户安装 Python、PyMuPDF、fontTools 或 Homebrew。复杂 PDF 保守拒绝，不承诺任意格式或所有 Mac 兼容。历史 [V0.1.19 源码修订 r1](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19-r1) 保留，不覆盖旧资产。
 
 PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF 工具集、无限画布、无边记** 三种工作方式，将文档、图片、便签与想法连接起来：从专注阅读，到自由批注，再到有序整理，让 PDF 成为思考的起点。
 
@@ -44,13 +44,13 @@ https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
 ## 获取与使用
 
-当前 macOS 安装包 **V0.1.29**（build51）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.29/PDFMaster-V0.1.29-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.29)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；最低构建目标 macOS 14.0，尚未完成其他 Mac 或所有系统版本验收。系统安全检查未通过时停止并反馈，不关闭全局安全保护。Windows 仍为旧独立预览。非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+当前 macOS 安装包 **V0.1.30**（build52）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.30/PDFMaster-V0.1.30-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.30)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；最低构建目标 macOS 14.0，尚未完成其他 Mac 或所有系统版本验收。系统安全检查未通过时停止并反馈，不关闭全局安全保护。Windows 仍为旧独立预览。非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
 
 V0.1.19 修复导入图章（Stamp）中整张CAD图纸被低分辨率缓存放大而发糊的问题，按当前缩放与Retina像素密度重绘原始外观，保留批注叠放与旋转，不压平或改写原PDF。本机完整778项测试通过，并检查原生窗口多倍率及滚动显示；不是所有PDF或其它Mac的兼容认证。详见[发布说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19)。
 
 V0.1.18 更新原生阅读器右侧 PDF Copilot、富文本回答及页码引用，支持在本机账户设置中分别绑定自己的 **DMX / DeepSeek / Agnes Key**，并包含 build40 的双页布局、字体兼容与批注修复。不同账户/服务商不共用 Key，发送前需核对范围并同意可能计费；DeepSeek 真实 Key 调用尚未验证。包内不包含用户登录状态、真实密钥或用户文档。
 
-**当前版本对应项目源码：V0.1.29/build51。** 本仓库包含 Swift 原生程序、画布前端、测试、资源、许可证和构建脚本。公开包沿用已审查的画布前端，其源码在 `CanvasWeb/`，不含私有演示、第三方提示词快照或用户数据。主程序由此公开源码树构建，清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名；不承诺自行构建结果逐字节一致。开发构建需准备下述工具，最终 App 不需要开发环境。依赖缓存、编译产物和私人开发历史不属于项目源码。
+**当前版本对应项目源码：V0.1.30/build52。** 本仓库包含 Swift 原生程序、画布前端、测试、资源、许可证和构建脚本。公开包沿用已审查的画布前端，其源码在 `CanvasWeb/`，不含私有演示、第三方提示词快照或用户数据。主程序由此公开源码树构建，清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名；不承诺自行构建结果逐字节一致。开发构建需准备下述工具，最终 App 不需要开发环境。依赖缓存、编译产物和私人开发历史不属于项目源码。
 
 V0.1.7 将无限画布随应用打包，从固定本地源加载，不再加载或跳转画布网站。无需网站或本机账户登录，点击“DMX Key 设置…”输入自己的 Key，Key 仅在本机钥匙串保存，不交给 JS、配置 JSON 或画布 ZIP。首次生成需原生会话授权；费用由自己的 DMX 账户承担。[完整使用教程](docs/无限画布使用教程.md)。支持页仅保留邮箱 `archseuyang@163.com`。同时保留关闭窗口后再次打开 PDF / Dock 重开时的窗口生命周期修复。
 
@@ -82,7 +82,7 @@ V0.1.0 完善文档保存体验：⌘S 直接保存当前 PDF，新文档首次�
 (cd CanvasWeb && npm ci --ignore-scripts && npm run typecheck && npm run build)
 # 先按下方说明从官方源码构建 qpdf，再把显式路径传入测试和打包。
 PDFMASTER_TEST_QPDF="$PWD/work/vendor-build/bin/qpdf" \
-PDFMASTER_QPDF="$PWD/work/vendor-build/bin/qpdf" swift test
+PDFMASTER_QPDF="$PWD/work/vendor-build/bin/qpdf" bash scripts/test-background.sh
 ```
 
 打包结果为 `dist/PDF Master.app`。脚本从锁文件安装前端依赖、构建本地画布与原生程序并创建新 bundle，不安装、不运行、不清理旧版本；已有目标会拒绝覆盖。使用 macOS 本地 ad-hoc 签名，不改变系统安全策略。
@@ -99,11 +99,13 @@ export PDFMASTER_TEST_QPDF_LIB="$PWD/work/vendor-build/lib/libqpdf.30.dylib"
 export PDFMASTER_TEST_QPDF_SOURCE="$QPDF_SOURCE"
 export PDFMASTER_TEST_JPEG_SOURCE="$JPEG_SOURCE"
 export PDFMASTER_QPDF="$PDFMASTER_TEST_QPDF"
-swift test
+bash scripts/test-background.sh
 bash scripts/build-app.sh --qpdf "$PDFMASTER_TEST_QPDF" \
   --qpdf-lib "$PDFMASTER_TEST_QPDF_LIB" \
   --qpdf-source "$QPDF_SOURCE" --jpeg-source "$JPEG_SOURCE"
 ```
+
+自动化测试默认在后台执行：`bash scripts/test-background.sh` 先检查前台操作守卫再执行原生测试，支持 `--filter ...`。直接 `swift test` 也使用隐藏窗口与默认跳过保护，不自动启动 App、激活窗口或改写系统剪贴板。必须使用前台窗口、系统激活或模态面板的用例默认明确跳过，不计为已验证；仅在用户授权的独立桌面会话中显式使用 `PDFMASTER_TEST_ALLOW_FOREGROUND=1 bash scripts/test-background.sh --filter ...`。构建、安装与校验均不自动打开软件。
 
 脚本捆绑 qpdf、依赖库及对应许可证，检查依赖闭包与最低系统目标。生产原生内容引擎仅使用包内组件；DEBUG 测试允许上述显式工具注入。不要提交 `work/vendor-build` 或源码缓存到 Git。
 
