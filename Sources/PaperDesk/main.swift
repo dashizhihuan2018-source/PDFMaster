@@ -165,7 +165,11 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     private let annotationSelection = AnnotationSelectionTracker()
     private var pendingPlacement: PendingPlacement?
     var signatureStore: SignatureAssetStore?
-    private var signaturePicker: SignaturePickerController?
+    private(set) var signaturePicker: SignaturePickerController?
+    private let signatureInspectorHost = NSView()
+    private var signatureInspectorWidth: NSLayoutConstraint?
+    private(set) var isSignatureInspectorVisible = false
+    var signatureInspectorFrame: NSRect { signatureInspectorHost.frame }
     private var activeMarkup: (kind: PDFAnnotationSubtype, color: NSColor)?
     let shapeStyleBar = ShapeStyleBarView()
     /// A separate instance keeps pen width/color independent of shape defaults.
@@ -271,10 +275,15 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         pdfView.setAccessibilityLabel("PDF 文档视图")
         side.translatesAutoresizingMaskIntoConstraints = false; pdfView.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(side); content.addSubview(pdfView)
+        signatureInspectorHost.translatesAutoresizingMaskIntoConstraints = false
+        signatureInspectorHost.isHidden = true; content.addSubview(signatureInspectorHost)
+        let inspectorWidth = signatureInspectorHost.widthAnchor.constraint(equalToConstant: 0)
+        signatureInspectorWidth = inspectorWidth
         let sideWidth = side.widthAnchor.constraint(equalToConstant: thumbnailSidebarWidth); sidebarWidthConstraint = sideWidth
         NSLayoutConstraint.activate([
             side.leadingAnchor.constraint(equalTo: content.leadingAnchor), side.topAnchor.constraint(equalTo: content.topAnchor), side.bottomAnchor.constraint(equalTo: content.bottomAnchor), sideWidth,
-            pdfView.leadingAnchor.constraint(equalTo: side.trailingAnchor), pdfView.trailingAnchor.constraint(equalTo: content.trailingAnchor), pdfView.topAnchor.constraint(equalTo: content.topAnchor), pdfView.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+            pdfView.leadingAnchor.constraint(equalTo: side.trailingAnchor), pdfView.trailingAnchor.constraint(equalTo: signatureInspectorHost.leadingAnchor), pdfView.topAnchor.constraint(equalTo: content.topAnchor), pdfView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            signatureInspectorHost.trailingAnchor.constraint(equalTo: content.trailingAnchor), signatureInspectorHost.topAnchor.constraint(equalTo: content.topAnchor), signatureInspectorHost.bottomAnchor.constraint(equalTo: content.bottomAnchor), inspectorWidth
         ])
         sidebarDivider.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(sidebarDivider)
@@ -614,6 +623,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     func guardDirty() -> Bool { guard pdfView.finishInlineTextEditing(), !isLocalToolRunning, view.window?.attachedSheet == nil else { return false }; guard workspace.isDirty else { return true }; let alert = NSAlert(); alert.messageText = "保存文档更改？"; alert.informativeText = "关闭前保存更改，或放弃本次修改。"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "不保存"); alert.addButton(withTitle: "取消"); switch alert.runModal() { case .alertFirstButtonReturn: return saveDocumentInteractively(); case .alertSecondButtonReturn: return true; default: return false } }
 
     func refreshDocument(preservePage: Int? = nil, scale: CGFloat? = nil) {
+        if workspace.document == nil || !workspace.allowsCommenting { hideSignatureInspector() }
         invalidateCopilotIfChanged()
         if selectedInk != nil, currentSelectedInk == nil { clearSelectedInk() }
         if let s = selectedShape, s.revision != workspace.revision { selectedShape = nil; pdfView.clearShapeSelection() }
@@ -727,6 +737,16 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         super.viewDidLayout()
         updateSidebarWidth()
     }
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        hideSignatureInspector()
+    }
+    func hideSignatureInspector() {
+        signaturePicker?.dismissEditor()
+        signaturePicker?.view.removeFromSuperview()
+        isSignatureInspectorVisible = false; signatureInspectorHost.isHidden = true
+        signatureInspectorWidth?.constant = 0
+    }
     private func updateSidebarWidth() {
         let visible = readerCommands.sidebarVisible && !isOverviewVisible
         sidebarScrollView?.isHidden = !visible
@@ -793,6 +813,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
     @objc private func openOCR() { presentLocalTool("ocr") }
     @objc private func runSecondaryTool(_ button: ToolStripButton) {
+        if button.toolID != "signature" { hideSignatureInspector() }
         eraserEnabled = false
         if button.toolID.hasPrefix("content-") { selectContentTool(button.toolID); return }
         if activeMode == .pages {
@@ -1116,6 +1137,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         for button in secondaryTools.arrangedSubviews.compactMap({ $0 as? ToolStripButton }) where ["highlight", "underline", "strikeout"].contains(button.toolID) { button.state = .off }
     }
     @objc func toggleInk(_ sender: NSMenuItem) {
+        hideSignatureInspector()
         cancelPendingPlacement(); pdfView.clearShapeSelection(); pdfView.annotationManipulationEnabled = false
         pdfView.contentEditingEnabled = false; contentToolID = nil; eraserEnabled = false
         pendingPlacement = nil
@@ -1167,15 +1189,25 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         inkStyleBar.isHidden = true
     }
     @objc func addSignature() {
-        guard workspace.document != nil, workspace.allowsCommenting else { return }
+        guard workspace.document != nil, workspace.allowsCommenting else { hideSignatureInspector(); return }
+        guard pdfView.finishInlineTextEditing() else { return }
+        _ = view
         guard let store = signatureStore else { showError("签名库不可用") ; return }
-        let picker = SignaturePickerController(store: store, onSelectImage: { [weak self] image in
-            self?.beginPlacement(.imageSignature(image), accessibilityName: "图片签名放置模式")
-        }, onDraw: { [weak self] in
-            guard let self, let strokes = SignaturePanel().run(window: self.view.window), !strokes.isEmpty else { return }
-            self.beginPlacement(.signature(strokes), accessibilityName: "签名放置模式")
-        })
-        signaturePicker = picker; picker.show()
+        setOverviewVisible(false)
+        if signaturePicker?.store !== store {
+            signaturePicker?.dismissEditor(); signaturePicker?.view.removeFromSuperview(); signaturePicker?.removeFromParent()
+            let picker = SignaturePickerController(store: store, onSelectImage: { [weak self] image in
+                self?.beginPlacement(.imageSignature(image), accessibilityName: "图片签名放置模式", keepingSignatureInspector: true)
+            }, presentError: { [weak self] message in self?.setInteractionStatus(message) })
+            signaturePicker = picker; addChild(picker)
+        }
+        resetDocumentInteractionState()
+        signaturePicker?.reloadHistory(); signatureInspectorHost.isHidden = false
+        signatureInspectorWidth?.constant = 240; isSignatureInspectorVisible = true
+        if let picker = signaturePicker, picker.view.superview == nil {
+            picker.view.translatesAutoresizingMaskIntoConstraints = false; signatureInspectorHost.addSubview(picker.view)
+            NSLayoutConstraint.activate([picker.view.leadingAnchor.constraint(equalTo: signatureInspectorHost.leadingAnchor), picker.view.trailingAnchor.constraint(equalTo: signatureInspectorHost.trailingAnchor), picker.view.topAnchor.constraint(equalTo: signatureInspectorHost.topAnchor), picker.view.bottomAnchor.constraint(equalTo: signatureInspectorHost.bottomAnchor)])
+        }
     }
     @objc func printDocument() {
         if let reason = DocumentOperationMessage.printBlockReason(
@@ -1320,9 +1352,10 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
         }
     }
 
-    func beginPlacement(_ placement: PendingPlacement, accessibilityName: String) {
+    func beginPlacement(_ placement: PendingPlacement, accessibilityName: String, keepingSignatureInspector: Bool = false) {
         guard workspace.document != nil, workspace.allowsCommenting else { return }
         guard pdfView.finishInlineTextEditing() else { return }
+        if !keepingSignatureInspector { hideSignatureInspector() }
         pdfView.freeTextInputEnabled = false
         clearMarkupTool()
         selectedInk = nil
@@ -1339,6 +1372,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
     }
 
     private func cancelPendingPlacement() {
+        hideSignatureInspector()
         annotationSelection.clear()
         _ = pdfView.finishInlineTextEditing(commit: false)
         pdfView.freeTextInputEnabled = false
@@ -1357,6 +1391,7 @@ final class WorkbenchController: NSViewController, NSTextFieldDelegate, NSSearch
 
     func resetDocumentInteractionState() {
         guard pdfView.finishInlineTextEditing() else { return }
+        hideSignatureInspector()
         pdfView.freeTextInputEnabled = false
         clearMarkupTool()
         inkStyleBar.widthSlider.cancelShapeTracking()
@@ -1691,7 +1726,6 @@ private final class ModeButton: NSButton { var mode: WorkbenchMode? }
         }
     }
 }
-@MainActor final class SignaturePanel { func run(window: NSWindow?) -> [[CGPoint]]? { guard window != nil else { return nil }; let canvas = SignatureCanvas(frame: NSRect(x: 0, y: 0, width: 420, height: 170)); canvas.setAccessibilityLabel("绘制图形签名"); let alert = NSAlert(); alert.messageText = "绘制图形签名"; alert.informativeText = "这会插入手写图形，不是数字证书。"; alert.accessoryView = canvas; alert.addButton(withTitle: "插入"); alert.addButton(withTitle: "取消"); guard alert.runModal() == .alertFirstButtonReturn else { return nil }; let strokes = canvas.strokes.filter { $0.count > 1 }; return strokes.isEmpty ? nil : strokes } }
 
 private final class DocumentCommandMenuItem: NSMenuItem { var documentAction: Selector? }
 

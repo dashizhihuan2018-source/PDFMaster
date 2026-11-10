@@ -125,13 +125,32 @@ struct SignatureAsset: Codable, Identifiable, Equatable {
     func reload() throws { try perform { try load() } }
 
     func importPNG(from url: URL) throws -> SignatureAsset {
+        try save(draft(from: url))
+    }
+
+    /// Snapshot and normalize without touching the library. The safe reader is
+    /// shared with stored assets; links, special files and oversized PNGs fail.
+    func draft(from url: URL) throws -> SignatureImage {
+        try perform { try SignatureImage(pngData: read(url, maximum: 8 * 1024 * 1024)) }
+    }
+
+    func save(_ draft: SignatureImage) throws -> SignatureAsset {
         try perform {
             try load()
-            let image = try SignatureImage(pngData: read(url, maximum: 8 * 1024 * 1024))
+            let image = try SignatureImage(pngData: draft.pngData)
             let hash = SHA256.hash(data: image.pngData)
             var total = 0
             for entry in entries {
-                let bytes = try read(assetURL(entry.id), maximum: 8 * 1024 * 1024)
+                let url = assetURL(entry.id)
+                var info = stat()
+                // An absent library copy consumes no capacity. Keep its row in
+                // history, but do not let it disable creation of healthy assets.
+                // Existing links/special files still go through the safe reader.
+                if lstat(url.path, &info) != 0 {
+                    if errno == ENOENT { continue }
+                    throw StoreError.io
+                }
+                let bytes = try read(url, maximum: 8 * 1024 * 1024)
                 total += bytes.count
                 if SHA256.hash(data: bytes) == hash { return entry }
             }

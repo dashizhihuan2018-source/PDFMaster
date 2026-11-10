@@ -1,92 +1,142 @@
 import AppKit
 import ImageIO
 import PaperCore
-import UniformTypeIdentifiers
 
-@MainActor final class SignaturePickerController: NSObject {
+/// Document-owned inspector, never a floating library window.
+@MainActor final class SignaturePickerController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     let store: SignatureAssetStore
+    let tableView = SignatureHistoryTable()
     private let onSelectImage: (SignatureImage) -> Void
-    private let onDraw: () -> Void
-    private let chooseFile: @MainActor () -> URL?
-    private let confirmDelete: @MainActor () -> Bool
     private let presentError: @MainActor (String) -> Void
-    private var panel: NSPanel?
-    private let list = NSStackView()
-    var entries: [SignatureAsset] { store.entries.reversed() }
+    private let empty = NSTextField(wrappingLabelWithString: "点击上方 + 添加签名")
+    private(set) var editor: SignatureEditorController?
+    // Row identities belong to the displayed snapshot, not a mutable store
+    // shared by other document windows. Reentry explicitly refreshes history.
+    private(set) var entries: [SignatureAsset] = []
+    var selectedID: UUID? { entries.indices.contains(tableView.selectedRow) ? entries[tableView.selectedRow].id : nil }
 
-    init(store: SignatureAssetStore, onSelectImage: @escaping (SignatureImage) -> Void, onDraw: @escaping () -> Void,
-         chooseFile: @escaping @MainActor () -> URL? = {
-             let open = NSOpenPanel(); open.allowedContentTypes = [.png]; open.allowsMultipleSelection = false
-             open.canChooseDirectories = false; return open.runModal() == .OK ? open.url : nil
-         }, confirmDelete: @escaping @MainActor () -> Bool = {
-             let alert = NSAlert(); alert.messageText = "从签名库删除？"
-             alert.informativeText = "仅删除本机签名库中的副本，不会删除原始图片，也不会影响已签署的 PDF。"
-             alert.addButton(withTitle: "删除"); alert.addButton(withTitle: "取消")
-             return alert.runModal() == .alertFirstButtonReturn
-         }, presentError: @escaping @MainActor (String) -> Void = { message in
-             let alert = NSAlert(); alert.alertStyle = .warning; alert.messageText = "签名库操作失败"
-             alert.informativeText = message; alert.runModal()
+    init(store: SignatureAssetStore, onSelectImage: @escaping (SignatureImage) -> Void,
+         presentError: @escaping @MainActor (String) -> Void = { message in
+             let alert = NSAlert(); alert.messageText = "签名库操作失败"; alert.informativeText = message; alert.runModal()
          }) {
-        self.store = store; self.onSelectImage = onSelectImage; self.onDraw = onDraw
-        self.chooseFile = chooseFile; self.confirmDelete = confirmDelete; self.presentError = presentError
+        self.store = store; self.onSelectImage = onSelectImage; self.presentError = presentError
+        super.init(nibName: nil, bundle: nil)
     }
-    func reloadHistory() { do { try store.reload(); render() } catch { presentError(error.localizedDescription) } }
-    func importPNG() {
-        guard let url = chooseFile() else { return }
-        do { _ = try store.importPNG(from: url); render() } catch { presentError(error.localizedDescription) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 480))
+        view.wantsLayer = true; view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        view.setAccessibilityLabel("签名检查器")
+        let plus = SignatureAddButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "添加签名")!, target: self, action: #selector(addAction))
+        plus.isBordered = false; plus.setAccessibilityLabel("添加签名"); plus.toolTip = "添加签名"
+        let separator = SignatureSeparator(); separator.boxType = .separator
+        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
+        scroll.drawsBackground = false; scroll.autohidesScrollers = true
+        tableView.headerView = nil; tableView.rowHeight = 84; tableView.intercellSpacing = NSSize(width: 0, height: 8)
+        tableView.allowsMultipleSelection = false; tableView.allowsEmptySelection = false
+        tableView.backgroundColor = .clear; tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        tableView.setAccessibilityLabel("签名列表")
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("signature")); column.width = 224
+        column.resizingMask = .autoresizingMask; tableView.addTableColumn(column)
+        tableView.dataSource = self; tableView.delegate = self
+        tableView.target = self; tableView.action = #selector(selectAction)
+        tableView.deleteSelection = { [weak self] in self?.deleteSelected() }
+        tableView.menuForRow = { [weak self] row in self?.contextMenu(forRow: row) }
+        scroll.documentView = tableView
+        empty.alignment = .center; empty.textColor = .secondaryLabelColor
+        [plus, separator, scroll, empty].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; view.addSubview($0) }
+        NSLayoutConstraint.activate([
+            plus.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6), plus.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+            plus.widthAnchor.constraint(equalToConstant: 24), plus.heightAnchor.constraint(equalToConstant: 24),
+            separator.topAnchor.constraint(equalTo: plus.bottomAnchor, constant: 8), separator.leadingAnchor.constraint(equalTo: view.leadingAnchor), separator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: separator.bottomAnchor), scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            empty.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20), empty.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20), empty.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
+    }
+    func reloadHistory() {
+        _ = view
+        let selection = selectedID
+        do { try store.reload(); render(selecting: selection) } catch { presentError(error.localizedDescription) }
+    }
+    private func render(selecting id: UUID?) {
+        entries = store.entries
+        tableView.reloadData(); empty.isHidden = !entries.isEmpty
+        if let id, let row = entries.firstIndex(where: { $0.id == id }) { tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        else if !entries.isEmpty { tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
     func select(id: UUID) {
-        do { let image = try store.image(for: id); panel?.close(); onSelectImage(image) }
-        catch { presentError(error.localizedDescription) }
+        guard let row = entries.firstIndex(where: { $0.id == id }) else { return }
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        do { onSelectImage(try store.image(for: id)) } catch { presentError(error.localizedDescription) }
     }
     func delete(id: UUID) {
-        guard confirmDelete() else { return }
-        do { try store.remove(id: id); render() } catch { presentError(error.localizedDescription) }
+        let row = entries.firstIndex(where: { $0.id == id }) ?? 0
+        let oldSelection = selectedID
+        do {
+            try store.remove(id: id)
+            let next = oldSelection == id ? (entries.isEmpty ? nil : entries[min(row, entries.count - 1)].id) : oldSelection
+            render(selecting: next)
+        } catch { presentError(error.localizedDescription) }
     }
-    func show() {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 430, height: 440), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        panel.title = "我的签名"; panel.isReleasedWhenClosed = false
-        let root = NSStackView(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 10
-        root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        let actions = NSStackView(); actions.orientation = .horizontal; actions.spacing = 12
-        let importButton = NSButton(title: "导入 PNG…", target: self, action: #selector(importAction)); importButton.setAccessibilityLabel("导入 PNG 签名")
-        let drawButton = NSButton(title: "手绘签名", target: self, action: #selector(drawAction)); drawButton.setAccessibilityLabel("手绘签名")
-        actions.addArrangedSubview(importButton); actions.addArrangedSubview(drawButton); root.addArrangedSubview(actions)
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        list.orientation = .vertical; list.alignment = .leading; list.spacing = 8
-        scroll.documentView = list; root.addArrangedSubview(scroll)
-        root.translatesAutoresizingMaskIntoConstraints = false; panel.contentView?.addSubview(root)
-        if let content = panel.contentView { NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: content.leadingAnchor), root.trailingAnchor.constraint(equalTo: content.trailingAnchor), root.topAnchor.constraint(equalTo: content.topAnchor), root.bottomAnchor.constraint(equalTo: content.bottomAnchor), scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32), scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300)]) }
-        self.panel = panel; reloadHistory(); panel.center(); panel.makeKeyAndOrderFront(nil)
+    func contextMenu(forRow row: Int) -> NSMenu? {
+        guard entries.indices.contains(row) else { return nil }
+        // Bind the menu item to the clicked asset, not the previous selection.
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "删除", action: #selector(deleteContext(_:)), keyEquivalent: "")
+        item.target = self; item.representedObject = entries[row].id; item.setAccessibilityLabel("删除签名")
+        menu.addItem(item); return menu
     }
-    private func render() {
-        guard panel != nil else { return }
-        list.arrangedSubviews.forEach { list.removeArrangedSubview($0); $0.removeFromSuperview() }
-        list.frame = NSRect(x: 0, y: 0, width: 380, height: max(300, entries.count * 88))
-        var failures = [String]()
-        for entry in entries {
-            let row = NSStackView(); row.orientation = .horizontal; row.spacing = 12
-            let preview: NSButton
-            do {
-                let image = try store.image(for: entry.id)
-                guard let source = CGImageSourceCreateWithData(image.pngData as CFData, nil),
-                      let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 240] as CFDictionary) else { throw CocoaError(.fileReadCorruptFile) }
-                preview = NSButton(image: NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height)), target: self, action: #selector(selectAction(_:)))
-                preview.imageScaling = .scaleProportionallyUpOrDown; preview.setAccessibilityLabel("选择签名 \(entry.createdAt.formatted())")
-            } catch {
-                failures.append(error.localizedDescription)
-                preview = NSButton(title: "签名不可用", target: nil, action: nil)
-                preview.isEnabled = false; preview.setAccessibilityLabel("签名不可用 \(entry.createdAt.formatted())")
-            }
-            preview.identifier = NSUserInterfaceItemIdentifier(entry.id.uuidString)
-            preview.widthAnchor.constraint(equalToConstant: 200).isActive = true; preview.heightAnchor.constraint(equalToConstant: 80).isActive = true
-            let remove = NSButton(title: "删除", target: self, action: #selector(deleteAction(_:))); remove.identifier = preview.identifier; remove.setAccessibilityLabel("删除签名 \(entry.createdAt.formatted())")
-            row.addArrangedSubview(preview); row.addArrangedSubview(remove); list.addArrangedSubview(row)
+    func dismissEditor() { editor?.cancel(); editor = nil }
+    @objc private func addAction() {
+        guard let window = view.window, window.attachedSheet == nil else { return }
+        let editor = SignatureEditorController(store: store, onCreate: { [weak self] asset in
+            self?.reloadHistory(); self?.select(id: asset.id)
+        }, presentError: presentError)
+        self.editor = editor; editor.present(from: window)
+    }
+    @objc private func selectAction() { if let id = selectedID { select(id: id) } }
+    private func deleteSelected() { if let id = selectedID { delete(id: id) } }
+    @objc private func deleteContext(_ item: NSMenuItem) { if let id = item.representedObject as? UUID { delete(id: id) } }
+    func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard entries.indices.contains(row) else { return nil }
+        let entry = entries[row]
+        let cell = NSTableCellView(frame: NSRect(x: 0, y: 0, width: 224, height: 84))
+        let preview = NSImageView(frame: cell.bounds.insetBy(dx: 8, dy: 8)); preview.autoresizingMask = [.width, .height]
+        preview.imageScaling = .scaleProportionallyUpOrDown
+        cell.imageView = preview; cell.addSubview(preview)
+        do {
+            let image = try store.image(for: entry.id)
+            guard let source = CGImageSourceCreateWithData(image.pngData as CFData, nil),
+                  let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 240] as CFDictionary) else { throw CocoaError(.fileReadCorruptFile) }
+            preview.image = NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height))
+            cell.setAccessibilityLabel("选择签名 \(entry.createdAt.formatted())")
+        } catch {
+            let text = NSTextField(labelWithString: "签名不可用")
+            text.frame = NSRect(x: 8, y: 32, width: 208, height: 20); text.autoresizingMask = [.width]
+            text.alignment = .center; text.textColor = .secondaryLabelColor; cell.textField = text; cell.addSubview(text)
+            cell.setAccessibilityLabel("签名不可用，可按删除键删除")
         }
-        if let first = failures.first { presentError("\(failures.count) 个签名不可用，可确认后从签名库删除。\n\(first)") }
+        return cell
     }
-    @objc private func importAction() { importPNG() }
-    @objc private func drawAction() { panel?.close(); onDraw() }
-    @objc private func selectAction(_ sender: NSButton) { if let id = sender.identifier.flatMap({ UUID(uuidString: $0.rawValue) }) { select(id: id) } }
-    @objc private func deleteAction(_ sender: NSButton) { if let id = sender.identifier.flatMap({ UUID(uuidString: $0.rawValue) }) { delete(id: id) } }
+}
+
+private final class SignatureAddButton: NSButton {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsetsZero }
+}
+private final class SignatureSeparator: NSBox {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsetsZero }
+}
+
+@MainActor final class SignatureHistoryTable: NSTableView {
+    var deleteSelection: (() -> Void)?
+    var menuForRow: ((Int) -> NSMenu?)?
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 51 || event.keyCode == 117 { deleteSelection?() }
+        else { super.keyDown(with: event) }
+    }
+    override func menu(for event: NSEvent) -> NSMenu? { menuForRow?(row(at: convert(event.locationInWindow, from: nil))) }
 }
