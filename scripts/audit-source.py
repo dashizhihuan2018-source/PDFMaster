@@ -16,7 +16,7 @@ REVIEWED_TESTS = {
     ("RustPDFMaster/tools/test_third_party_notices.py", "personal_home", "4999d777817c464a3facd99af7a9b79c866d8c878d00e4b0ad98d8a3382f734d"),
     ("RustPDFMaster/tools/test_third_party_notices.py", "provider_credential", "4999d777817c464a3facd99af7a9b79c866d8c878d00e4b0ad98d8a3382f734d"),
 }
-EXCLUDED = {"dist", "output", "work", ".git", ".swiftpm", "__pycache__", "node_modules"}
+EXCLUDED = {"dist", "output", "work", ".git", ".swiftpm", ".superpowers", "__pycache__", "node_modules"}
 
 
 def files():

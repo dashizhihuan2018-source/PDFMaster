@@ -20,6 +20,21 @@ RUST_LINE = next(line for line in (PUBLIC_ROOT / RUST_PATH).read_text().splitlin
 
 
 class PublicationAuditTests(unittest.TestCase):
+    def test_private_development_tool_state_is_not_public_source(self):
+        with tempfile.TemporaryDirectory(prefix="pdfmaster-manifest-") as directory:
+            root = pathlib.Path(directory)
+            for relative in (".superpowers/sdd/.gitignore", "Sources/Example.swift"):
+                path = root / relative
+                path.parent.mkdir(parents=True)
+                path.write_text("synthetic fixture\n")
+            previous = audit.ROOT
+            audit.ROOT = root
+            try:
+                self.assertEqual([p.relative_to(root).as_posix() for p in audit.files()],
+                                 ["Sources/Example.swift"])
+            finally:
+                audit.ROOT = previous
+
     def test_nested_product_tools_are_scanned_but_root_build_tools_are_excluded(self):
         with tempfile.TemporaryDirectory(prefix="pdfmaster-manifest-") as directory:
             root = pathlib.Path(directory)

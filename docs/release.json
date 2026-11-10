@@ -10,6 +10,7 @@
   "checksum": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.30/PDFMaster-V0.1.30-arm64-SHA256.txt",
   "releaseNotes": "https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.30",
   "sourceVersion": "V0.1.30/build52",
+  "sourceRef": "v0.1.30-source-r1",
   "prerelease": true,
   "notarized": false,
   "selfContainedContentEditing": true
