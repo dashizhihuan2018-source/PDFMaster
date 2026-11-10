@@ -44,6 +44,12 @@ class BackgroundGuardTests(unittest.TestCase):
     def test_repository_has_no_unguarded_known_effects(self):
         self.assertEqual(guard.audit_tree(ROOT), [])
 
+    def test_modal_completion_and_known_delete_button_helpers_require_opt_in(self):
+        for call in ['NSApp.stopModal()', 'NSApp.stopModal(withCode: .alertFirstButtonReturn)', 'NSApp.abortModal()']:
+            self.assertTrue(guard.audit('func testUnsafe() { ' + call + ' }'), call)
+        self.assertTrue(guard.audit('func clickDelete(_ c: Controller) throws { button.performClick(nil) }'))
+        self.assertFalse(guard.audit('func clickDelete(_ c: Controller) throws { try NativeTestEnvironment.requireForeground(); button.performClick(nil) }'))
+
     def run_wrapper(self, root=ROOT, foreground=None):
         with tempfile.TemporaryDirectory() as directory:
             swift = pathlib.Path(directory) / 'swift'

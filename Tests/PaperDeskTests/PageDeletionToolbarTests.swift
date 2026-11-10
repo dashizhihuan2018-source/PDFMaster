@@ -23,6 +23,7 @@ import XCTest
     // Exercise the actual NSButton target/action and NSAlert modal completion,
     // rather than bypassing the toolbar via performOverviewAction in the test.
     private func clickDelete(_ c: WorkbenchController, confirm: Bool) throws -> Int {
+        try NativeTestEnvironment.requireForeground()
         let button = try XCTUnwrap(tools(in: c.view).first { $0.toolID == "delete-page" })
         var alerts = 0
         var handledWindows: [NSWindow] = []
@@ -45,7 +46,8 @@ import XCTest
 
     func testToolbarDeletesBookmarkedGridSelectionAndUndoRedoRestoresIt() throws {
         let c = try controller()
-        XCTAssertEqual(try clickDelete(c, confirm: true), 1, "A valid bookmarked page must not produce an error alert")
+        let alerts = try clickDelete(c, confirm: true)
+        XCTAssertEqual(alerts, 1, "A valid bookmarked page must not produce an error alert")
         XCTAssertEqual(c.workspace.document?.pageCount, 3)
         XCTAssertEqual(c.workspace.document?.page(at: 1)?.annotations.first?.contents, "PAGE-2")
         XCTAssertEqual(c.pageOverview.selectedPages, [1])
@@ -57,7 +59,8 @@ import XCTest
 
     func testCancelDoesNotDeleteOrConsumeHistory() throws {
         let c = try controller(), revision = c.workspace.revision
-        XCTAssertEqual(try clickDelete(c, confirm: false), 1)
+        let alerts = try clickDelete(c, confirm: false)
+        XCTAssertEqual(alerts, 1)
         XCTAssertEqual(c.workspace.document?.pageCount, 4)
         XCTAssertEqual(c.workspace.revision, revision)
         XCTAssertEqual(c.pageOverview.selectedPages, [1])

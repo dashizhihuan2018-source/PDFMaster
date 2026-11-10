@@ -10,7 +10,7 @@ import XCTest
             let (c, window) = try fixture()
             defer { window.contentViewController = nil }
             let tool = try button(id, c)
-            activate(tool)
+            try activate(tool)
             XCTAssertEqual(tool.state, .on, "Clicking a markup tool before selecting text must arm it")
             guard isArmed(c) else { continue }
             let page = try XCTUnwrap(c.pdfView.document?.page(at: 0))
@@ -31,14 +31,14 @@ import XCTest
         let (c, window) = try fixture()
         defer { window.contentViewController = nil }
         let highlight = try button("highlight", c)
-        activate(highlight)
+        try activate(highlight)
         XCTAssertEqual(highlight.state, .on)
         guard isArmed(c) else { return }
         try drag(c, from: 0, to: 4)
         try drag(c, from: 6, to: 11)
         XCTAssertEqual(c.workspace.document?.page(at: 0)?.annotations.map(\.type), ["Highlight", "Highlight"])
         let underline = try button("underline", c)
-        activate(underline)
+        try activate(underline)
         XCTAssertEqual(highlight.state, .off); XCTAssertEqual(underline.state, .on)
         try drag(c, from: 0, to: 4)
         XCTAssertEqual(c.workspace.document?.page(at: 0)?.annotations.last?.type, "Underline")
@@ -55,10 +55,10 @@ import XCTest
         defer { window.contentViewController = nil }
         let page = try XCTUnwrap(c.pdfView.document?.page(at: 0))
         c.pdfView.setCurrentSelection(page.selection(for: NSRange(location: 0, length: 5)), animate: false)
-        activate(try button("strikeout", c))
+        try activate(button("strikeout", c))
         XCTAssertEqual(c.workspace.document?.page(at: 0)?.annotations.first?.type, "StrikeOut")
         XCTAssertNil(c.pdfView.currentSelection)
-        activate(try button("underline", c))
+        try activate(button("underline", c))
         XCTAssertEqual(c.workspace.document?.page(at: 0)?.annotations.count, 1)
     }
 
@@ -66,13 +66,13 @@ import XCTest
         let (c, window) = try fixture()
         defer { window.contentViewController = nil }
         let tool = try button("highlight", c)
-        activate(tool); XCTAssertEqual(tool.state, .on)
+        try activate(tool); XCTAssertEqual(tool.state, .on)
         guard isArmed(c) else { return }
         XCTAssertTrue(c.pdfView.cancelPlacementForEscape())
         XCTAssertEqual(tool.state, .off)
-        activate(tool); c.addRectangle()
+        try activate(tool); c.addRectangle()
         XCTAssertEqual(tool.state, .off); XCTAssertTrue(c.pdfView.placementEnabled)
-        activate(tool)
+        try activate(tool)
         XCTAssertFalse(c.pdfView.placementEnabled); XCTAssertFalse(c.pdfView.inkEnabled)
         c.enterMode(.editing)
         XCTAssertFalse(c.pdfView.cancelPlacementForEscape())
@@ -83,7 +83,7 @@ import XCTest
         let (c, window) = try fixture()
         defer { window.contentViewController = nil }
         let tool = try button("highlight", c)
-        activate(tool); XCTAssertEqual(tool.state, .on)
+        try activate(tool); XCTAssertEqual(tool.state, .on)
         guard isArmed(c) else { return }
         let page = try XCTUnwrap(c.pdfView.document?.page(at: 0))
         for (start, end) in [(CGPoint(x: 400, y: 250), CGPoint(x: 500, y: 300)),
@@ -108,7 +108,7 @@ import XCTest
             defer { window.contentViewController = nil }
             c.workspace.document?.page(at: 0)?.rotation = rotation
             c.refreshDocument()
-            activate(try button("underline", c))
+            try activate(button("underline", c))
             guard isArmed(c) else { continue }
             let page = try XCTUnwrap(c.pdfView.document?.page(at: 0))
             c.view.layoutSubtreeIfNeeded()
@@ -128,7 +128,7 @@ import XCTest
         let (c, window) = try fixture(twoPages: true)
         defer { window.contentViewController = nil }
         c.pdfView.autoScales = false; c.pdfView.scaleFactor = 0.3; c.pdfView.layoutDocumentView()
-        activate(try button("highlight", c))
+        try activate(button("highlight", c))
         guard isArmed(c) else { return }
         let firstPage = try XCTUnwrap(c.pdfView.document?.page(at: 0)), secondPage = try XCTUnwrap(c.pdfView.document?.page(at: 1))
         let a = firstPage.characterBounds(at: 0), b = secondPage.characterBounds(at: 4)
@@ -177,7 +177,8 @@ import XCTest
         XCTAssertTrue(armed, "A markup button must enter text-drag mode instead of requiring an existing selection")
         return armed
     }
-    private func activate(_ button: NSButton) {
+    private func activate(_ button: NSButton) throws {
+        try NativeTestEnvironment.requireForeground()
         // Prevent a regression to a modal-only action from hanging the test runner.
         let dismiss = Timer(timeInterval: 0.02, repeats: true) { _ in
             if let modal = NSApp.modalWindow { NSApp.stopModal(); modal.orderOut(nil) }

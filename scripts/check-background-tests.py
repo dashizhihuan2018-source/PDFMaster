@@ -29,7 +29,7 @@ def functions(source):
 RISKS = re.compile(
     r'\.(?:orderFront|orderFrontRegardless|makeKeyAndOrderFront|makeKeyWindow|makeMainWindow|'
     r'setActivationPolicy|beginSheetModal|beginSheet|runModal|showWindow)\s*\('
-    r'|\bNSApp\.(?:activate|run)\s*\('
+    r'|\bNSApp\.(?:activate|run|stopModal|abortModal)\s*\('
     r'|\bNSWorkspace\.shared\.(?:open|launchApplication)\s*\('
     r'|\bPDFWatermarkDependencies\s*\(\s*\)'
     r'|\.presentTextReplacement\s*\('
@@ -55,7 +55,12 @@ def audit(source, name='<source>'):
                 depth += (body[end] == '{') - (body[end] == '}')
                 end += 1
             native_scopes.append((context.end(), end - 1))
-        for risk in RISKS.finditer(body):
+        risks = list(RISKS.finditer(body))
+        # This helper invokes the real delete-page toolbar action, whose modal
+        # confirmation lives in production rather than in the test source.
+        if function == 'clickDelete':
+            risks.extend(re.finditer(r'\.performClick\s*\(', body))
+        for risk in risks:
             if not gate and not any(start <= risk.start() < end for start, end in native_scopes):
                 line = source.count('\n', 0, offset + risk.start()) + 1
                 failures.append(f'{name}:{line}: {function} requires an explicit foreground gate')
