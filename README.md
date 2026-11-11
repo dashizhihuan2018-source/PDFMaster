@@ -12,6 +12,8 @@
 
 V0.1.32 / build54：双击顶栏空白处最大化到当前显示器的可用区域，再次双击恢复原大小，单击拖动仍移动窗口。标签、关闭按钮与新建标签保持原操作。[本版说明与后台验证](docs/TITLEBAR-V0.1.32.md)。
 
+Finder 中未打开 PDF 时可显示首页封面：使用系统图标预览，并选用大列表图标。[文件预览说明与文件夹设置脚本](docs/FINDER-PREVIEWS.md)。这是系统设置辅助更新，无需替换 V0.1.32/build54 安装版。
+
 V0.1.30 / build52：签名库改为文档右侧检查器；顶部＋打开创建预览，PNG选择/拖放后点创建才保存历史，取消不入库。历史按保存顺序显示，可右键或Delete删除，无二次确认；不影响原始图片或已签入PDF。绘制签名可创建为透明图片并复用。图形签名不是数字证书。[本版范围与验证](docs/SIGNATURES-V0.1.30.md)。已有布局、字体兼容、多窗口与显式水印支持保留。
 
 [官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [逐项功能](https://dashizhihuan2018-source.github.io/PDFMaster/features.html) · [使用教程](https://dashizhihuan2018-source.github.io/PDFMaster/guide.html) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.32)
