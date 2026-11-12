@@ -119,6 +119,44 @@ final class ImageCompressionTests: XCTestCase {
         }
     }
 
+    func testResizedJPEGOrientationsMatchImageIOWithNoSecondRotation() throws {
+        let root = try directory(), fixture = try colorImage()
+        for orientation in 1...8 {
+            let input = root.appendingPathComponent("sized-\(orientation).jpg")
+            try write(fixture, to: input, type: "public.jpeg", orientation: orientation)
+            let source = try XCTUnwrap(CGImageSourceCreateWithURL(input as CFURL, nil))
+            let oracle = try XCTUnwrap(CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 160
+            ] as CFDictionary))
+            let output = root.appendingPathComponent("sized-\(orientation).pdf")
+            XCTAssertEqual(try ImagePDFImport.convert([input], to: output, layout: .init(size: CGSize(width: 36, height: 36), margin: 0)), 1)
+            let page = try XCTUnwrap(CGPDFDocument(output as CFURL)?.page(at: 1))
+            let expected = try bitmap(width: 75, height: 75) { context in
+                let scale = min(75 / CGFloat(oracle.width), 75 / CGFloat(oracle.height))
+                let rect = CGRect(x: (75 - CGFloat(oracle.width) * scale) / 2, y: (75 - CGFloat(oracle.height) * scale) / 2,
+                                  width: CGFloat(oracle.width) * scale, height: CGFloat(oracle.height) * scale)
+                context.draw(oracle, in: rect)
+            }
+            let actual = try bitmap(width: 75, height: 75) { context in
+                context.scaleBy(x: 75 / 36, y: 75 / 36)
+                context.drawPDFPage(page)
+            }
+            for y in [24, 50] { for x in [24, 50] { for channel in 0..<3 {
+                let offset = (y * 75 + x) * 4 + channel
+                XCTAssertEqual(Double(actual[offset]), Double(expected[offset]), accuracy: 12, "orientation \(orientation)")
+            } } }
+            for stream in try imageStreams(page) {
+                var width: CGPDFInteger = 0, height: CGPDFInteger = 0
+                let dict = try XCTUnwrap(CGPDFStreamGetDictionary(stream))
+                XCTAssertTrue(CGPDFDictionaryGetInteger(dict, "Width", &width))
+                XCTAssertTrue(CGPDFDictionaryGetInteger(dict, "Height", &height))
+                XCTAssertLessThanOrEqual(max(width, height), 75)
+            }
+        }
+    }
+
     func testTransparentPNGStillCompositesOntoWhiteWithoutJPEGArtifacts() throws {
         let root = try directory()
         let width = 64, height = 40
@@ -131,14 +169,21 @@ final class ImageCompressionTests: XCTestCase {
         let input = root.appendingPathComponent("transparent.png")
         try write(image, to: input, type: "public.png")
         let original = try Data(contentsOf: input)
-        let output = root.appendingPathComponent("transparent.pdf")
-        XCTAssertEqual(try ImagePDFImport.convert([input], to: output, layout: .init(size: nil, margin: 0)), 1)
-        let pdf = try XCTUnwrap(CGPDFDocument(output as CFURL))
-        let page = try XCTUnwrap(pdf.page(at: 1))
-        let rendered = try bitmap(width: width, height: height) { $0.drawPDFPage(page) }
-        for (x, expected) in [(16, [255.0, 255, 255]), (48, [255.0, 127, 127])] {
-            let offset = (20 * width + x) * 4
-            for channel in 0..<3 { XCTAssertEqual(Double(rendered[offset + channel]), expected[channel], accuracy: 3) }
+        let papers: [CGSize?] = [nil, CGSize(width: 16, height: 10)]
+        for (index, paper) in papers.enumerated() {
+            let output = root.appendingPathComponent("transparent-\(index).pdf")
+            XCTAssertEqual(try ImagePDFImport.convert([input], to: output, layout: .init(size: paper, margin: 0)), 1)
+            let pdf = try XCTUnwrap(CGPDFDocument(output as CFURL))
+            let page = try XCTUnwrap(pdf.page(at: 1))
+            let pageSize = page.getBoxRect(.mediaBox).size
+            let rendered = try bitmap(width: width, height: height) {
+                $0.scaleBy(x: CGFloat(width) / pageSize.width, y: CGFloat(height) / pageSize.height)
+                $0.drawPDFPage(page)
+            }
+            for (x, expected) in [(16, [255.0, 255, 255]), (48, [255.0, 127, 127])] {
+                let offset = (20 * width + x) * 4
+                for channel in 0..<3 { XCTAssertEqual(Double(rendered[offset + channel]), expected[channel], accuracy: 3) }
+            }
         }
         XCTAssertEqual(try Data(contentsOf: input), original)
     }

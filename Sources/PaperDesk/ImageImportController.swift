@@ -342,7 +342,7 @@ final class ImageImportController: NSViewController, NSTableViewDataSource, NSTa
         fileTable.reloadData()
         if let index, inputs.indices.contains(index) { fileTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         updateOrderButtons()
-        formatNotice.stringValue = "仅静态 PNG/JPEG 与 TIFF；TIFF 全帧逐页转换，总计最多 500 页。不支持 GIF、HEIC、SVG；无 OCR。\n保持比例居中；图片像素尺寸：1 像素＝1 PDF 点（不猜测打印 DPI），方向与边距不适用。"
+        formatNotice.stringValue = "仅静态 PNG/JPEG 与 TIFF；TIFF 全帧逐页转换，总计最多 500 页。不支持 GIF、HEIC、SVG；无 OCR。\nA4/Letter 使用 150 DPI 均衡输出，小图不放大；图片像素尺寸保留原分辨率（1 像素＝1 PDF 点），文件可能较大，方向与边距不适用。"
     }
 
     private func updateOrderButtons() {

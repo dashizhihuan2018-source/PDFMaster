@@ -74,12 +74,11 @@ public enum ImagePDFImport {
         guard lstat(stage.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0 else { throw ImportFailure.writeFailed }
         guard info.st_size <= maximum else { throw ImportFailure.tooLarge }
     }
-    /// HEIC cannot be embedded directly in PDF. Keep the oriented full resolution
-    /// but supply a high-quality JPEG-backed CGImage so Quartz embeds DCT data
-    /// instead of expanding every phone photo into a large lossless RGB stream.
-    /// PNG/TIFF keep their existing lossless path; HEIF alpha uses the page white.
-    private static func pdfImage(_ image: CGImage, sourceType: String) throws -> CGImage {
-        guard ["public.heic", "public.heif"].contains(sourceType) else { return image }
+    /// HEIF needs PDF-compatible encoding. Resized opaque photos also need an
+    /// encoded provider: drawing a thumbnail bitmap alone would expand it to RGB.
+    /// Transparent PNG/TIFF retain alpha; HEIF alpha uses the page white.
+    private static func pdfImage(_ image: CGImage, sourceType: String, encodeResizedPhoto: Bool) throws -> CGImage {
+        guard ["public.heic", "public.heif"].contains(sourceType) || encodeResizedPhoto else { return image }
         // Match the existing white PDF page when a HEIF image has alpha. ImageIO
         // can also expose an opaque HEIC through a premultiplied-alpha bitmap.
         guard let bitmap = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
@@ -187,19 +186,38 @@ public enum ImagePDFImport {
                 guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
                       let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
                       let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue else { throw ImportFailure.tooLarge }
-                // Reading the original image preserves an encoded JPEG provider.
-                // EXIF rotation/mirroring belongs in the PDF CTM, not a raster
-                // thumbnail that would discard the original compression stream.
-                guard let decoded = CGImageSourceCreateImageAtIndex(source, index, [kCGImageSourceShouldCache: false] as CFDictionary),
-                      decoded.width == Int(width), decoded.height == Int(height) else { throw ImportFailure.decodeFailed }
-                let image = try pdfImage(decoded, sourceType: type)
                 let orientationValue = (properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
                 let orientation = (1...8).contains(orientationValue) ? orientationValue : 1
                 let swapped = orientation >= 5
-                let imageSize = CGSize(width: swapped ? image.height : image.width, height: swapped ? image.width : image.height)
-                let size = layout.size ?? imageSize
+                let originalSize = CGSize(width: swapped ? height : width, height: swapped ? width : height)
+                let size = layout.size ?? originalSize
                 let margin = layout.size == nil ? 0 : layout.margin
                 guard size.width <= 14400, size.height <= 14400 else { throw ImportFailure.tooLarge }
+                let pageScale = min((size.width - margin * 2) / originalSize.width, (size.height - margin * 2) / originalSize.height)
+                // Fixed paper is an output at 150 DPI, not a container for every
+                // camera pixel. Native pixel-sized pages intentionally retain
+                // the full source. Never enlarge low-resolution images.
+                let sourceEdge = Int(max(width, height))
+                let targetEdge = layout.size == nil ? sourceEdge : max(1, Int(ceil(min(Double(sourceEdge), Double(sourceEdge) * pageScale * 150 / 72))))
+                let resized = targetEdge < sourceEdge
+                let decoded: CGImage?
+                if resized {
+                    decoded = CGImageSourceCreateThumbnailAtIndex(source, index, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceThumbnailMaxPixelSize: targetEdge,
+                        kCGImageSourceCreateThumbnailWithTransform: false,
+                        kCGImageSourceShouldCacheImmediately: true
+                    ] as CFDictionary)
+                } else {
+                    // Preserve a small/native JPEG's encoded provider. EXIF is
+                    // applied once in the PDF CTM, never in the decoded bitmap.
+                    decoded = CGImageSourceCreateImageAtIndex(source, index, [kCGImageSourceShouldCache: false] as CFDictionary)
+                }
+                guard let decoded, decoded.width > 0, decoded.height > 0,
+                      decoded.width <= Int(width), decoded.height <= Int(height) else { throw ImportFailure.decodeFailed }
+                let opaque = type == "public.jpeg" || (properties[kCGImagePropertyHasAlpha] as? NSNumber)?.boolValue == false
+                let image = try pdfImage(decoded, sourceType: type, encodeResizedPhoto: resized && opaque)
+                let imageSize = CGSize(width: swapped ? image.height : image.width, height: swapped ? image.width : image.height)
                 var box = CGRect(origin: .zero, size: size)
                 let boxData = Data(bytes: &box, count: MemoryLayout<CGRect>.size)
                 context.beginPDFPage([kCGPDFContextMediaBox: boxData] as CFDictionary)

@@ -4,6 +4,30 @@ import ImageIO
 @testable import PaperCore
 
 final class ImageImportBudgetTests: XCTestCase {
+    func testA4EmbeddingUsesPageSizedPixelsRatherThanFullCameraResolution() throws {
+        let root = try makeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let input = try makePNG(in: root, name: "camera", width: 4000, height: 3000)
+        let output = root.appendingPathComponent("a4.pdf")
+        XCTAssertEqual(try ImagePDFImport.convert([input], to: output), 1)
+        let page = try XCTUnwrap(CGPDFDocument(output as CFURL)?.page(at: 1))
+        var resources: CGPDFDictionaryRef?, objects: CGPDFDictionaryRef?
+        XCTAssertTrue(CGPDFDictionaryGetDictionary(try XCTUnwrap(page.dictionary), "Resources", &resources))
+        XCTAssertTrue(CGPDFDictionaryGetDictionary(try XCTUnwrap(resources), "XObject", &objects))
+        var largestWidth: CGPDFInteger = 0
+        withUnsafeMutablePointer(to: &largestWidth) { widthPointer in
+            CGPDFDictionaryApplyFunction(objects!, { _, object, info in
+                var stream: CGPDFStreamRef?, width: CGPDFInteger = 0
+                guard let info, CGPDFObjectGetValue(object, .stream, &stream), let stream,
+                      let dictionary = CGPDFStreamGetDictionary(stream),
+                      CGPDFDictionaryGetInteger(dictionary, "Width", &width) else { return }
+                let target = info.assumingMemoryBound(to: CGPDFInteger.self)
+                target.pointee = max(target.pointee, width)
+            }, widthPointer)
+        }
+        XCTAssertGreaterThan(largestWidth, 0)
+        XCTAssertLessThanOrEqual(largestWidth, 1141, "A4 content width is about 547 points: 1141 pixels at 150 DPI")
+    }
+
     func testDefaultsPreservePageCeilingAndSetBatchAndOutputBudgets() {
         let limits = ImageImportLimits()
         XCTAssertEqual(limits.maximumDecodedPixelsPerFrame, 40_000_000)
