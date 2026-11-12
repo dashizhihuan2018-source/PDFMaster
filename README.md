@@ -10,6 +10,8 @@
 
 **自由创作，灵感无界。**
 
+V0.1.35 / build57：图片直接按自身比例和横竖方向生成页面，无额外白边、不裁切，不再默认套A4竖版。保留体积优化；原75张照片合并重开约15.5MB，逐页比例全匹配。A4/Letter仅在主动选择时使用。[本版验证与限制](docs/IMAGE-SHAPE-V0.1.35.md)。
+
 V0.1.34 / build56：A4/Letter图片转PDF改为按纸面实际绘制区域使用150 DPI均衡输出，缩小多余像素，避免把手机全尺寸照片全塞进纸面。原75张照片合并保存为75页、约13.1 MB；原图未修改。“图片像素尺寸”模式保留原分辨率，文件可能较大。[本版验证与画质边界](docs/IMAGE-SIZE-V0.1.34.md)。
 
 V0.1.33 / build55：修复手机照片累计超过1亿像素时整批导入失败，以及图片转PDF的体积膨胀。JPEG保留原压缩图像流；HEIC/HEIF使用全分辨率、有损JPEG编码嵌入，PNG/TIFF维持原路径。[本版验证与限制](docs/IMAGE-BATCH-V0.1.33.md)。
@@ -20,9 +22,9 @@ Finder 中未打开 PDF 时可显示首页封面：使用系统图标预览，�
 
 V0.1.30 / build52：签名库改为文档右侧检查器；顶部＋打开创建预览，PNG选择/拖放后点创建才保存历史，取消不入库。历史按保存顺序显示，可右键或Delete删除，无二次确认；不影响原始图片或已签入PDF。绘制签名可创建为透明图片并复用。图形签名不是数字证书。[本版范围与验证](docs/SIGNATURES-V0.1.30.md)。已有布局、字体兼容、多窗口与显式水印支持保留。
 
-[官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [逐项功能](https://dashizhihuan2018-source.github.io/PDFMaster/features.html) · [使用教程](https://dashizhihuan2018-source.github.io/PDFMaster/guide.html) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.34)
+[官方下载官网](https://dashizhihuan2018-source.github.io/PDFMaster/) · [逐项功能](https://dashizhihuan2018-source.github.io/PDFMaster/features.html) · [使用教程](https://dashizhihuan2018-source.github.io/PDFMaster/guide.html) · [安装包与版本说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.35)
 
-2026-11-12 **V0.1.34 / build56**：沿用独立 Swift / Apple 系统框架内容编辑与字体兼容引擎，必要 qpdf 随 App 打包，不要求用户安装 Python、PyMuPDF、fontTools 或 Homebrew。复杂 PDF 保守拒绝，不承诺任意格式或所有 Mac 兼容。历史 [V0.1.19 源码修订 r1](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19-r1) 保留，不覆盖旧资产。
+2026-11-12 **V0.1.35 / build57**：沿用独立 Swift / Apple 系统框架内容编辑与字体兼容引擎，必要 qpdf 随 App 打包，不要求用户安装 Python、PyMuPDF、fontTools 或 Homebrew。复杂 PDF 保守拒绝，不承诺任意格式或所有 Mac 兼容。历史 [V0.1.19 源码修订 r1](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19-r1) 保留，不覆盖旧资产。
 
 PDF Master 是面向 macOS 的 PDF 阅读与知识整理工作台。以 **PDF 工具集、无限画布、无边记** 三种工作方式，将文档、图片、便签与想法连接起来：从专注阅读，到自由批注，再到有序整理，让 PDF 成为思考的起点。
 
@@ -52,13 +54,13 @@ https://github.com/user-attachments/assets/aa9354ed-a69b-4c0f-857b-c7813d62ea3f
 
 ## 获取与使用
 
-当前 macOS 安装包 **V0.1.34**（build56）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.34/PDFMaster-V0.1.34-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.34)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；最低构建目标 macOS 14.0，尚未完成其他 Mac 或所有系统版本验收。系统安全检查未通过时停止并反馈，不关闭全局安全保护。Windows 仍为旧独立预览。非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
+当前 macOS 安装包 **V0.1.35**（build57）。[下载 macOS Apple Silicon 安装包](https://github.com/dashizhihuan2018-source/PDFMaster/releases/download/v0.1.35/PDFMaster-V0.1.35-arm64.dmg) · [发布说明与 SHA-256 校验文件](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.35)。更新前保存文档并正常退出旧版。此包包含 qpdf 本地引擎，仍为 ad-hoc 签名、未获 Apple 公证的预发布；最低构建目标 macOS 14.0，尚未完成其他 Mac 或所有系统版本验收。系统安全检查未通过时停止并反馈，不关闭全局安全保护。Windows 仍为旧独立预览。非商业技术交流、隐私及第三方权利说明见[使用与权利声明](DISCLAIMER.md)。本项目与 Apple、Readdle 等第三方不存在合作或官方背书关系。
 
 V0.1.19 修复导入图章（Stamp）中整张CAD图纸被低分辨率缓存放大而发糊的问题，按当前缩放与Retina像素密度重绘原始外观，保留批注叠放与旋转，不压平或改写原PDF。本机完整778项测试通过，并检查原生窗口多倍率及滚动显示；不是所有PDF或其它Mac的兼容认证。详见[发布说明](https://github.com/dashizhihuan2018-source/PDFMaster/releases/tag/v0.1.19)。
 
 V0.1.18 更新原生阅读器右侧 PDF Copilot、富文本回答及页码引用，支持在本机账户设置中分别绑定自己的 **DMX / DeepSeek / Agnes Key**，并包含 build40 的双页布局、字体兼容与批注修复。不同账户/服务商不共用 Key，发送前需核对范围并同意可能计费；DeepSeek 真实 Key 调用尚未验证。包内不包含用户登录状态、真实密钥或用户文档。
 
-**当前版本对应项目源码：V0.1.34/build56。** 本仓库包含 Swift 原生程序、画布前端、测试、资源、许可证和构建脚本。公开包沿用已审查的画布前端，其源码在 `CanvasWeb/`，不含私有演示、第三方提示词快照或用户数据。主程序由此公开源码树构建，清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名；不承诺自行构建结果逐字节一致。开发构建需准备下述工具，最终 App 不需要开发环境。依赖缓存、编译产物和私人开发历史不属于项目源码。
+**当前版本对应项目源码：V0.1.35/build57。** 本仓库包含 Swift 原生程序、画布前端、测试、资源、许可证和构建脚本。公开包沿用已审查的画布前端，其源码在 `CanvasWeb/`，不含私有演示、第三方提示词快照或用户数据。主程序由此公开源码树构建，清除本机构建路径并使用 macOS 14 兼容 qpdf 后重新签名；不承诺自行构建结果逐字节一致。开发构建需准备下述工具，最终 App 不需要开发环境。依赖缓存、编译产物和私人开发历史不属于项目源码。
 
 历史V0.1.30源码附件使用 `v0.1.30-source-r1` 修订：仅修正发布清单误收开发工具忽略文件的问题并补充回归测试；原生程序与安装DMG不变。原 `v0.1.30` 标签保留，不移动或覆盖。
 
