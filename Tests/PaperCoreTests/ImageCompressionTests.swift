@@ -4,6 +4,39 @@ import XCTest
 @testable import PaperCore
 
 final class ImageCompressionTests: XCTestCase {
+    func testDefaultImagePageHasOriginalAspectNoBorderAndKeepsSizeOptimization() throws {
+        let root = try directory()
+        let context = try XCTUnwrap(CGContext(data: nil, width: 3200, height: 1920, bitsPerComponent: 8, bytesPerRow: 12800,
+                                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.draw(try colorImage(), in: CGRect(x: 0, y: 0, width: 3200, height: 1920))
+        let input = root.appendingPathComponent("large-rotated.jpg")
+        try write(try XCTUnwrap(context.makeImage()), to: input, type: "public.jpeg", orientation: 6)
+        let original = try Data(contentsOf: input)
+        let output = root.appendingPathComponent("image-page.pdf")
+        XCTAssertEqual(try ImagePDFImport.convert([input], to: output), 1)
+        let page = try XCTUnwrap(CGPDFDocument(output as CFURL)?.page(at: 1))
+        XCTAssertEqual(page.getBoxRect(.mediaBox).size, CGSize(width: 432, height: 720))
+        let stream = try XCTUnwrap(try imageStreams(page).first)
+        let dictionary = try XCTUnwrap(CGPDFStreamGetDictionary(stream))
+        var width: CGPDFInteger = 0, height: CGPDFInteger = 0
+        XCTAssertTrue(CGPDFDictionaryGetInteger(dictionary, "Width", &width))
+        XCTAssertTrue(CGPDFDictionaryGetInteger(dictionary, "Height", &height))
+        XCTAssertEqual(width, 1500); XCTAssertEqual(height, 900)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(input as CFURL, nil))
+        let oracle = try XCTUnwrap(CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1600
+        ] as CFDictionary))
+        let expected = try bitmap(width: 300, height: 500) { $0.draw(oracle, in: CGRect(x: 0, y: 0, width: 300, height: 500)) }
+        let actual = try bitmap(width: 300, height: 500) { $0.scaleBy(x: 300 / 432, y: 500 / 720); $0.drawPDFPage(page) }
+        for y in [2, 497] { for x in [2, 297] { for channel in 0..<3 {
+            let index = (y * 300 + x) * 4 + channel
+            XCTAssertEqual(Double(actual[index]), Double(expected[index]), accuracy: 12, "Image corner must reach page edge")
+        } } }
+        XCTAssertEqual(try Data(contentsOf: input), original)
+    }
+
     func testDirectImageConversionAcceptsNineTwelveMegapixelPhotos() throws {
         let root = try directory()
         let context = try XCTUnwrap(CGContext(data: nil, width: 4000, height: 3000, bitsPerComponent: 8, bytesPerRow: 16000,

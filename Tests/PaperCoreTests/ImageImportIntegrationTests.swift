@@ -25,6 +25,7 @@ final class ImageImportIntegrationTests: XCTestCase {
         XCTAssertEqual(result.message, "2")
         let doc = try XCTUnwrap(PDFDocument(data: result.data))
         XCTAssertEqual(doc.pageCount, 2)
-        XCTAssertEqual(doc.page(at: 0)!.bounds(for: .mediaBox).width, 595.276, accuracy: 0.1)
+        XCTAssertEqual(doc.page(at: 0)!.bounds(for: .mediaBox).size, CGSize(width: 160, height: 80))
+        XCTAssertEqual(doc.page(at: 1)!.bounds(for: .mediaBox).size, CGSize(width: 80, height: 160))
     }
 }

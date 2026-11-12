@@ -6,7 +6,14 @@ public enum ImportFailure: Error { case invalidInput, invalidLayout, outputExist
 public struct ImageLayout {
     public var size: CGSize?
     public var margin: Double
-    public init(size: CGSize? = CGSize(width: 595.276, height: 841.89), margin: Double = 24) { self.size = size; self.margin = margin }
+    public var maximumImagePageDimension: Double?
+    public init(size: CGSize? = CGSize(width: 595.276, height: 841.89), margin: Double = 24,
+                maximumImagePageDimension: Double? = nil) {
+        self.size = size; self.margin = margin; self.maximumImagePageDimension = maximumImagePageDimension
+    }
+    /// Each image owns its page shape. The physical scale is bounded for reading
+    /// and 150-DPI encoding, without adding a paper canvas, margins or cropping.
+    public static var imagePages: ImageLayout { .init(size: nil, margin: 0, maximumImagePageDimension: 720) }
 }
 /// Per-job ceilings may be tightened by callers, never raised above the defaults.
 /// Pixel budgets describe planned decoding, not a bound on ImageIO's internal memory.
@@ -137,7 +144,7 @@ public enum ImagePDFImport {
     /// Cancellation is cooperative; it cannot interrupt one system ImageIO decode.
     /// Output bytes are checked after each page and after close, not by a hard-limited
     /// write stream: ImageIO/CGPDF can buffer or exceed the ceiling between checks.
-    public static func convert(_ inputs: [URL], to output: URL, layout: ImageLayout = .init(), limits: ImageImportLimits = .init(), cancelled: () -> Bool = { false }) throws -> Int {
+    public static func convert(_ inputs: [URL], to output: URL, layout: ImageLayout = .imagePages, limits: ImageImportLimits = .init(), cancelled: () -> Bool = { false }) throws -> Int {
         guard !inputs.isEmpty, inputs.count <= 500, output.isFileURL, output.pathExtension.lowercased() == "pdf" else { throw ImportFailure.invalidInput }
         let defaults = ImageImportLimits()
         guard limits.maximumDecodedPixelsPerFrame > 0, limits.maximumDecodedPixelsPerFrame <= defaults.maximumDecodedPixelsPerFrame,
@@ -145,6 +152,9 @@ public enum ImagePDFImport {
               limits.maximumPages > 0, limits.maximumPages <= defaults.maximumPages,
               limits.maximumOutputBytes > 0, limits.maximumOutputBytes <= defaults.maximumOutputBytes else { throw ImportFailure.invalidInput }
         guard layout.margin.isFinite, layout.margin >= 0 else { throw ImportFailure.invalidLayout }
+        if let edge = layout.maximumImagePageDimension {
+            guard layout.size == nil, layout.margin == 0, edge.isFinite, edge > 0, edge <= 14400 else { throw ImportFailure.invalidLayout }
+        }
         if let size = layout.size {
             guard size.width.isFinite, size.height.isFinite, size.width > layout.margin * 2, size.height > layout.margin * 2, size.width <= 14400, size.height <= 14400 else { throw ImportFailure.invalidLayout }
         }
@@ -190,15 +200,19 @@ public enum ImagePDFImport {
                 let orientation = (1...8).contains(orientationValue) ? orientationValue : 1
                 let swapped = orientation >= 5
                 let originalSize = CGSize(width: swapped ? height : width, height: swapped ? width : height)
-                let size = layout.size ?? originalSize
+                let imagePageScale: CGFloat
+                if let maximum = layout.maximumImagePageDimension {
+                    imagePageScale = min(1, CGFloat(maximum) / max(originalSize.width, originalSize.height))
+                } else { imagePageScale = 1 }
+                let size = layout.size ?? CGSize(width: originalSize.width * imagePageScale, height: originalSize.height * imagePageScale)
                 let margin = layout.size == nil ? 0 : layout.margin
                 guard size.width <= 14400, size.height <= 14400 else { throw ImportFailure.tooLarge }
                 let pageScale = min((size.width - margin * 2) / originalSize.width, (size.height - margin * 2) / originalSize.height)
-                // Fixed paper is an output at 150 DPI, not a container for every
-                // camera pixel. Native pixel-sized pages intentionally retain
-                // the full source. Never enlarge low-resolution images.
+                // Both image-shaped pages and explicit fixed paper use 150 DPI.
+                // Explicit native pixel pages retain the full source.
                 let sourceEdge = Int(max(width, height))
-                let targetEdge = layout.size == nil ? sourceEdge : max(1, Int(ceil(min(Double(sourceEdge), Double(sourceEdge) * pageScale * 150 / 72))))
+                let nativePixels = layout.size == nil && layout.maximumImagePageDimension == nil
+                let targetEdge = nativePixels ? sourceEdge : max(1, Int(ceil(min(Double(sourceEdge), Double(sourceEdge) * pageScale * 150 / 72))))
                 let resized = targetEdge < sourceEdge
                 let decoded: CGImage?
                 if resized {
@@ -223,7 +237,9 @@ public enum ImagePDFImport {
                 context.beginPDFPage([kCGPDFContextMediaBox: boxData] as CFDictionary)
                 context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(box)
                 let scale = min((size.width - margin * 2) / imageSize.width, (size.height - margin * 2) / imageSize.height)
-                let rect = CGRect(x: (size.width - imageSize.width * scale) / 2, y: (size.height - imageSize.height * scale) / 2, width: imageSize.width * scale, height: imageSize.height * scale)
+                // Thumbnail dimensions round to whole pixels. The page keeps
+                // the original aspect exactly and fills edge-to-edge.
+                let rect = layout.maximumImagePageDimension != nil ? box : CGRect(x: (size.width - imageSize.width * scale) / 2, y: (size.height - imageSize.height * scale) / 2, width: imageSize.width * scale, height: imageSize.height * scale)
                 context.saveGState()
                 context.translateBy(x: rect.minX, y: rect.minY)
                 context.scaleBy(x: rect.width / imageSize.width, y: rect.height / imageSize.height)

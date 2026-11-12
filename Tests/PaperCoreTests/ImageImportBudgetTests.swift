@@ -8,7 +8,7 @@ final class ImageImportBudgetTests: XCTestCase {
         let root = try makeRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let input = try makePNG(in: root, name: "camera", width: 4000, height: 3000)
         let output = root.appendingPathComponent("a4.pdf")
-        XCTAssertEqual(try ImagePDFImport.convert([input], to: output), 1)
+        XCTAssertEqual(try ImagePDFImport.convert([input], to: output, layout: .init()), 1)
         let page = try XCTUnwrap(CGPDFDocument(output as CFURL)?.page(at: 1))
         var resources: CGPDFDictionaryRef?, objects: CGPDFDictionaryRef?
         XCTAssertTrue(CGPDFDictionaryGetDictionary(try XCTUnwrap(page.dictionary), "Resources", &resources))
@@ -34,6 +34,23 @@ final class ImageImportBudgetTests: XCTestCase {
         XCTAssertEqual(limits.maximumTotalDecodedPixels, 2_000_000_000)
         XCTAssertEqual(limits.maximumPages, 500)
         XCTAssertEqual(limits.maximumOutputBytes, 256 * 1024 * 1024)
+    }
+
+    func testInvalidImagePageDimensionCannotCreateOutput() throws {
+        let root = try makeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let input = try makePNG(in: root, name: "small", width: 4, height: 3)
+        var layouts = [Double.nan, Double.infinity, -1, 0, 14401].map {
+            ImageLayout(size: nil, margin: 0, maximumImagePageDimension: $0)
+        }
+        layouts.append(ImageLayout(size: CGSize(width: 595, height: 842), margin: 0, maximumImagePageDimension: 720))
+        layouts.append(ImageLayout(size: nil, margin: 24, maximumImagePageDimension: 720))
+        let output = root.appendingPathComponent("invalid.pdf")
+        for layout in layouts {
+            XCTAssertThrowsError(try ImagePDFImport.convert([input], to: output, layout: layout)) {
+                XCTAssertEqual($0 as? ImportFailure, .invalidLayout)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+        }
     }
 
     func testPixelArithmeticRejectsNonFiniteFractionalAndOverflowingMetadata() throws {
@@ -175,7 +192,7 @@ final class ImageImportBudgetTests: XCTestCase {
         let inputs = try [makePNG(in: root, name: "first", width: 4, height: 3), makePNG(in: root, name: "second", width: 5, height: 4)]
         let originals = try inputs.map { try Data(contentsOf: $0) }
         let output = root.appendingPathComponent("output.pdf")
-        XCTAssertEqual(try ImagePDFImport.convert(inputs, to: output, limits: .init(maximumTotalDecodedPixels: 32, maximumPages: 2)), 2)
+        XCTAssertEqual(try ImagePDFImport.convert(inputs, to: output, layout: .init(), limits: .init(maximumTotalDecodedPixels: 32, maximumPages: 2)), 2)
         let pdf = try XCTUnwrap(CGPDFDocument(output as CFURL))
         XCTAssertEqual(pdf.numberOfPages, 2)
         XCTAssertEqual(pdf.page(at: 1)?.getBoxRect(.mediaBox).width ?? 0, 595.276, accuracy: 0.001)

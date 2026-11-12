@@ -8,6 +8,16 @@ import XCTest
 
 @MainActor
 final class ImageImportControllerTests: XCTestCase {
+    func testDefaultImportUsesImageShapeWithoutPaperMargins() throws {
+        let controller = ImageImportController()
+        _ = controller.view
+        XCTAssertNil(controller.layout.size)
+        XCTAssertEqual(controller.layout.margin, 0)
+        XCTAssertEqual(controller.paperChooser.titleOfSelectedItem, "按图片比例")
+        XCTAssertFalse(controller.orientationChooser.isEnabled)
+        XCTAssertFalse(controller.marginField.isEnabled)
+    }
+
     func testPaperOrientationAndMarginProduceActualEngineLayout() throws {
         let controller = ImageImportController()
         try controller.setLayout(paper: .a4, orientation: .landscape, marginText: "36")

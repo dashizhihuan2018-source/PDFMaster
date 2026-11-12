@@ -5,15 +5,15 @@ import UniformTypeIdentifiers
 import Darwin
 
 enum ImageImportPaper: String, CaseIterable {
-    case a4, letter, pixels
+    case image, a4, letter, pixels
     var title: String {
-        switch self { case .a4: return "A4"; case .letter: return "Letter"; case .pixels: return "图片像素尺寸" }
+        switch self { case .image: return "按图片比例"; case .a4: return "A4"; case .letter: return "Letter"; case .pixels: return "图片像素尺寸" }
     }
     var size: CGSize? {
         switch self {
         case .a4: return CGSize(width: 595.276, height: 841.89)
         case .letter: return CGSize(width: 612, height: 792)
-        case .pixels: return nil
+        case .image, .pixels: return nil
         }
     }
 }
@@ -92,9 +92,9 @@ final class ImageImportController: NSViewController, NSTableViewDataSource, NSTa
     var onStatus: ((String) -> Void)?
     var onFailure: ((Error) -> Void)?
     private(set) var inputs: [URL] = []
-    private(set) var paper: ImageImportPaper = .a4
+    private(set) var paper: ImageImportPaper = .image
     private(set) var orientation: ImageImportOrientation = .portrait
-    private(set) var layout = ImageLayout()
+    private(set) var layout = ImageLayout.imagePages
     private(set) var isRunning = false
 
     let paperChooser = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -151,8 +151,8 @@ final class ImageImportController: NSViewController, NSTableViewDataSource, NSTa
             }
             if orientation == .landscape { size = CGSize(width: size.height, height: size.width) }
             next = ImageLayout(size: size, margin: margin)
-        } else { next = ImageLayout(size: nil, margin: 0) }
-        if self.paper != paper || self.orientation != orientation || layout.size != next.size || layout.margin != next.margin {
+        } else { next = paper == .image ? .imagePages : ImageLayout(size: nil, margin: 0) }
+        if self.paper != paper || self.orientation != orientation || layout.size != next.size || layout.margin != next.margin || layout.maximumImagePageDimension != next.maximumImagePageDimension {
             invalidate()
         }
         self.paper = paper; self.orientation = orientation; layout = next
@@ -335,14 +335,14 @@ final class ImageImportController: NSViewController, NSTableViewDataSource, NSTa
         orientationChooser.selectItem(at: ImageImportOrientation.allCases.firstIndex(of: orientation) ?? 0)
         marginField.stringValue = String(layout.margin)
         paperChooser.isEnabled = !isRunning
-        orientationChooser.isEnabled = !isRunning && paper != .pixels
-        marginField.isEnabled = !isRunning && paper != .pixels
+        orientationChooser.isEnabled = !isRunning && paper.size != nil
+        marginField.isEnabled = !isRunning && paper.size != nil
         convertButton.isEnabled = !isRunning && !inputs.isEmpty
         fileTable.isEnabled = !isRunning
         fileTable.reloadData()
         if let index, inputs.indices.contains(index) { fileTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         updateOrderButtons()
-        formatNotice.stringValue = "仅静态 PNG/JPEG 与 TIFF；TIFF 全帧逐页转换，总计最多 500 页。不支持 GIF、HEIC、SVG；无 OCR。\nA4/Letter 使用 150 DPI 均衡输出，小图不放大；图片像素尺寸保留原分辨率（1 像素＝1 PDF 点），文件可能较大，方向与边距不适用。"
+        formatNotice.stringValue = "仅静态 PNG/JPEG 与 TIFF；TIFF 全帧逐页转换，总计最多 500 页。不支持 GIF、HEIC、SVG；无 OCR。\n默认按图片比例，无白边、不裁切，自动保持横竖方向并优化体积；A4/Letter仅在主动选择时使用。图片像素尺寸保留原分辨率（1 像素＝1 PDF 点），文件可能较大。"
     }
 
     private func updateOrderButtons() {

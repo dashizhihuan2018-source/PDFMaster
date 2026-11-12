@@ -5,6 +5,30 @@ import ImageIO
 @testable import PaperCore
 
 final class FilePDFImportTests: XCTestCase {
+    @MainActor func testInsertedImagesKeepWideTallAndSquarePagesBesideExistingDocument() throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let sizes = [CGSize(width: 80, height: 40), CGSize(width: 40, height: 80), CGSize(width: 60, height: 60)]
+        let images = try sizes.enumerated().map { index, size in
+            try image(dir, name: "image-\(index).png", width: Int(size.width), height: Int(size.height))
+        }
+        let originalImages = try images.map { try Data(contentsOf: $0) }
+        let workspace = PDFWorkspace(); try workspace.createBlank()
+        let existingBounds = try XCTUnwrap(workspace.document?.page(at: 0)?.bounds(for: .mediaBox))
+        try workspace.insertPDFData(FilePDFImport.prepare(images), at: 1)
+        XCTAssertEqual(workspace.document?.pageCount, 4)
+        XCTAssertEqual(workspace.document?.page(at: 0)?.bounds(for: .mediaBox), existingBounds)
+        let output = dir.appendingPathComponent("inserted.pdf"); try workspace.saveCopy(to: output)
+        let reopened = try XCTUnwrap(PDFDocument(url: output))
+        for (index, size) in sizes.enumerated() {
+            XCTAssertEqual(workspace.document?.page(at: index + 1)?.bounds(for: .mediaBox).size, size)
+            XCTAssertEqual(reopened.page(at: index + 1)?.bounds(for: .mediaBox).size, size)
+        }
+        try workspace.undo()
+        XCTAssertEqual(workspace.document?.pageCount, 1)
+        XCTAssertEqual(workspace.document?.page(at: 0)?.bounds(for: .mediaBox), existingBounds)
+        XCTAssertEqual(try images.map { try Data(contentsOf: $0) }, originalImages)
+    }
+
     func testPhoneImageBatchCanExceedOneHundredMegapixelsWithoutChangingSources() throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let context = try XCTUnwrap(CGContext(data: nil, width: 4000, height: 3000, bitsPerComponent: 8, bytesPerRow: 16000,
@@ -77,7 +101,7 @@ final class FilePDFImportTests: XCTestCase {
         XCTAssertEqual(results[0], originals[0])
         XCTAssertEqual(results.compactMap { PDFDocument(data: $0)?.pageCount }, [1, 1, 1])
         XCTAssertTrue(PDFDocument(data: results[2])?.string?.contains("中文资料") == true)
-        XCTAssertEqual(PDFDocument(data: results[1])?.page(at: 0)?.bounds(for: .mediaBox).width ?? 0, 595.276, accuracy: 1)
+        XCTAssertEqual(PDFDocument(data: results[1])?.page(at: 0)?.bounds(for: .mediaBox).size, CGSize(width: 80, height: 40))
         XCTAssertEqual(try [base, png, txt].map { try Data(contentsOf: $0) }, originals)
     }
 
@@ -98,10 +122,10 @@ final class FilePDFImportTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("FileImportTests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false); return url
     }
-    private func image(_ dir: URL) throws -> URL {
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 40, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        for x in 0..<80 { for y in 0..<40 { bitmap.setColor(NSColor(deviceRed: 0.1, green: 0.3, blue: 0.8, alpha: 1), atX: x, y: y) } }
-        let url = dir.appendingPathComponent("blue.png")
+    private func image(_ dir: URL, name: String = "blue.png", width: Int = 80, height: Int = 40) throws -> URL {
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        for x in 0..<width { for y in 0..<height { bitmap.setColor(NSColor(deviceRed: 0.1, green: 0.3, blue: 0.8, alpha: 1), atX: x, y: y) } }
+        let url = dir.appendingPathComponent(name)
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url); return url
     }
 }
