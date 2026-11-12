@@ -685,7 +685,8 @@ public final class PDFWorkspace: ObservableObject {
         try mutatePageStructure(requiring: .assembly) { candidate in
             guard index >= 0, index <= candidate.pageCount else { throw PDFWorkspaceError.invalidPage }
             _ = try self.outlinePageIndexes(in: candidate)
-            candidate.insert(try self.blankPage(), at: index)
+            let reference = candidate.page(at: index > 0 ? index - 1 : 0)
+            candidate.insert(try self.blankPage(matching: reference), at: index)
             _ = try self.outlinePageIndexes(in: candidate)
         }
     }
@@ -1576,7 +1577,17 @@ public final class PDFWorkspace: ObservableObject {
         return identifier
     }
 
-    private func blankPage() throws -> PDFPage {
+    private func blankPage(matching reference: PDFPage? = nil) throws -> PDFPage {
+        if let reference {
+            let page = PDFPage()
+            for box in [PDFDisplayBox.mediaBox, .cropBox, .bleedBox, .trimBox, .artBox] {
+                let bounds = reference.bounds(for: box)
+                guard valid(bounds) else { throw PDFWorkspaceError.invalidPage }
+                page.setBounds(bounds, for: box)
+            }
+            page.rotation = reference.rotation
+            return page
+        }
         let size = NSSize(width: 612, height: 792)
         let image = NSImage(size: size)
         image.lockFocus()
