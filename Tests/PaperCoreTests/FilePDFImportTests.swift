@@ -1,9 +1,48 @@
 import XCTest
 import PDFKit
 import AppKit
+import ImageIO
 @testable import PaperCore
 
 final class FilePDFImportTests: XCTestCase {
+    func testPhoneImageBatchCanExceedOneHundredMegapixelsWithoutChangingSources() throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let context = try XCTUnwrap(CGContext(data: nil, width: 4000, height: 3000, bitsPerComponent: 8, bytesPerRow: 16000,
+                                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.1, green: 0.3, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 4000, height: 3000))
+        let input = dir.appendingPathComponent("phone.png")
+        let writer = try XCTUnwrap(CGImageDestinationCreateWithURL(input as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(writer, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(writer))
+        let original = try Data(contentsOf: input)
+        let batch = try FilePDFImport.prepare(Array(repeating: input, count: 9))
+        XCTAssertEqual(batch.count, 9)
+        XCTAssertEqual(batch.compactMap { PDFDocument(data: $0)?.pageCount }, Array(repeating: 1, count: 9))
+        XCTAssertEqual(try Data(contentsOf: input), original)
+    }
+
+    func testHEICUsesFullResolutionJPEGEmbeddingInsteadOfInflatingEveryPhoto() throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let context = try XCTUnwrap(CGContext(data: nil, width: 160, height: 80, bitsPerComponent: 8, bytesPerRow: 640,
+                                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.6, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 160, height: 80))
+        let input = dir.appendingPathComponent("phone.heic")
+        let writer = try XCTUnwrap(CGImageDestinationCreateWithURL(input as CFURL, "public.heic" as CFString, 1, nil))
+        CGImageDestinationAddImage(writer, try XCTUnwrap(context.makeImage()), [kCGImagePropertyOrientation: 6] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(writer))
+        let original = try Data(contentsOf: input)
+        let output = dir.appendingPathComponent("converted.pdf")
+        XCTAssertEqual(try ImagePDFImport.convert([input], to: output, layout: .init(size: nil, margin: 0)), 1)
+        let data = try Data(contentsOf: output)
+        XCTAssertNotNil(data.range(of: Data("/DCTDecode".utf8)))
+        let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
+        XCTAssertEqual(page.bounds(for: .mediaBox).width, 80)
+        XCTAssertEqual(page.bounds(for: .mediaBox).height, 160)
+        XCTAssertEqual(try Data(contentsOf: input), original)
+    }
+
     @MainActor func testNewMergeUsesSameAdmissionForEveryPositionAndHasNoPlaceholderUndo() throws {
         let doc = PDFDocument(); let page = PDFPage()
         page.setBounds(CGRect(x: 0, y: 0, width: 300, height: 400), for: .mediaBox)

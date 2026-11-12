@@ -20,6 +20,10 @@ public enum FilePDFImportError: Error, LocalizedError {
 /// workspace transaction. Source descriptors are pinned and copied to an owned
 /// directory: converters never write to the user's files or fetch network URLs.
 public enum FilePDFImport {
+    // Work budget for sequential conversions, not simultaneously resident pixels.
+    // Keep the same finite work budget for both import entry points; per-frame
+    // pixels, file bytes, page count and aggregate PDF bytes remain bounded.
+    private static let maximumBatchImagePixels = ImageImportLimits().maximumTotalDecodedPixels
     public static let imageExtensions = ["png", "jpg", "jpeg", "tif", "tiff", "heic", "heif", "bmp", "gif"]
     public static let textExtensions = ["txt", "md", "rtf", "docx"]
     public static func prepare(_ inputs: [URL], cancelled: () -> Bool = { false }) throws -> [Data] {
@@ -31,6 +35,7 @@ public enum FilePDFImport {
         var decodedPixels: UInt64 = 0
         var result: [Data] = []
         for (index, input) in inputs.enumerated() {
+          try autoreleasepool {
             if cancelled() { throw FilePDFImportError.cancelled }
             let ext = input.pathExtension.lowercased(), name = input.lastPathComponent
             guard ext == "pdf" || imageExtensions.contains(ext) || textExtensions.contains(ext) else { throw FilePDFImportError.unsupported(name) }
@@ -52,9 +57,11 @@ public enum FilePDFImport {
                                   let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
                                   let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue else { throw ImportFailure.decodeFailed }
                             let pixels = try ImagePDFImport.checkedPixelCount(width: w, height: h, maximum: 40_000_000)
-                            decodedPixels = try ImagePDFImport.checkedTotal(decodedPixels, adding: pixels, maximum: 100_000_000)
+                            decodedPixels = try ImagePDFImport.checkedTotal(decodedPixels, adding: pixels, maximum: maximumBatchImagePixels)
                         }
-                        _ = try ImagePDFImport.convert([staged], to: output, cancelled: cancelled)
+                        try autoreleasepool {
+                            _ = try ImagePDFImport.convert([staged], to: output, cancelled: cancelled)
+                        }
                     } else { _ = try TextPDFImport.convert(staged, to: output, cancelled: cancelled) }
                     converted = try Data(contentsOf: output)
                 }
@@ -79,6 +86,7 @@ public enum FilePDFImport {
                 }
                 throw FilePDFImportError.failed(name, reason)
             }
+          }
         }
         if cancelled() { throw FilePDFImportError.cancelled }
         return result

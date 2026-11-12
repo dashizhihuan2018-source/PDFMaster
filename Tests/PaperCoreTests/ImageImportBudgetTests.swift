@@ -7,7 +7,7 @@ final class ImageImportBudgetTests: XCTestCase {
     func testDefaultsPreservePageCeilingAndSetBatchAndOutputBudgets() {
         let limits = ImageImportLimits()
         XCTAssertEqual(limits.maximumDecodedPixelsPerFrame, 40_000_000)
-        XCTAssertEqual(limits.maximumTotalDecodedPixels, 100_000_000)
+        XCTAssertEqual(limits.maximumTotalDecodedPixels, 2_000_000_000)
         XCTAssertEqual(limits.maximumPages, 500)
         XCTAssertEqual(limits.maximumOutputBytes, 256 * 1024 * 1024)
     }

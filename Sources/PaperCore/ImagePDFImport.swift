@@ -16,7 +16,7 @@ public struct ImageImportLimits {
     public var maximumPages: Int
     public var maximumOutputBytes: Int
     public init(maximumDecodedPixelsPerFrame: UInt64 = 40_000_000,
-                maximumTotalDecodedPixels: UInt64 = 100_000_000,
+                maximumTotalDecodedPixels: UInt64 = 2_000_000_000,
                 maximumPages: Int = 500, maximumOutputBytes: Int = 256 * 1024 * 1024) {
         self.maximumDecodedPixelsPerFrame = maximumDecodedPixelsPerFrame
         self.maximumTotalDecodedPixels = maximumTotalDecodedPixels
@@ -73,6 +73,42 @@ public enum ImagePDFImport {
         var info = stat()
         guard lstat(stage.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0 else { throw ImportFailure.writeFailed }
         guard info.st_size <= maximum else { throw ImportFailure.tooLarge }
+    }
+    /// HEIC cannot be embedded directly in PDF. Keep the oriented full resolution
+    /// but supply a high-quality JPEG-backed CGImage so Quartz embeds DCT data
+    /// instead of expanding every phone photo into a large lossless RGB stream.
+    /// PNG/TIFF keep their existing lossless path; HEIF alpha uses the page white.
+    private static func pdfImage(_ image: CGImage, sourceType: String) throws -> CGImage {
+        guard ["public.heic", "public.heif"].contains(sourceType) else { return image }
+        // Match the existing white PDF page when a HEIF image has alpha. ImageIO
+        // can also expose an opaque HEIC through a premultiplied-alpha bitmap.
+        guard let bitmap = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                     bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                     bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { throw ImportFailure.decodeFailed }
+        bitmap.setFillColor(CGColor(gray: 1, alpha: 1))
+        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        bitmap.fill(bounds); bitmap.draw(image, in: bounds)
+        guard let opaque = bitmap.makeImage() else { throw ImportFailure.decodeFailed }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { throw ImportFailure.writeFailed }
+        CGImageDestinationAddImage(destination, opaque, [kCGImageDestinationLossyCompressionQuality: 0.7] as CFDictionary)
+        guard CGImageDestinationFinalize(destination),
+              let provider = CGDataProvider(data: data as CFData),
+              let encoded = CGImage(jpegDataProviderSource: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent),
+              encoded.width == image.width, encoded.height == image.height else { throw ImportFailure.writeFailed }
+        return encoded
+    }
+    private static func orientationTransform(_ orientation: UInt32, width w: CGFloat, height h: CGFloat) -> CGAffineTransform {
+        switch orientation {
+        case 2: return .init(a: -1, b: 0, c: 0, d: 1, tx: w, ty: 0)
+        case 3: return .init(a: -1, b: 0, c: 0, d: -1, tx: w, ty: h)
+        case 4: return .init(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: h)
+        case 5: return .init(a: 0, b: -1, c: -1, d: 0, tx: h, ty: w)
+        case 6: return .init(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: w)
+        case 7: return .init(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
+        case 8: return .init(a: 0, b: 1, c: -1, d: 0, tx: h, ty: 0)
+        default: return .identity
+        }
     }
     private static func preflight(_ inputs: [URL], limits: ImageImportLimits, cancelled: () -> Bool) throws {
         var totalBytes = 0
@@ -144,15 +180,23 @@ public enum ImagePDFImport {
             let type = CGImageSourceGetType(source) as String? ?? ""
             guard count == 1 || type == "public.tiff" else { throw ImportFailure.invalidInput }
             for index in 0..<count {
+              try autoreleasepool {
                 if cancelled() { throw ImportFailure.cancelled }
                 let pixels = try framePixels(source, index: index, maximum: limits.maximumDecodedPixelsPerFrame)
                 totalPixels = try checkedTotal(totalPixels, adding: pixels, maximum: limits.maximumTotalDecodedPixels)
                 guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
                       let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
                       let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue else { throw ImportFailure.tooLarge }
-                let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: max(width, height), kCGImageSourceShouldCacheImmediately: true]
-                guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary) else { throw ImportFailure.decodeFailed }
-                let imageSize = CGSize(width: image.width, height: image.height)
+                // Reading the original image preserves an encoded JPEG provider.
+                // EXIF rotation/mirroring belongs in the PDF CTM, not a raster
+                // thumbnail that would discard the original compression stream.
+                guard let decoded = CGImageSourceCreateImageAtIndex(source, index, [kCGImageSourceShouldCache: false] as CFDictionary),
+                      decoded.width == Int(width), decoded.height == Int(height) else { throw ImportFailure.decodeFailed }
+                let image = try pdfImage(decoded, sourceType: type)
+                let orientationValue = (properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
+                let orientation = (1...8).contains(orientationValue) ? orientationValue : 1
+                let swapped = orientation >= 5
+                let imageSize = CGSize(width: swapped ? image.height : image.width, height: swapped ? image.width : image.height)
                 let size = layout.size ?? imageSize
                 let margin = layout.size == nil ? 0 : layout.margin
                 guard size.width <= 14400, size.height <= 14400 else { throw ImportFailure.tooLarge }
@@ -162,8 +206,15 @@ public enum ImagePDFImport {
                 context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(box)
                 let scale = min((size.width - margin * 2) / imageSize.width, (size.height - margin * 2) / imageSize.height)
                 let rect = CGRect(x: (size.width - imageSize.width * scale) / 2, y: (size.height - imageSize.height * scale) / 2, width: imageSize.width * scale, height: imageSize.height * scale)
-                context.draw(image, in: rect); context.endPDFPage(); pageCount += 1
+                context.saveGState()
+                context.translateBy(x: rect.minX, y: rect.minY)
+                context.scaleBy(x: rect.width / imageSize.width, y: rect.height / imageSize.height)
+                context.concatenate(orientationTransform(orientation, width: CGFloat(image.width), height: CGFloat(image.height)))
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+                context.restoreGState()
+                context.endPDFPage(); pageCount += 1
                 try checkOutputSize(stage, maximum: limits.maximumOutputBytes)
+              }
             }
         }
         context.closePDF(); closed = true
